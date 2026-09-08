@@ -84,11 +84,27 @@ struct Entry {
             };                                                               \
     } while (0)
 
-#else
+#elif !defined(NDEBUG)
 
 #include <iostream>
 
-/// Off NES: no ROM budget to protect, so log() just prints immediately.
-#define log(msg) (std::cout << (msg) << '\n')
+/// Off NES, debug builds only -- log() is gated behind DEBUG entirely here,
+/// not just the console-creation fallback: a release build must never pay
+/// for (or emit) this, matching log()'s NES side always costing nothing.
+/// No EnsureConsoleOnce() call here: that runs once, unconditionally, from
+/// ::RESET's own expansion (interrupts.hpp) at actual program startup --
+/// not lazily from the first log() call, so a console is guaranteed to
+/// exist by the time ANY log() call runs, even a run that only calls it
+/// once, deep into the game.
+/// "log: " matches tools/logger.lua's own prefix for a log() message on the
+/// NES/Mesen side -- there's no "app: " counterpart here, since there's no
+/// separate loader/tool step on this path to have diagnostics of its own.
+#define log(msg) (std::cout << "log: " << (msg) << '\n')
+
+#else
+
+/// Off NES, release build: log() costs nothing and prints nothing, same as
+/// the NES side always does.
+#define log(msg) ((void)0)
 
 #endif

@@ -214,6 +214,7 @@ void irq_vector()
 #else
 
 #include "audio.hpp"
+#include "console.hpp"
 
 /**
  * @brief Library-side startup hook, called before user code on desktop builds.
@@ -240,6 +241,13 @@ extern void post();
  * calls ::post. Follow the macro with the handler body — it becomes
  * the inline `usr_main` function.
  *
+ * ::tech::EnsureConsoleOnce() (console.hpp) runs first, unconditionally --
+ * not lazily from inside log() itself. Tying it to the first log() call
+ * meant a run that happened not to call log() at all never got a console,
+ * even on a launch that genuinely needed one; calling it here instead means
+ * every debug-build run gets one exactly once, independent of whether the
+ * game ever actually logs anything during it.
+ *
  * @code
  *   RESET {
  *     // one-shot setup, then the main loop
@@ -249,6 +257,7 @@ extern void post();
 #define RESET                       \
 static void usr_main();         \
 int main(){                     \
+::tech::EnsureConsoleOnce();    \
 irq::init();         \
 usr_main();                 \
 irq::post();         \
