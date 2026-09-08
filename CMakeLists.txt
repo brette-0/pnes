@@ -343,6 +343,43 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     find_program(LLVM_NM llvm-nm
         HINTS "${LLVM_MOS_BIN}" NO_DEFAULT_PATH REQUIRED)
 
+    # ------------------------------------------------------------------
+    # lua_log_builder: reads log()'s zero-footprint metadata back out of the
+    # linked demo.elf (see include/platform-nes/logger.hpp) and writes
+    # logdata.lua next to demo.nes for tools/logger.lua to load in Mesen.
+    #
+    # HOST-NATIVE, NOT CROSS-COMPILED: this whole configuration's own
+    # CMAKE_C_COMPILER/CMAKE_CXX_COMPILER are the 6502 cross-compiler (see
+    # this file's own NES-target comments above), but this tool has to run
+    # ON the machine building the ROM. It is therefore its own separate
+    # CMake project (tools/luaLogBuilder/CMakeLists.txt), configured and
+    # built here via a NESTED cmake invocation using ${CMAKE_COMMAND} with
+    # no toolchain/compiler cache variables forwarded, so it picks up the
+    # host's own default compiler exactly like a standalone `cmake -S/-B`
+    # invocation would -- never the mos cross-compiler this project's own
+    # targets use.
+    #
+    # BUILT BEFORE ANY PROJECT NES SOURCE COMPILES: add_dependencies() below
+    # pins this ahead of platform-nes, the first target that compiles any of
+    # this project's or a consuming project's own NES C++ -- not because the
+    # engine's own source needs the tool, but so a developer never watches a
+    # full NES build finish only to have logdata.lua generation fail or be
+    # silently skipped at the very end.
+    set(LUA_LOG_BUILDER_SRC ${CMAKE_SOURCE_DIR}/tools/luaLogBuilder)
+    set(LUA_LOG_BUILDER_BUILD ${LUA_LOG_BUILDER_SRC}/build)
+    set(LUA_LOG_BUILDER_BIN ${LUA_LOG_BUILDER_BUILD}/lua_log_builder)
+
+    add_custom_command(
+            OUTPUT ${LUA_LOG_BUILDER_BIN}
+            COMMAND ${CMAKE_COMMAND} -S ${LUA_LOG_BUILDER_SRC} -B ${LUA_LOG_BUILDER_BUILD}
+                    -DCMAKE_BUILD_TYPE=Release
+            COMMAND ${CMAKE_COMMAND} --build ${LUA_LOG_BUILDER_BUILD}
+            DEPENDS ${LUA_LOG_BUILDER_SRC}/main.cpp ${LUA_LOG_BUILDER_SRC}/CMakeLists.txt
+            COMMENT "Building lua_log_builder (host-native logdata.lua generator)"
+            VERBATIM
+    )
+    add_custom_target(lua_log_builder_tool DEPENDS ${LUA_LOG_BUILDER_BIN})
+
     # demo/famistudio_config.s is the REAL, project-owned FamiStudio config
     # file (see its own header comment, and BANKED_CALL_THEORY.txt's
     # "RESOLVED: famistudio_config.s moves to the demo root as a real,
@@ -543,6 +580,22 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # option exists instead of this hardcoded single-target branch.
     list(REMOVE_ITEM NES_SOURCES ${CMAKE_SOURCE_DIR}/src/nes/mappers/vrc1.cpp)
     add_library(platform-nes STATIC ${NES_SOURCES})
+
+    # lua_log_builder built and ready before any project NES source compiles
+    # -- see this file's own comment on lua_log_builder_tool, above.
+    add_dependencies(platform-nes lua_log_builder_tool)
+
+    # Unconditional, in every build type -- not just nes-debug. log()'s whole
+    # LMA-resolution scheme (include/platform-nes/logger.hpp, tools/logger.lua)
+    # depends on DWARF's .debug_line table to turn a log() call site's
+    # __FILE__/__LINE__ into a real address; without -g that table doesn't
+    # exist and every log point silently resolves to nothing. This costs
+    # nothing in the shipped ROM either way: debug sections carry no
+    # SHF_ALLOC flag, so they were never going to reach a MEMORY region or
+    # get copied into demo.nes by objcopy regardless of build type -- the
+    # only thing -g grows is demo.nes.elf, which is not what ships.
+    target_compile_options(platform-nes PUBLIC -g)
+
     target_include_directories(platform-nes PUBLIC
             ${CMAKE_SOURCE_DIR}/include
             ${CMAKE_SOURCE_DIR}/include/umbrella
@@ -671,6 +724,24 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             -DNM=${LLVM_NM}
             -DELF_FILE=$<TARGET_FILE:demo>.elf
             -P ${CMAKE_SOURCE_DIR}/tools/report_space.cmake
+            VERBATIM
+    )
+
+    # ------------------------------------------------------------------
+    # logdata.lua generation. See include/platform-nes/logger.hpp and
+    # tools/luaLogBuilder/main.cpp's own header comments for the whole
+    # design -- this just runs the already-built host tool (see
+    # lua_log_builder_tool, above) against the ELF this link just produced,
+    # writing logdata.lua next to demo.nes itself (where tools/logger.lua
+    # expects to find it -- it resolves the path from the running ROM's own
+    # location, not a fixed one). add_dependencies() ensures the tool exists
+    # before this runs even on a from-clean build.
+    # ------------------------------------------------------------------
+    add_dependencies(demo lua_log_builder_tool)
+    add_custom_command(TARGET demo POST_BUILD
+            COMMAND ${LUA_LOG_BUILDER_BIN}
+            --elf $<TARGET_FILE:demo>.elf
+            --output $<TARGET_FILE_DIR:demo>/logdata.lua
             VERBATIM
     )
 

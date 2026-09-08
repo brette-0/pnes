@@ -12,12 +12,8 @@
 
 namespace title {
     constexpr u8 kMenuOptions   = static_cast<u8>(End + 1);
-    // Longest label ("NEW GAME"/"CONTINUE", 8 chars) -- both the menu's box
-    // width and, mirrored below, how far in from the screen edge it's placed.
     constexpr u8 kMenuBoxWidth  = 8;
 
-    // Play-mode choice -- see msg_playMode. Not wired into the title screen
-    // yet, just prepared: [[wire up play mode screen]] follow-up.
 #if defined(TARGET_NES)
     constexpr u8 kPlayModeOptions  = 2;
     constexpr u8 kPlayModeBoxWidth = 12;   // "MULTIPLAYER"
@@ -26,70 +22,19 @@ namespace title {
     constexpr u8 kPlayModeBoxWidth = 17;   // "LOCAL MULTIPLAYER"
 #endif
     static ui::choice::SingleChoice* pMenu = nullptr;
-    // Always the main menu widget, regardless of what pMenu currently points
-    // at -- mirrors pPlayMode below. Needed by nmi_handler_drawMenu (a free
-    // function, no access to main()'s local `menu`) to redraw the menu when
-    // B cancels back out of the play-mode picker.
     static ui::choice::SingleChoice* pMainMenu = nullptr;
-    // Kept alive for the lifetime of the title screen (not delete[]d after
-    // the first draw, unlike a one-shot dialog would be) so cancelling back
-    // from the play-mode picker can redraw it without regenerating chunks --
-    // nothing here needs destroying until a level actually loads.
     static buffer<u8*>* pMenuChunks = nullptr;
-    // Row-0 nametable address of the menu's draw position, precomputed once
-    // in main() -- see playModeAddr's own comment for why this is paid in
-    // ordinary code instead of inside nmi_handler_drawMenu.
     static u16 menuAddr;
 
-    // Play-mode picker: prepared (word-wrapped, optionAddr computed) at
-    // startup but not drawn until New Game/Continue is picked -- see
-    // nmi_handler_drawPlayMode.
     static ui::choice::SingleChoice* pPlayMode = nullptr;
-    // Kept alive for the title screen's lifetime -- see pMenuChunks' own
-    // comment; this is what lets B redraw the picker again after a
-    // cancel-then-reselect without remaking it.
     static buffer<u8*>* pPlayModeChunks = nullptr;
     static vec2<u16> playModePos;
-    // Row-0 nametable address for playModePos, precomputed in main()'s loop
-    // (ordinary context, a division there costs nothing worth avoiding) and
-    // read by nmi_handler_drawPlayMode via SingleChoice::Draw's address
-    // overload, so the ISR itself never pays CartesianToAddress's divide.
     static u16 playModeAddr;
-
-    // Row-0 nametable address of the menu's own arrow+text region (arrowCol,
-    // kBottomRightNT+1), precomputed in main() -- see playModeAddr's own
-    // comment for why this is paid once in ordinary code instead of inside
-    // nmi_handler_drawPlayMode, which uses it to blank the menu out before
-    // drawing the play-mode picker over the same rows.
     static u16 menuClearAddr;
-    // Row-0 nametable address of the play-mode picker's own arrow+text
-    // region -- same idea as menuClearAddr, mirrored, for
-    // nmi_handler_drawMenu to blank the picker out before redrawing the
-    // menu when B cancels back.
     static u16 playModeClearAddr;
-
-    // UI interaction write buffer, and its encoding/draining -- entirely
-    // this file's own decision, not SingleChoice's; see TitleSelect/
-    // TitleUnselect. 6 bytes: 2 ops (one erase-old + one draw-new write per
-    // Next()/Previous(), the only two VisualFn calls Pass() makes per call),
-    // 3 bytes each (addr-hi, addr-lo, val).
-    //
-    // Built in main()'s loop, NOT in nmi_handler: Pass() (and whatever
-    // TitleSelect/TitleUnselect cost) has zero business running inside the
-    // vblank-critical ISR when the whole point of buffering is to let that
-    // work happen somewhere it isn't time-boxed. nmi_handler's only job on
-    // this buffer is the cheap, fixed-cost part: drain whatever's already
-    // sitting in it.
     static u8 writeBuf[6];
-    // Bytes currently pending in writeBuf, published by main()'s loop after
-    // Pass() finishes building them and consumed (then reset to 0) by
-    // nmi_handler -- single-byte atomic write/read, so an NMI landing
-    // mid-build only ever sees either the previous complete count or 0,
-    // never a torn buffer.
     static atomic u8 writeBufLen = 0;
 
-    // Replays ops queued by WriteMenuOp between start and end, wherever
-    // it's actually safe to poke the PPU.
     static void DrainWriteBuf(const u8* start, const u8* end) {
         for (const u8* p = start; p < end; p += 3) {
             const int addr = (static_cast<int>(p[0]) << 8) | p[1];
@@ -105,8 +50,6 @@ namespace title {
     constexpr u16 kMenuNT = 32;
     constexpr u16 kBottomRightNT = 30;
 
-    // On-screen row where the IRQ crosses from the level (nametable 0) into
-    // the menu (nametable 1) -- see nmi_handler/ApplySplit.
     static u8 SplitRow() {
         return (((viewport_my() + 1) >> 1) - 2) << 2;
     }
@@ -115,9 +58,6 @@ namespace title {
         return video::viewport_py() - (static_cast<u16>(SplitRow()) << 3);
     }
 
-    // Mirrors level.cpp's kHUDSplitDelay -- same PAL-vs-NTSC IRQ-to-write
-    // latency. Safe at 0 on NTSC because ApplySplit is a plain $2005 write,
-    // not $2006 -- see its own comment.
     constexpr u8 kSplitDelay = REGION ? 90 : 0;
     static void ApplySplit();
 
@@ -139,10 +79,6 @@ namespace title {
         DrawLevelPreview();
         InitTitleScreen();
 
-        // Menu items -- all start at the same column, with a 1-tile gap from
-        // the right edge for the longest entry (NEW GAME/CONTINUE). Anchored
-        // to the bottom-right nametable's own top row, same as the title
-        // card and for the same reason.
         const u16 menuCol = kMenuNT + (viewport_mx() << 1) - 1 - kMenuBoxWidth;
         u8* initCursor = writeBuf;
         ui::choice::SingleChoice menu(TitleUnselect, TitleSelect, kMenuOptions);
@@ -158,28 +94,12 @@ namespace title {
             kMenuOptions,
             initCursor
         );
-        // Kept alive (not delete[]d) -- see pMenuChunks' own comment: a
-        // cancel-back via B needs to redraw this same content.
+
         pMenuChunks = menuChunks;
-        // Arrow sits 2 columns left of the text (see SingleChoice::Make's
-        // own comment) -- precompute the whole cleared region's row-0
-        // address here, once, for nmi_handler_drawPlayMode to blank later.
         menuClearAddr = ppu::CartesianToAddress({static_cast<u16>(menuCol - 2), static_cast<u16>(kBottomRightNT + 1)});
-        // Row-0 address of the menu's own draw position -- see menuAddr's
-        // own comment.
         menuAddr = ppu::CartesianToAddress({menuCol, static_cast<u16>(kBottomRightNT + 1)});
-        // Initial selection indicator: SingleChoice only queued it into
-        // writeBuf (see VisualFn) -- draining it here is safe because
-        // nothing's rendering yet (NMI isn't enabled until below).
         DrainWriteBuf(writeBuf, initCursor);
 
-        // Play-mode choice: prepared (word-wrapped, optionAddr computed)
-        // but not drawn -- see kPlayModeOptions/msg_playMode's own comments.
-        // Same row as the menu (drawn straight over that text later, see
-        // nmi_handler_drawPlayMode) but its own right-anchored column --
-        // its box is wider than the menu's ("LOCAL MULTIPLAYER" vs. "NEW
-        // GAME"), so reusing menuCol verbatim would run the box off the
-        // right edge of the viewport instead of fitting the text.
         const u16 playModeCol = kMenuNT + (viewport_mx() << 1) - 1 - kPlayModeBoxWidth;
         ui::choice::SingleChoice playMode(TitleUnselect, TitleSelect, kPlayModeOptions);
         playModePos = {playModeCol, static_cast<u16>(kBottomRightNT + 1)};
@@ -189,8 +109,7 @@ namespace title {
             {kPlayModeBoxWidth, kPlayModeOptions},
             chrHUDWhitespace_tile, 0
         );
-        // Row-0 address of the play-mode picker's own cleared region -- see
-        // playModeClearAddr's own comment.
+
         playModeClearAddr = ppu::CartesianToAddress({static_cast<u16>(playModeCol - 2), static_cast<u16>(kBottomRightNT + 1)});
         pPlayMode = &playMode;
         pMenu = &menu;
@@ -198,15 +117,9 @@ namespace title {
 
         ppu::SetScroll({0, 0xff});
         ppu::EnableRendering(ppu::ctrl::SPRITE_ADDR | ppu::ctrl::SPRITE_SIZE | ppu::ctrl::GEN_NMI, ppu::mask::BG_L | ppu::mask::SPRITE_L);
-
         irq::EnableInterrupts();
 
-        // Edge-detect state for the polling below -- local to main(), not
-        // shared with the ISR: polling doesn't touch the PPU, so it has no
-        // reason to run inside nmi_handler or to be published/consumed
-        // across the ISR boundary the way writeBuf is.
         u8 prevInputs = 0;
-
         while (true) {
             u8 port1, port2;
             input::PollControllers(&port1, &port2);
@@ -214,10 +127,6 @@ namespace title {
             const u8 pressed = inputs & static_cast<u8>(~prevInputs); // strobe: only the frame a button goes down
             prevInputs = inputs;
 
-            // Build this frame's pending selection-indicator writes here,
-            // outside the ISR -- see writeBuf/writeBufLen's own comments.
-            // Only touches writeBuf/writeBufLen if pMenu actually queues
-            // something (Pass() no-ops on anything but UP/DOWN).
             if (pMenu) {
                 u8* cursor = writeBuf;
                 pMenu->Pass(pressed, cursor);
@@ -225,22 +134,10 @@ namespace title {
             }
 
             if (pressed & input::A) {
-                // pMenu == pPlayMode once New Game/Continue has swapped input
-                // focus over to the player-count picker (see the case below)
-                // -- this A press is that picker's confirm, not the menu's.
-                // Option 0 is always "SinglePlayer" (see msg_playMode), any
-                // other option is a multiplayer variant.
                 if (pMenu == pPlayMode) {
 #ifdef PLAYER2_SUPPORTED
                     level::multiplayer = pPlayMode->option != 0;
 #endif
-                    // EnterLevelSetup does its nametable/CHR/palette writes
-                    // assuming rendering is already off (see its own comment:
-                    // "title leaves PPUCTRL's GEN_NMI bit set -- it only
-                    // clears PPUMASK on exit") -- GEN_NMI stays on so its
-                    // video::WaitForPresent() still works, only PPUMASK
-                    // clears here. Without this, those writes land mid-frame
-                    // while still visible, hence the corruption.
                     ppu::PPUMASK = 0;
                     gameMode = eGameModes::Level;
                     return;
@@ -249,19 +146,8 @@ namespace title {
                 switch (menu.option) {
                     case NewGame:
                     case Continue:
-                        // Show the player-count picker over the current menu
-                        // text instead of proceeding straight to gameplay --
-                        // actually starting the level once a mode is picked
-                        // is a follow-up, not wired up yet. One-shot NMI
-                        // swap, not a flag: see nmi_handler_drawPlayMode.
-                        // CartesianToAddress paid here, in ordinary code, not
-                        // inside the ISR -- see playModeAddr's own comment.
                         playModeAddr = ppu::CartesianToAddress(playModePos);
-                        pNMI = nmi_handler_drawPlayMode;
-                        // Input polling above dispatches through pMenu --
-                        // repoint it at the play-mode picker so UP/DOWN now
-                        // move its arrow instead of the old menu's (already
-                        // erased by nmi_handler_drawPlayMode's clear).
+                        pNMI  = nmi_handler_drawPlayMode;
                         pMenu = pPlayMode;
                         break;
 
@@ -278,14 +164,7 @@ namespace title {
                 }
             }
 
-            // Cancels back out of the play-mode picker to the main menu --
-            // only meaningful once New Game/Continue has swapped focus over
-            // (see the pMenu == pPlayMode check above); a no-op on the main
-            // menu itself. Just a redraw with some clearing, mirroring the
-            // forward transition: nothing is destroyed here, since both
-            // widgets' chunks are kept alive for the title screen's whole
-            // lifetime -- see pMenuChunks/pPlayModeChunks's own comments.
-            if ((pressed & input::B) && pMenu == pPlayMode) {
+            if (pressed & input::B && pMenu == pPlayMode) {
                 pNMI = nmi_handler_drawMenu;
                 pMenu = pMainMenu;
             }
@@ -293,24 +172,8 @@ namespace title {
             video::WaitForPresent();
             if (quit) return;
         }
-        // Only reachable via quit (PC targets) -- New Game/Continue leave the
-        // loop directly, from the pMenu == pPlayMode branch above, once a
-        // play mode is actually picked.
     }
 
-    // Arms the preview/menu split IRQ for this frame -- see ApplySplit.
-    // Reload value is latency-corrected the same way level.cpp's
-    // kHudSplitMMC3 is (the IRQ fires a few scanlines late relative to the
-    // reload count); position.y is the real target row, used as-is by the
-    // off-NES software rasterizer.
-    //
-    // Deliberately its own function, not folded into nmi_handler(): the IRQ
-    // must be re-armed every single frame regardless of which NMI variant
-    // is currently installed as pNMI, or it silently stops firing on
-    // whichever frame runs a variant that forgot to call it (exactly what
-    // happened when nmi_handler_drawPlayMode hand-reimplemented part of
-    // nmi_handler() instead of sharing this). Call it directly from every
-    // NMI variant, not through nmi_handler().
     static void ArmSplitIRQ() {
         const u16 splitPixelRow = static_cast<u16>(SplitRow()) << 3;
         constexpr u8 kSplitLatency = REGION ? 4 : 3;
@@ -320,14 +183,8 @@ namespace title {
     }
 
     void nmi_handler() {
-        // OAM DMA first: it needs to start as early into vblank as possible
-        // to finish before sprite evaluation, so nothing goes ahead of it.
         oam::RefreshSprites(OAMBuffer);
 
-        // writeBuf's actual contents are built in main()'s loop, not here --
-        // see writeBuf's own comment. This is the only part that has to run
-        // in the ISR: replay whatever's pending, then clear the count so a
-        // quiet frame (nothing newly queued) doesn't redrain stale bytes.
         if (writeBufLen) {
             DrainWriteBuf(writeBuf, writeBuf + writeBufLen);
             writeBufLen = 0;
@@ -338,17 +195,6 @@ namespace title {
         ArmSplitIRQ();
     }
 
-    // One-shot: installed as pNMI by main()'s loop when New Game/Continue is
-    // picked (see the switch there), instead of a flag polled every frame
-    // inside the steady-state handler above -- this way the draw actually
-    // runs unconditionally, on the very next vblank, as ordinary mainline
-    // code in its own handler, not a rarely-true branch buried in the
-    // handler that runs every other frame.
-    //
-    // Blanks the menu's old text and arrow out (WriteRepeatedToNameTable's
-    // address overload, using menuClearAddr precomputed in main() -- no
-    // division here), then draws the player-count picker over those same
-    // now-blank rows, and hands back to nmi_handler for every frame after.
     static void nmi_handler_drawPlayMode() {
         u16 clearAddr = menuClearAddr;
         for (u8 row = 0; row < kMenuOptions; row++) {
@@ -362,19 +208,10 @@ namespace title {
         DrainWriteBuf(indicatorBuf, cursor);
         ppu::SetScroll({0, PreviewScrollY()});
         ArmSplitIRQ();
-        // pPlayModeChunks is kept alive (not delete[]d) -- see its own
-        // comment: B cancelling back to the menu and then reselecting New
-        // Game/Continue needs to redraw this same content again.
 
         pNMI = nmi_handler;
     }
 
-    // One-shot: installed as pNMI when B cancels back out of the play-mode
-    // picker (see the input loop in main()). Exact mirror of
-    // nmi_handler_drawPlayMode above -- blanks the picker's old text/arrow
-    // out (using playModeClearAddr, precomputed in main()), then redraws the
-    // menu over those same rows from its still-alive chunks (pMenuChunks --
-    // never freed, see its own comment) and hands back to nmi_handler.
     static void nmi_handler_drawMenu() {
         u16 clearAddr = playModeClearAddr;
         for (u8 row = 0; row < kPlayModeOptions; row++) {
@@ -437,17 +274,8 @@ namespace title {
         ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(coinUI)), 1}, SIZED_OBJ(coinUI), 0);
 
         const u16 colsWide  = nColumns < viewport_mx() ? nColumns : viewport_mx();
-        // Floored to even: an attribute cell is a 2x2-metatile block, so an
-        // odd column count (the 3DS's 25 metatile-wide viewport) would leave
-        // a trailing half-block. Costs at most one preview column there.
         const u16 blockCols = colsWide & ~static_cast<u16>(1);
 
-        // Same streaming fill EnterLevelSetup uses to draw the real level
-        // view (see its own comment) -- reuses the level bank's metatile/
-        // attribute logic for the preview instead of a second, independent
-        // copy of it living here. blockCols counts metatile columns (2
-        // tiles wide each); PopulateNameTableColumns counts tile columns,
-        // same units as EnterLevelSetup's own viewport_tx()-based call.
         const u16 previewTileCols = static_cast<u16>(blockCols * 2);
         mmc3::CallInBlock<level_code_tag>([previewTileCols] {
             PopulateNameTableColumns(previewTileCols);

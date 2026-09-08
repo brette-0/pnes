@@ -171,6 +171,7 @@ EXTERN(_nes2_header)
 
 INCLUDE rompoke-table.ld
 INCLUDE dpcm.ld
+INCLUDE debug-log.ld
 
 /* Falls back to _start when nothing provides a real _reset (e.g. CMake's
  * own internal compiler-identification/ABI probes, which link a bare

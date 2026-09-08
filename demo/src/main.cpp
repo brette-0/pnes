@@ -9,6 +9,7 @@
 #include "modes/title.hpp"
 #include "modes/world.hpp"
 #include "banks.hpp"
+#include "platform-nes/logger.hpp"
 
 
 u8 scratchpad[2];
