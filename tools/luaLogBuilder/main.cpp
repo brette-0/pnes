@@ -164,20 +164,35 @@ struct Elf {
 
 // ---------------------------------------------------------------------
 // .pnes_log reader. Layout is hand-decoded to match logger.hpp's Entry
-// exactly (const char *file; u32 line; const char *message;) AS COMPILED
-// FOR THIS TARGET: llvm-mos pointers are 2 bytes (real 6502 hardware
-// addresses), so a pointer field holding one of this section's own fake
-// 0x04000000-based addresses is truncated to that address's low 16 bits --
-// which is exactly the byte offset from the section's own start, since
-// debug-log.ld pins the section's ORIGIN to 0x04000000 (zero low bits) for
-// precisely this reason. Confirmed against a real build: Entry symbols are
-// 8 bytes (2 + 4 + 2), not the 12 a native 4-byte-pointer host would guess.
+// exactly (const char *file; u32 line; const char *message; const Arg *args;
+// u8 arg_count;) AS COMPILED FOR THIS TARGET: llvm-mos pointers are 2 bytes
+// (real 6502 hardware addresses), so a pointer field holding one of this
+// section's own fake 0x04000000-based addresses is truncated to that
+// address's low 16 bits -- which is exactly the byte offset from the
+// section's own start, since debug-log.ld pins the section's ORIGIN to
+// 0x04000000 (zero low bits) for precisely this reason. Confirmed against a
+// real build: Entry symbols are 11 bytes (2 + 4 + 2 + 2 + 1), not the 17 a
+// native 4-byte-pointer, padded-struct host would guess -- this target
+// packs struct fields with no alignment padding at all.
+//
+// Arg::address is DIFFERENT: it's a real, live CPU address (e.g. somewhere
+// in NES RAM), not a .pnes_log-relative offset, since it must still be
+// meaningful to tools/logger.lua at emulation time, long after .pnes_log
+// itself has been discarded. It's read here as a plain 16-bit value, with
+// no offset math against the section's own base.
 // ---------------------------------------------------------------------
+
+struct LogArg {
+    u16 address = 0;
+    u8 size = 0;
+    bool is_signed = false;
+};
 
 struct LogEntry {
     std::string file;
     u32 line = 0;
     std::string message;
+    std::vector<LogArg> args;
 };
 
 std::vector<LogEntry> ReadPnesLog(const Elf &elf) {
@@ -191,18 +206,27 @@ std::vector<LogEntry> ReadPnesLog(const Elf &elf) {
 
     for (auto &sym : elf.symbols) {
         if (sym.name.find("_pnes_log_entry_") == std::string::npos) continue;
-        if (sym.size != 8) {
+        if (sym.size != 11) {
             std::cerr << "lua_log_builder: warning: " << sym.name
-                      << " is " << sym.size << " bytes, expected 8 -- skipping "
+                      << " is " << sym.size << " bytes, expected 11 -- skipping "
                       << "(logger.hpp's Entry layout and this tool's reader have drifted apart)\n";
             continue;
         }
-        const u32 fileOff = sec->offset + (sym.value - sec->addr);
-        const u8 *p = elf.data.data() + fileOff;
+        const u32 entryOff = sec->offset + (sym.value - sec->addr);
+        const u8 *p = elf.data.data() + entryOff;
         const u16 fileLow = Read16(p);
         const u32 line = Read32(p + 2);
         const u16 msgLow = Read16(p + 6);
-        out.push_back({ stringAt(fileLow), line, stringAt(msgLow) });
+        const u16 argsLow = Read16(p + 8);
+        const u8 argCount = p[10];
+
+        LogEntry entry{ stringAt(fileLow), line, stringAt(msgLow), {} };
+        const u8 *argBase = elf.data.data() + sec->offset + argsLow;
+        for (u8 i = 0; i < argCount; ++i) {
+            const u8 *a = argBase + i * 4;
+            entry.args.push_back({ Read16(a), a[2], a[3] != 0 });
+        }
+        out.push_back(std::move(entry));
     }
     return out;
 }
@@ -583,8 +607,17 @@ int main(int argc, char **argv) {
             std::cerr << "lua_log_builder: no log() call sites found (.pnes_log is empty or absent)\n";
         } else {
             std::cerr << "lua_log_builder: found " << entries.size() << " log() call site(s) in .pnes_log:\n";
-            for (auto &e : entries)
-                std::cerr << "  " << e.file << ":" << e.line << " \"" << e.message << "\"\n";
+            for (auto &e : entries) {
+                std::cerr << "  " << e.file << ":" << e.line << " \"" << e.message << "\"";
+                if (!e.args.empty()) {
+                    std::cerr << " (" << e.args.size() << " arg(s):";
+                    for (auto &a : e.args)
+                        std::cerr << " [addr=0x" << std::hex << a.address << std::dec
+                                  << " size=" << int(a.size) << (a.is_signed ? " signed]" : " unsigned]");
+                    std::cerr << ")";
+                }
+                std::cerr << "\n";
+            }
         }
 
         const std::vector<LineTable> lineTables = ParseDebugLine(elf);
@@ -625,7 +658,16 @@ int main(int argc, char **argv) {
 
             std::cerr << "lua_log_builder: " << e.file << ":" << e.line << " -> address 0x" << std::hex
                       << *address << std::dec << " (" << sec->name << ") -> lma " << *lma << "\n";
-            out << "  { lma = " << *lma << ", message = \"" << LuaEscape(e.message) << "\" },\n";
+            out << "  { lma = " << *lma << ", message = \"" << LuaEscape(e.message) << "\"";
+            if (!e.args.empty()) {
+                out << ", args = {";
+                for (auto &a : e.args) {
+                    out << " { address = " << a.address << ", size = " << int(a.size)
+                        << ", signed = " << (a.is_signed ? "true" : "false") << " },";
+                }
+                out << " }";
+            }
+            out << " },\n";
             ++resolved;
         }
 

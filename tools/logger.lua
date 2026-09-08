@@ -1,4 +1,4 @@
-﻿ll-- logger.lua -- fixed, reusable Mesen script. Not regenerated per build; the
+﻿-- logger.lua -- fixed, reusable Mesen script. Not regenerated per build; the
 -- host-side `logger` tool (see tools/logger/, once written) regenerates
 -- logdata.lua next to this file after every NES build instead.
 --
@@ -50,7 +50,7 @@ local function tryLoadLogData()
         return false, "logdata.lua did not return a table"
     end
     for _, entry in ipairs(entries) do
-        logByLma[entry.lma] = entry.message
+        logByLma[entry.lma] = entry
     end
     emu.log("app: found " .. logDataPath() .. " -- " .. #entries .. " log point(s) active.")
 
@@ -130,14 +130,46 @@ end
 
 refreshWindowMap()
 
+-- log()'s %-args (see logger.hpp) are never formatted on NES -- only an
+-- address/size/signedness triple survives into logdata.lua. The actual
+-- value only exists here, read live out of Mesen's own memory the instant
+-- the log point fires, which is also the only way it CAN be read: NES RAM
+-- isn't bank-switched the way the PRG-ROM code windows are (see
+-- refreshWindowMap above), so entry.args[i].address is used directly, with
+-- no LMA-style resolution needed.
+local function readArgValue(arg)
+    if arg.size == 1 then return emu.read(arg.address, emu.memType.nesMemory, arg.signed)
+    elseif arg.size == 2 then return emu.read16(arg.address, emu.memType.nesMemory, arg.signed)
+    else return emu.read32(arg.address, emu.memType.nesMemory, arg.signed)
+    end
+end
+
+-- Replaces each %d/%u/%x/%X in order with the next arg's live value.
+-- Anything else in the format string (including a stray leftover specifier
+-- if fewer args were logged than specifiers appear) passes through as-is.
+local function formatMessage(message, args)
+    if not args or #args == 0 then return message end
+    local i = 0
+    return (message:gsub("%%[duxX]", function(spec)
+        i = i + 1
+        local arg = args[i]
+        if not arg then return spec end
+        local value = readArgValue(arg)
+        if spec == "%x" then return string.format("%x", value) end
+        if spec == "%X" then return string.format("%X", value) end
+        return tostring(value)
+    end))
+end
+
 local function onExec(address)
     local index  = math.floor((address - WINDOW_BASE) / WINDOW_SIZE)
     local base   = windowLmaBase[index]
     if not base then return end
 
     local lma = base + ((address - WINDOW_BASE) % WINDOW_SIZE)
-    local message = logByLma[lma]
-    if message then
+    local entry = logByLma[lma]
+    if entry then
+        local message = formatMessage(entry.message, entry.args)
         emu.log("log: " .. message)
         emu.displayMessage("log", message)
     end

@@ -45,6 +45,7 @@ RESET {
     });
 
     while (!quit) {
+        log("Switched Game Mode: %d", gameMode);
         switch (gameMode) {
             case eGameModes::Level:
                 mmc3::CallInBlock<level_code_tag>(level::main);
