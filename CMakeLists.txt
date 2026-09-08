@@ -346,7 +346,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # ------------------------------------------------------------------
     # lua_log_builder: reads log()'s zero-footprint metadata back out of the
     # linked demo.elf (see include/platform-nes/logger.hpp) and writes
-    # logdata.lua next to demo.nes for tools/logger.lua to load in Mesen.
+    # logdata.lua next to demo.nes for tools/pnes.lua to load in Mesen.
     #
     # HOST-NATIVE, NOT CROSS-COMPILED: this whole configuration's own
     # CMAKE_C_COMPILER/CMAKE_CXX_COMPILER are the 6502 cross-compiler (see
@@ -586,7 +586,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     add_dependencies(platform-nes lua_log_builder_tool)
 
     # Unconditional, in every build type -- not just nes-debug. log()'s whole
-    # LMA-resolution scheme (include/platform-nes/logger.hpp, tools/logger.lua)
+    # LMA-resolution scheme (include/platform-nes/logger.hpp, tools/pnes.lua)
     # depends on DWARF's .debug_line table to turn a log() call site's
     # __FILE__/__LINE__ into a real address; without -g that table doesn't
     # exist and every log point silently resolves to nothing. This costs
@@ -732,7 +732,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # tools/luaLogBuilder/main.cpp's own header comments for the whole
     # design -- this just runs the already-built host tool (see
     # lua_log_builder_tool, above) against the ELF this link just produced,
-    # writing logdata.lua next to demo.nes itself (where tools/logger.lua
+    # writing logdata.lua next to demo.nes itself (where tools/pnes.lua
     # expects to find it -- it resolves the path from the running ROM's own
     # location, not a fixed one). add_dependencies() ensures the tool exists
     # before this runs even on a from-clean build.

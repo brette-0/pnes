@@ -168,7 +168,15 @@ local function onExec(address)
 
     local lma = base + ((address - WINDOW_BASE) % WINDOW_SIZE)
     local entry = logByLma[lma]
-    if entry then
+    if not entry then return end
+
+    if entry.kind == "pause" then
+        -- pause() (logger.hpp) is unconditional on NES -- this is the only
+        -- place it ever has any effect, same as log(). No formatting, no
+        -- overlay message: just stop, right here, right now.
+        emu.log("app: pause() hit at " .. entry.file .. ":" .. entry.line)
+        emu.breakExecution()
+    else
         local message = formatMessage(entry.message, entry.args)
         emu.log("log: " .. message)
         emu.displayMessage("log", message)

@@ -1,5 +1,5 @@
 // lua_log_builder -- reads a linked NES demo.elf (llvm-mos, ELF32) and writes
-// logdata.lua next to the shipped demo.nes ROM, for tools/logger.lua to load
+// logdata.lua next to the shipped demo.nes ROM, for tools/pnes.lua to load
 // in Mesen. See include/platform-nes/logger.hpp for what it's reading and
 // why: log() call sites cost zero ROM bytes, so the only trace of them is
 // (a) compiler-generated (file, line, message) metadata sitting in the
@@ -165,22 +165,26 @@ struct Elf {
 // ---------------------------------------------------------------------
 // .pnes_log reader. Layout is hand-decoded to match logger.hpp's Entry
 // exactly (const char *file; u32 line; const char *message; const Arg *args;
-// u8 arg_count;) AS COMPILED FOR THIS TARGET: llvm-mos pointers are 2 bytes
-// (real 6502 hardware addresses), so a pointer field holding one of this
-// section's own fake 0x04000000-based addresses is truncated to that
+// u8 arg_count; u8 kind;) AS COMPILED FOR THIS TARGET: llvm-mos pointers are
+// 2 bytes (real 6502 hardware addresses), so a pointer field holding one of
+// this section's own fake 0x04000000-based addresses is truncated to that
 // address's low 16 bits -- which is exactly the byte offset from the
 // section's own start, since debug-log.ld pins the section's ORIGIN to
 // 0x04000000 (zero low bits) for precisely this reason. Confirmed against a
-// real build: Entry symbols are 11 bytes (2 + 4 + 2 + 2 + 1), not the 17 a
-// native 4-byte-pointer, padded-struct host would guess -- this target
+// real build: Entry symbols are 12 bytes (2 + 4 + 2 + 2 + 1 + 1), not the 18
+// a native 4-byte-pointer, padded-struct host would guess -- this target
 // packs struct fields with no alignment padding at all.
 //
 // Arg::address is DIFFERENT: it's a real, live CPU address (e.g. somewhere
 // in NES RAM), not a .pnes_log-relative offset, since it must still be
-// meaningful to tools/logger.lua at emulation time, long after .pnes_log
+// meaningful to tools/pnes.lua at emulation time, long after .pnes_log
 // itself has been discarded. It's read here as a plain 16-bit value, with
 // no offset math against the section's own base.
 // ---------------------------------------------------------------------
+
+// Mirrors logger.hpp's PNES_LOG_KIND_LOG/PNES_LOG_KIND_PAUSE exactly.
+constexpr u8 PNES_LOG_KIND_LOG = 0;
+constexpr u8 PNES_LOG_KIND_PAUSE = 1;
 
 struct LogArg {
     u16 address = 0;
@@ -193,12 +197,13 @@ struct LogEntry {
     u32 line = 0;
     std::string message;
     std::vector<LogArg> args;
+    u8 kind = PNES_LOG_KIND_LOG;
 };
 
 std::vector<LogEntry> ReadPnesLog(const Elf &elf) {
     const Section *sec = elf.FindSection(".pnes_log");
     std::vector<LogEntry> out;
-    if (!sec) return out; // no log() calls anywhere in this build
+    if (!sec) return out; // no log()/pause() calls anywhere in this build
 
     auto stringAt = [&](u16 lowOffset) {
         return ReadCString(elf.data, sec->offset + lowOffset);
@@ -206,9 +211,9 @@ std::vector<LogEntry> ReadPnesLog(const Elf &elf) {
 
     for (auto &sym : elf.symbols) {
         if (sym.name.find("_pnes_log_entry_") == std::string::npos) continue;
-        if (sym.size != 11) {
+        if (sym.size != 12) {
             std::cerr << "lua_log_builder: warning: " << sym.name
-                      << " is " << sym.size << " bytes, expected 11 -- skipping "
+                      << " is " << sym.size << " bytes, expected 12 -- skipping "
                       << "(logger.hpp's Entry layout and this tool's reader have drifted apart)\n";
             continue;
         }
@@ -219,8 +224,9 @@ std::vector<LogEntry> ReadPnesLog(const Elf &elf) {
         const u16 msgLow = Read16(p + 6);
         const u16 argsLow = Read16(p + 8);
         const u8 argCount = p[10];
+        const u8 kind = p[11];
 
-        LogEntry entry{ stringAt(fileLow), line, stringAt(msgLow), {} };
+        LogEntry entry{ stringAt(fileLow), line, stringAt(msgLow), {}, kind };
         const u8 *argBase = elf.data.data() + sec->offset + argsLow;
         for (u8 i = 0; i < argCount; ++i) {
             const u8 *a = argBase + i * 4;
@@ -604,11 +610,12 @@ int main(int argc, char **argv) {
 
         const std::vector<LogEntry> entries = ReadPnesLog(elf);
         if (entries.empty()) {
-            std::cerr << "lua_log_builder: no log() call sites found (.pnes_log is empty or absent)\n";
+            std::cerr << "lua_log_builder: no log()/pause() call sites found (.pnes_log is empty or absent)\n";
         } else {
-            std::cerr << "lua_log_builder: found " << entries.size() << " log() call site(s) in .pnes_log:\n";
+            std::cerr << "lua_log_builder: found " << entries.size() << " log()/pause() call site(s) in .pnes_log:\n";
             for (auto &e : entries) {
-                std::cerr << "  " << e.file << ":" << e.line << " \"" << e.message << "\"";
+                std::cerr << "  " << e.file << ":" << e.line << " "
+                          << (e.kind == PNES_LOG_KIND_PAUSE ? "[pause]" : "\"" + e.message + "\"");
                 if (!e.args.empty()) {
                     std::cerr << " (" << e.args.size() << " arg(s):";
                     for (auto &a : e.args)
@@ -658,7 +665,11 @@ int main(int argc, char **argv) {
 
             std::cerr << "lua_log_builder: " << e.file << ":" << e.line << " -> address 0x" << std::hex
                       << *address << std::dec << " (" << sec->name << ") -> lma " << *lma << "\n";
-            out << "  { lma = " << *lma << ", message = \"" << LuaEscape(e.message) << "\"";
+            out << "  { lma = " << *lma
+                << ", kind = \"" << (e.kind == PNES_LOG_KIND_PAUSE ? "pause" : "log") << "\""
+                << ", file = \"" << LuaEscape(e.file) << "\""
+                << ", line = " << e.line
+                << ", message = \"" << LuaEscape(e.message) << "\"";
             if (!e.args.empty()) {
                 out << ", args = {";
                 for (auto &a : e.args) {

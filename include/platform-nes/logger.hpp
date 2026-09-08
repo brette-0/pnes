@@ -16,7 +16,7 @@
  * then resolves that address to a flat, bank-switching-agnostic PRG-ROM
  * offset using nothing but standard ELF section metadata (see this
  * project's design notes -- this step needs no mapper-specific knowledge).
- * tools/logger.lua then prints the message in Mesen whenever the CPU
+ * tools/pnes.lua then prints the message in Mesen whenever the CPU
  * actually reaches that physical location, regardless of which mapper is in
  * play or which bank currently occupies that CPU window.
  *
@@ -39,7 +39,7 @@ namespace log_detail {
  *
  * Never the VALUE -- log() itself never reads or formats anything on NES.
  * `address` is a real, live CPU address (RAM/zero-page/WRAM), not a
- * .pnes_log offset like Entry::file/message are: tools/logger.lua reads it
+ * .pnes_log offset like Entry::file/message are: tools/pnes.lua reads it
  * straight out of Mesen's own memory when the log point fires. That's only
  * possible because `address` is fixed at link time, which means `value` in
  * ::MakeArg must be a real object with static storage duration (a global or
@@ -70,6 +70,7 @@ struct Entry {
     const char *message;
     const Arg *args;
     u8 arg_count;
+    u8 kind; // PNES_LOG_KIND_LOG or PNES_LOG_KIND_PAUSE
 };
 
 /// See ::Arg's own header comment for why `value` must be a fixed-address
@@ -99,6 +100,11 @@ constexpr Arg MakeArg(const volatile T &value) {
 #define PNES_LOG_TEXT(name, text) \
     static const char name[] __attribute__((section(".pnes_log"), used)) = text
 
+// Entry::kind values -- see tools/pnes.lua for how each is handled: a log
+// entry gets formatted and printed, a pause entry halts emulation instead.
+#define PNES_LOG_KIND_LOG   0
+#define PNES_LOG_KIND_PAUSE 1
+
 // Counts __VA_ARGS__ (0 through 8). The leading `dummy` absorbs the
 // zero-args case, where __VA_OPT__ contributes no comma and __VA_ARGS__
 // contributes no tokens at all.
@@ -125,7 +131,7 @@ constexpr Arg MakeArg(const volatile T &value) {
  * log("plain message") works exactly as before. log("hp=%d", hp) also
  * captures hp's address/size/signedness (see ::log_detail::MakeArg) into
  * .pnes_log, right beside the format string -- nothing is ever formatted on
- * NES itself; tools/logger.lua reads hp's LIVE value out of Mesen's own
+ * NES itself; tools/pnes.lua reads hp's LIVE value out of Mesen's own
  * memory and interpolates it there when this line actually executes.
  *
  * __COUNTER__ is captured once via the id parameter (expanded as an
@@ -136,10 +142,21 @@ constexpr Arg MakeArg(const volatile T &value) {
  * The Arg array always has a trailing dummy element even with zero real
  * args, so it's never a zero-size array (ill-formed) and Entry::args is
  * always a valid, non-null pointer -- Entry::arg_count (not the array's own
- * size) is what tools/logger.lua actually trusts.
+ * size) is what tools/pnes.lua actually trusts.
  */
-#define log(msg, ...) PNES_LOG_IMPL(msg, __COUNTER__, __VA_ARGS__)
-#define PNES_LOG_IMPL(msg, id, ...)                                             \
+#define log(msg, ...) \
+    PNES_LOG_IMPL(PNES_LOG_KIND_LOG, msg, __COUNTER__ __VA_OPT__(,) __VA_ARGS__)
+
+/**
+ * @brief Halts emulation the instant this line executes. See this file's
+ * own header comment. Always on, on NES, same as log() -- gating a debug
+ * aid behind a build type would leave it silently absent from a release
+ * ROM's actual behavior; see tools/pnes.lua for how emu.breakExecution()
+ * is invoked once this call site's LMA is reached.
+ */
+#define pause() PNES_LOG_IMPL(PNES_LOG_KIND_PAUSE, "", __COUNTER__)
+
+#define PNES_LOG_IMPL(kind, msg, id, ...)                                       \
     do {                                                                        \
         PNES_LOG_TEXT(PNES_LOG_CAT(_pnes_log_file_, id), __FILE__);             \
         PNES_LOG_TEXT(PNES_LOG_CAT(_pnes_log_msg_, id), msg);                   \
@@ -154,7 +171,8 @@ constexpr Arg MakeArg(const volatile T &value) {
                 __LINE__,                                                       \
                 PNES_LOG_CAT(_pnes_log_msg_, id),                               \
                 PNES_LOG_CAT(_pnes_log_args_, id),                              \
-                static_cast<u8>(PNES_LOG_NARG(__VA_ARGS__))                     \
+                static_cast<u8>(PNES_LOG_NARG(__VA_ARGS__)),                    \
+                static_cast<u8>(kind)                                          \
             };                                                                  \
     } while (0)
 
@@ -163,6 +181,7 @@ constexpr Arg MakeArg(const volatile T &value) {
 #include <iostream>
 #include <utility>
 #include <type_traits>
+#include "console.hpp"
 
 namespace log_detail {
 
@@ -198,7 +217,7 @@ inline void LogFormat(const char *fmt) {
 /// just happens immediately via operator<< -- no address/size/signedness
 /// capture needed (contrast ::MakeArg on the NES side, where nothing can be
 /// read until Mesen gets around to it). %x/%X get hex formatting to match
-/// what tools/logger.lua produces for the same specifier on the NES side;
+/// what tools/pnes.lua produces for the same specifier on the NES side;
 /// everything else (%d, %u, ...) is just the value's own default formatting.
 template <typename T, typename... Rest>
 void LogFormat(const char *fmt, T &&value, Rest &&...rest) {
@@ -226,16 +245,31 @@ void LogFormat(const char *fmt, T &&value, Rest &&...rest) {
 /// not lazily from the first log() call, so a console is guaranteed to
 /// exist by the time ANY log() call runs, even a run that only calls it
 /// once, deep into the game.
-/// "log: " matches tools/logger.lua's own prefix for a log() message on the
+/// "log: " matches tools/pnes.lua's own prefix for a log() message on the
 /// NES/Mesen side -- there's no "app: " counterpart here, since there's no
 /// separate loader/tool step on this path to have diagnostics of its own.
 #define log(msg, ...) \
     ((std::cout << "log: "), ::log_detail::LogFormat(msg __VA_OPT__(,) __VA_ARGS__), (std::cout << '\n'))
 
+/// Off NES, debug builds only, mirroring log()'s own gating -- prints a
+/// notice and blocks for a single keypress via ::tech::WaitForKeypress()
+/// (console.hpp), which puts the terminal in raw mode so Enter isn't
+/// required. NOTE: WaitForKeypress() reads real stdin, which is NOT the
+/// synthesized terminal ::tech::EnsureConsoleOnce() may have spawned for
+/// stdOUT -- that terminal's `tail -f` isn't interactive. pause() therefore
+/// only works as intended when this process was launched from a real
+/// terminal to begin with; otherwise it blocks on whatever the original
+/// (non-interactive) stdin actually is.
+#define pause() \
+    ((std::cout << "log: pause() hit at " << __FILE__ << ":" << __LINE__ \
+                 << " -- press any key to continue...\n" << std::flush), \
+     ::tech::WaitForKeypress())
+
 #else
 
-/// Off NES, release build: log() costs nothing and prints nothing, same as
-/// the NES side always does.
+/// Off NES, release build: log()/pause() cost nothing and do nothing, same
+/// as the NES side always does.
 #define log(msg, ...) ((void)0)
+#define pause() ((void)0)
 
 #endif

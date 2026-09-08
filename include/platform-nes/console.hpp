@@ -41,6 +41,7 @@
 #if defined(_WIN32)
 #include <io.h>
 #include <windows.h>
+#include <conio.h>
 #else
 #include <cstdlib>
 #include <string>
@@ -48,6 +49,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <spawn.h>
+#include <termios.h>
 extern char **environ;
 #endif
 
@@ -72,6 +74,12 @@ inline void PlatformEnsureConsole() {
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
+}
+
+/// Blocks for exactly one keypress -- no Enter required. _getch() reads
+/// directly from the console input buffer, bypassing normal line buffering.
+inline void WaitForKeypress() {
+    _getch();
 }
 
 #else // POSIX: Linux/macOS
@@ -168,6 +176,33 @@ inline void PlatformEnsureConsole() {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
 }
 
+/**
+ * @brief Blocks for exactly one keypress -- no Enter required.
+ *
+ * Puts the terminal into raw mode (no line buffering, no local echo) for
+ * the duration of a single blocking read(), then restores whatever mode it
+ * found. If stdin isn't a real terminal at all (tcgetattr fails -- e.g. the
+ * process was launched with stdin piped from somewhere, or closed), there's
+ * no raw mode to enter, so this just blocks on a single byte from whatever
+ * stdin actually is.
+ */
+inline void WaitForKeypress() {
+    termios oldAttrs{};
+    if (tcgetattr(STDIN_FILENO, &oldAttrs) != 0) {
+        char c;
+        read(STDIN_FILENO, &c, 1);
+        return;
+    }
+    termios raw = oldAttrs;
+    raw.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+    char c;
+    read(STDIN_FILENO, &c, 1);
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldAttrs);
+}
+
 #endif // POSIX
 
 /// Ensures stdout/stderr are visible somewhere: a no-op in release builds,
@@ -188,6 +223,7 @@ inline void EnsureConsoleOnce() {
 namespace tech {
 /// Release build, or a platform this doesn't apply to: fully inert.
 inline void EnsureConsoleOnce() {}
+inline void WaitForKeypress() {}
 } // namespace tech
 
 #endif
