@@ -1,6 +1,19 @@
 #pragma once
 #include <platform-nes/platform-nes.hpp>
 
+// See logger.hpp for what this configures. Both attributes are required, not
+// just `used`: nothing on NES ever reads this, so a real link's --gc-sections
+// pass drops it anyway unless it's KEEP()'d -- reusing .pnes_log (see
+// src/nes/mappers/debug-log.ld) gets that for free, matching logger.cpp's own
+// default definition's placement.
+//
+// NOT constexpr, despite the constant initializer (IDEs will suggest it):
+// lua_log_builder reads this byte back out of the linked .elf's storage --
+// constexpr tells the compiler no runtime object is ever needed, which is
+// exactly the reasoning gc-sections/LTO would use to discard it again, used
+// and section() notwithstanding.
+inline const u8 silentHeapAmount __attribute__((used, section(".pnes_log"))) = 0;
+
 enum class eGameModes : u8 {
     Title,  // title screen
     World,  // world map, level select

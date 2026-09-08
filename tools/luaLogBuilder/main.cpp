@@ -94,6 +94,8 @@ struct Symbol {
 constexpr u32 SHT_SYMTAB = 2;
 constexpr u32 SHT_STRTAB = 3;
 constexpr u32 SHF_ALLOC = 0x2;
+constexpr u16 SHN_UNDEF = 0;
+constexpr u16 SHN_ABS = 0xfff1;
 
 struct Elf {
     std::vector<u8> data;
@@ -159,6 +161,28 @@ struct Elf {
 
     std::optional<u32> FindSymbolValue(const std::string &name) const {
         for (auto &s : symbols) if (s.name == name) return s.value;
+        return std::nullopt;
+    }
+
+    /// Reads a real, initialized C object's byte value straight out of the
+    /// section that backs it -- for a genuine data symbol (some section
+    /// index, not SHN_ABS/SHN_UNDEF), `value` is its address, not its
+    /// content, so this looks up that section and indexes into the ELF's own
+    /// bytes at the matching file offset. Used for silentHeapAmount
+    /// (logger.hpp/logger.cpp), which is real, weak-by-default C++ storage a
+    /// project can override -- unlike __stack/__heap_start and friends,
+    /// which are address-only linker constants with no storage at all (see
+    /// FindSymbolValue above for those).
+    std::optional<u8> FindSymbolByteValue(const std::string &name) const {
+        for (auto &s : symbols) {
+            if (s.name != name) continue;
+            if (s.shndx == SHN_UNDEF || s.shndx == SHN_ABS || s.shndx >= sections.size()) return std::nullopt;
+            const Section &sec = sections[s.shndx];
+            if (s.value < sec.addr) return std::nullopt;
+            const u32 fileOff = sec.offset + (s.value - sec.addr);
+            if (fileOff >= data.size()) return std::nullopt;
+            return data[fileOff];
+        }
         return std::nullopt;
     }
 
@@ -665,11 +689,20 @@ int main(int argc, char **argv) {
         const auto heapStart = elf.FindSymbolValue("__heap_start");
         const auto heapSize = elf.FindSymbolValue("__heap_default_limit");
         if (stackTop && stackBottom && heapStart && heapSize) {
+            // Not required like the four above: a build predating this knob
+            // (or one whose logger.cpp got fully dead-stripped -- see
+            // logger.hpp's own comment on silentHeapAmount) simply has no
+            // such symbol. Falls back to heapSize itself (fully silent until
+            // a project opts in), matching logger.cpp's own weak default.
+            const u32 silentHeapAmount = elf.FindSymbolByteValue("silentHeapAmount").value_or(static_cast<u8>(std::min<u32>(*heapSize, 255)));
+
             std::cerr << "lua_log_builder: memory layout -- stack [0x" << std::hex << *stackBottom
                       << ", 0x" << *stackTop << "], heap [0x" << *heapStart << ", 0x"
-                      << (*heapStart + *heapSize - 1) << std::dec << "]\n";
+                      << (*heapStart + *heapSize - 1) << "], silentHeapAmount 0x" << silentHeapAmount
+                      << std::dec << "\n";
             out << "return { memory = { stackTop = " << *stackTop << ", stackBottom = " << *stackBottom
-                << ", heapStart = " << *heapStart << ", heapSize = " << *heapSize << " }, logs = {\n";
+                << ", heapStart = " << *heapStart << ", heapSize = " << *heapSize
+                << ", silentHeapAmount = " << silentHeapAmount << " }, logs = {\n";
         } else {
             std::cerr << "lua_log_builder: warning: __stack/__static_writeable_end/__heap_start/"
                          "__heap_default_limit not all present in " << args.elfPath
