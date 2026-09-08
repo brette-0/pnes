@@ -20,6 +20,137 @@
 -- The hashtable onExec actually checks against, keyed by LMA.
 local logByLma = {}
 
+-- Populated from logdata.lua's `memory` table (see tools/luaLogBuilder/
+-- main.cpp) once it loads -- nil until then, and permanently nil for a build
+-- that has no stack/heap reservation to report.
+local memoryLayout = nil
+
+-- ---------------------------------------------------------------------
+-- C-stack high-water mark + heap touch-bitfield tracking. Defined here,
+-- ahead of tryLoadLogData below, because tryLoadLogData calls
+-- startMemoryTracking the moment logdata.lua's `memory` table loads --
+-- which can happen on this script's very first, synchronous attempt if
+-- logdata.lua is already sitting there from an earlier build.
+--
+-- The C stack pointer, on every mos-platform target including this one, is
+-- the 16-bit little-endian pair at CPU zero-page $00/$01 ("imaginary
+-- register 0") -- confirmed against a real build's __do_init_stack, which
+-- stores __stack's low/high bytes there before main() ever runs. It grows
+-- DOWN from stackTop, same top-of-region convention as demo/link.ld's own
+-- __stack comment.
+--
+-- Watching writes to $00/$01 (rather than sampling once a frame) catches a
+-- genuine all-time-high the instant it happens, including a deep call chain
+-- that both descends and returns within a single frame -- a once-per-frame
+-- sample would silently miss that.
+-- ---------------------------------------------------------------------
+
+-- Returns a `reset` function: tryLoadLogData calls it right when its own
+-- deferred emu.reset() fires, so whatever ran between Mesen attaching this
+-- script and that reset (already-discarded, pre-power-on-observed activity)
+-- doesn't inflate the high-water mark before real measurement even starts.
+local function startStackTracking(stackTop, stackBottom)
+    local totalBytes = stackTop - stackBottom + 1
+    local maxDepth = 0
+
+    local function onStackPointerWrite()
+        local sp = emu.read16(0, emu.memType.nesMemory)
+        -- $00/$01 is two independent 8-bit writes, so a low-byte store that
+        -- carries into the high byte is briefly visible here as a bogus
+        -- combined value (e.g. high byte not yet decremented) -- reject
+        -- anything outside the known stack region rather than treat it as a
+        -- real new low point.
+        if sp > stackTop or sp < stackBottom then return end
+
+        local depth = stackTop - sp
+        if depth > maxDepth then
+            maxDepth = depth
+            local pct = math.floor(100 * maxDepth / totalBytes)
+            emu.log(string.format("cstack: new high-water mark -- %d/%d bytes (%d%%)",
+                maxDepth, totalBytes, pct))
+        end
+    end
+
+    emu.addMemoryCallback(onStackPointerWrite, emu.callbackType.write,
+        0, 1, emu.cpuType.nes, emu.memType.nesMemory)
+
+    return function() maxDepth = 0 end
+end
+
+-- Heap: one boolean per reserved byte, set the first time that byte is ever
+-- written. A bit staying set after malloc's free() reuses that byte is
+-- intentional, not a bug -- this bitfield tracks cumulative footprint ever
+-- touched (the real answer to "how big does the heap reservation need to
+-- be"), not bytes live right now. Spotting live fragmentation would mean
+-- walking the allocator's own free list instead; not attempted here.
+
+-- Run-length-encodes `touched` into alternating used/empty runs, e.g.
+-- "u(28) e(50) u(50)" for a 128-byte heap touched at both ends but not the
+-- middle. Also returns how many separate used runs there are -- more than
+-- one means the touched bytes aren't contiguous, i.e. there's a gap of
+-- never-touched bytes sitting between two used ones.
+local function heapRunLengthEncoding(touched, heapSize)
+    local parts = {}
+    local usedRuns = 0
+    local i = 1
+    while i <= heapSize do
+        local isUsed = touched[i] or false
+        local runStart = i
+        repeat i = i + 1 until i > heapSize or (touched[i] or false) ~= isUsed
+        local runLen = i - runStart
+        if isUsed then usedRuns = usedRuns + 1 end
+        parts[#parts + 1] = string.format("%s(%d)", isUsed and "u" or "e", runLen)
+    end
+    return table.concat(parts, " "), usedRuns
+end
+
+-- Returns a `reset` function; see startStackTracking's comment above for why.
+local function startHeapTracking(heapStart, heapSize)
+    local touched = {}
+    local touchedCount = 0
+
+    local function onHeapWrite(address)
+        local offset = address - heapStart + 1
+        if touched[offset] then return end
+        touched[offset] = true
+        touchedCount = touchedCount + 1
+
+        emu.log(string.format("app: heap usage %d bytes", touchedCount))
+
+        local pattern, usedRuns = heapRunLengthEncoding(touched, heapSize)
+        if usedRuns > 1 then
+            emu.log("app: heap frag " .. pattern)
+        end
+
+        if touchedCount == heapSize then
+            emu.log("app: heap exhausted -- every reserved byte has now been touched at least "
+                .. "once; grow __heap_default_limit (see demo/link.ld) or reduce allocations.")
+        end
+    end
+
+    emu.addMemoryCallback(onHeapWrite, emu.callbackType.write,
+        heapStart, heapStart + heapSize - 1, emu.cpuType.nes, emu.memType.nesMemory)
+
+    return function()
+        touched = {}
+        touchedCount = 0
+    end
+end
+
+-- Returns a `reset` function combining both trackers', for tryLoadLogData to
+-- call once its own deferred power-on reset actually fires.
+local function startMemoryTracking(memory)
+    emu.log(string.format("app: memory tracking active -- stack [0x%x, 0x%x] (%d bytes), heap [0x%x, 0x%x] (%d bytes)",
+        memory.stackBottom, memory.stackTop, memory.stackTop - memory.stackBottom + 1,
+        memory.heapStart, memory.heapStart + memory.heapSize - 1, memory.heapSize))
+    local resetStack = startStackTracking(memory.stackTop, memory.stackBottom)
+    local resetHeap = startHeapTracking(memory.heapStart, memory.heapSize)
+    return function()
+        resetStack()
+        resetHeap()
+    end
+end
+
 -- dofile is gated behind the script's "Allow access to I/O and OS functions"
 -- option -- there's no separate API to ask whether that's enabled, so the
 -- only way to find out is to actually try it. Mesen doesn't reload a running
@@ -42,17 +173,25 @@ local function logDataPath()
 end
 
 local function tryLoadLogData()
-    local ok, entries = pcall(dofile, logDataPath())
+    local ok, root = pcall(dofile, logDataPath())
     if not ok then
-        return false, entries -- entries is the pcall error message here
+        return false, root -- root is the pcall error message here
     end
-    if type(entries) ~= "table" then
-        return false, "logdata.lua did not return a table"
+    if type(root) ~= "table" or type(root.logs) ~= "table" then
+        return false, "logdata.lua did not return { logs = {...} }"
     end
-    for _, entry in ipairs(entries) do
+    for _, entry in ipairs(root.logs) do
         logByLma[entry.lma] = entry
     end
-    emu.log("app: found " .. logDataPath() .. " -- " .. #entries .. " log point(s) active.")
+    emu.log("app: found " .. logDataPath() .. " -- " .. #root.logs .. " log point(s) active.")
+
+    local resetMemoryTracking = nil
+    if root.memory then
+        memoryLayout = root.memory
+        resetMemoryTracking = startMemoryTracking(memoryLayout)
+    else
+        emu.log("app: logdata.lua has no `memory` table -- stack/heap tracking disabled for this build.")
+    end
 
     -- MesenCE only loads a script once the ROM is already running, so any log
     -- point hit before this point is unavoidably missed -- reset once, so the
@@ -62,9 +201,15 @@ local function tryLoadLogData()
     -- site directly, so it's deferred one startFrame -- confirmed the hard
     -- way: calling it right here threw "This function cannot be called
     -- outside a callback" from Mesen.
+    --
+    -- Same reason resetMemoryTracking is called right here: whatever the
+    -- stack/heap trackers observed between attaching (mid-run) and this
+    -- actual reset is about to be thrown away along with everything else, so
+    -- it must not count toward the high-water marks either.
     local resetRef
     resetRef = emu.addEventCallback(function()
         emu.removeEventCallback(resetRef, emu.eventType.startFrame)
+        if resetMemoryTracking then resetMemoryTracking() end
         emu.reset()
     end, emu.eventType.startFrame)
 
