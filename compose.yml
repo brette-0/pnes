@@ -13,6 +13,11 @@
 #   PRESET=linux-debug docker compose run --rm build-linux          # bash
 #   $env:PRESET="linux-debug"; docker compose run --rm build-linux  # PowerShell
 #
+# The same image also carries the i386 multiarch SDL3/libusb/ALSA packages
+# and g++-multilib needed for the 32-bit build, selected the same way:
+#
+#   PRESET=linux-x86-release docker compose run --rm build-linux
+#
 # Output is written to ./cmake-build-ci-<preset-name> in the repository root
 # (kept out of builds/, which is reserved for non-CI local/IDE build trees).
 # These are the same commands CI runs (.github/workflows/ci.yml), so the

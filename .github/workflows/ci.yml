@@ -1,8 +1,8 @@
 # Build matrix for platform-nes: NES ROM + GameCube/Wii .dol + 3DS .3dsx +
-# three desktop targets.
+# desktop targets (Linux x64/x86, macOS, Windows x64/x86).
 #
 # Local reproduction:
-#   The `nes`, `gc`, `wii`, `ctr` and `linux` jobs are just
+#   The `nes`, `gc`, `wii`, `ctr`, `linux-x64` and `linux-x86` jobs are just
 #   `docker compose run` against the images in docker/, so they reproduce
 #   locally byte-for-byte:
 #
@@ -14,7 +14,8 @@
 #       docker compose run --rm build-switch   # == the `switch` job
 #       docker compose run --rm build-nds      # == the `nds` job
 #       docker compose run --rm build-dsi      # == the `dsi` job
-#       docker compose run --rm build-linux    # == the `linux` job's compile
+#       docker compose run --rm build-linux    # == the `linux-x64` job's compile
+#       PRESET=linux-x86-release docker compose run --rm build-linux  # == the `linux-x86` job's compile
 #
 #   To run the workflow itself locally, use act (https://github.com/nektos/act),
 #   which executes Linux-container jobs against the host Docker daemon:
@@ -27,7 +28,8 @@
 #       act -j switch
 #       act -j nds
 #       act -j dsi
-#       act -j linux
+#       act -j linux-x64
+#       act -j linux-x86
 #
 #   act cannot emulate GitHub's macOS/Windows runners, so the `mac`, `win-x64`
 #   and `win-x86` jobs are GitHub-hosted only -- there is no local equivalent
@@ -269,8 +271,8 @@ jobs:
             cmake-build-ci-wiiu-release/wup-installable
           if-no-files-found: warn
 
-  linux:
-    name: Linux (AppImage)
+  linux-x64:
+    name: Linux (x64) (AppImage)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -279,8 +281,8 @@ jobs:
         uses: actions/cache@v5
         with:
           path: cmake-build-ci-linux-release
-          key: linux-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'docker/Dockerfile.linux') }}
-          restore-keys: linux-
+          key: linux-x64-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'docker/Dockerfile.linux') }}
+          restore-keys: linux-x64-
 
       # Override the service command to drive the demo-appimage target (which
       # depends on demo), inside the same image the local `build-linux` uses.
@@ -294,8 +296,39 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: demo-linux-appimage
+          name: demo-linux-x64-appimage
           path: cmake-build-ci-linux-release/*.AppImage
+          if-no-files-found: error
+
+  linux-x86:
+    name: Linux (x86) (AppImage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache build tree
+        uses: actions/cache@v5
+        with:
+          path: cmake-build-ci-linux-x86-release
+          key: linux-x86-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'docker/Dockerfile.linux') }}
+          restore-keys: linux-x86-
+
+      # Same image as linux-x64 -- docker/Dockerfile.linux also installs the
+      # i386 multiarch SDL3/libusb/ALSA -dev packages and g++-multilib, so the
+      # linux-x86-release preset (i686-linux-gnu compiler target + i386
+      # PKG_CONFIG_LIBDIR) builds and packages a real 32-bit AppImage here.
+      - name: Build AppImage
+        run: |
+          docker compose run --rm --build build-linux bash -c '
+            set -euo pipefail
+            cmake --preset linux-x86-release -B cmake-build-ci-linux-x86-release
+            cmake --build cmake-build-ci-linux-x86-release --target demo-appimage -j"$(nproc)"
+          '
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: demo-linux-x86-appimage
+          path: cmake-build-ci-linux-x86-release/*.AppImage
           if-no-files-found: error
 
   mac:

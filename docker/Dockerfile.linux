@@ -20,7 +20,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV CC=clang
 ENV CXX=clang++
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# i386 multiarch is added for the linux-x86-* presets: the amd64 packages
+# below build the native x64 target, and libsdl3-dev:i386/libusb-1.0-0-dev:i386/
+# libasound2-dev:i386 supply the i386 headers + .pc files that
+# linux-x86-release points pkg-config at via PKG_CONFIG_LIBDIR. g++-multilib
+# is the part that's easy to miss: the i386 runtime packages alone don't
+# include the 32-bit crt objects/libstdc++/libgcc that clang --target=
+# i686-linux-gnu needs to actually link (verified: without it, ld fails with
+# "cannot find crtbeginS.o"/"-lstdc++"/"-lgcc_s"/"-lgcc").
+RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         clang \
         lld \
@@ -35,6 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libsdl3-dev \
         libusb-1.0-0-dev \
         libasound2-dev \
+        libsdl3-dev:i386 \
+        libusb-1.0-0-dev:i386 \
+        libasound2-dev:i386 \
+        g++-multilib \
     && rm -rf /var/lib/apt/lists/*
 
 # Debian Bullseye ships CMake 3.18, but the intsh/tuple dependencies declare

@@ -1712,6 +1712,39 @@ else()
     # SDL3 yet and need a PPA/backport or a source build override.
     # ------------------------------------------------------------------
     if(TARGET_PLATFORM STREQUAL "linux")
+        # ------------------------------------------------------------------
+        # 32-bit (i686) builds must resolve pkg-config against the 32-bit
+        # sdl3/libusb-1.0 .pc files, not the native x64 ones -- pkg-config
+        # itself doesn't know or care about target arch, so left alone it
+        # would happily hand back the wrong ELF class and fail at link time.
+        # Distros disagree on where those 32-bit .pc files live (Debian/
+        # Ubuntu's i386 multiarch triplet dir vs Arch/openSUSE's /usr/lib32),
+        # so detect whichever is actually present rather than hardcoding one
+        # -- that hardcoding used to live in CMakePresets.json's
+        # linux-x86-release preset and broke the moment this was tried
+        # natively on Arch (see git history). /usr/share/pkgconfig is always
+        # appended: arch-independent .pc files (e.g. xproto) live there and
+        # are dropped from the search entirely if PKG_CONFIG_LIBDIR omits it.
+        # ------------------------------------------------------------------
+        if(CMAKE_CXX_COMPILER_TARGET MATCHES "^i[3-6]86-")
+            foreach(_x86_pkgconfig_dir
+                    /usr/lib32/pkgconfig
+                    /usr/lib/i386-linux-gnu/pkgconfig)
+                if(EXISTS ${_x86_pkgconfig_dir})
+                    set(ENV{PKG_CONFIG_LIBDIR} "${_x86_pkgconfig_dir}:/usr/share/pkgconfig")
+                    break()
+                endif()
+            endforeach()
+            if(NOT DEFINED ENV{PKG_CONFIG_LIBDIR})
+                message(FATAL_ERROR
+                        "32-bit Linux build: couldn't find a 32-bit pkgconfig "
+                        "dir (checked /usr/lib32/pkgconfig, "
+                        "/usr/lib/i386-linux-gnu/pkgconfig). Install the "
+                        "32-bit sdl3/libusb-1.0 dev packages for your distro, "
+                        "or set PKG_CONFIG_LIBDIR yourself before configuring.")
+            endif()
+        endif()
+
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(SDL3   REQUIRED IMPORTED_TARGET sdl3)
         pkg_check_modules(LibUSB REQUIRED IMPORTED_TARGET libusb-1.0)
@@ -1839,6 +1872,16 @@ else()
         if(LINUXDEPLOY)
             set(APPDIR "${CMAKE_BINARY_DIR}/AppDir")
 
+            # The forced-bundle libasound path below is a multiarch triplet
+            # directory, which differs between the linux-release (x64) and
+            # linux-x86-release presets; derive it from the same compiler
+            # target the presets already set, rather than hardcoding x64.
+            if(CMAKE_CXX_COMPILER_TARGET MATCHES "^i[3-6]86-")
+                set(_LINUX_MULTIARCH_TRIPLET "i386-linux-gnu")
+            else()
+                set(_LINUX_MULTIARCH_TRIPLET "x86_64-linux-gnu")
+            endif()
+
             configure_file(
                     "${CMAKE_SOURCE_DIR}/docker/demo.desktop.in"
                     "${CMAKE_BINARY_DIR}/demo.desktop"
@@ -1887,7 +1930,7 @@ exec ./demo \"\$@\"
                             # Force-bundle libasound: AppImage's default excludelist skips it
                             # on the assumption every Linux desktop has ALSA, but minimal
                             # images (e.g., WSL's default Ubuntu) don't.
-                            --library /usr/lib/x86_64-linux-gnu/libasound.so.2
+                            --library /usr/lib/${_LINUX_MULTIARCH_TRIPLET}/libasound.so.2
                             --output appimage
                     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
                     DEPENDS demo

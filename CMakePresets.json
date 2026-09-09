@@ -74,6 +74,26 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
+      "name": "linux-x86-release",
+      "inherits": "_base",
+      "displayName": "Linux (x86) (Release)",
+      "description": "32-bit Linux desktop build. Requires the i386/32-bit SDL3+libusb+ALSA dev packages plus the 32-bit crt/libstdc++/libgcc (g++-multilib on Debian, lib32-gcc-libs on Arch) that clang --target=i686-linux-gnu needs to link. CMakeLists.txt auto-detects which multiarch pkgconfig layout is present (Debian's /usr/lib/i386-linux-gnu/pkgconfig, Arch/openSUSE's /usr/lib32/pkgconfig) so this preset works both inside docker/Dockerfile.linux and natively on a 32-bit-capable host -- no hardcoded PKG_CONFIG_LIBDIR needed here.",
+      "cacheVariables": {
+        "TARGET_PLATFORM": "linux",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "/usr/bin/clang",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "CMAKE_C_COMPILER_TARGET": "i686-linux-gnu",
+        "CMAKE_CXX_COMPILER_TARGET": "i686-linux-gnu"
+      }
+    },
+    {
+      "name": "linux-x86-debug",
+      "inherits": "linux-x86-release",
+      "displayName": "Linux (x86) (Debug)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
       "name": "win-x64-release",
       "inherits": "_base",
       "displayName": "Windows (x64) (Release)",
