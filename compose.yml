@@ -20,9 +20,10 @@
 #   PRESET=linux-x86-release   docker compose run --rm build-linux
 #   PRESET=linux-arm64-release docker compose run --rm build-linux
 #
-# linux-arm64-release is a real cross build here (this image is amd64) --
-# CMakeLists.txt only allows targeting arm64 from a non-arm64 host when
-# /.dockerenv is present, which is always true inside this container.
+# linux-arm64-release is a real cross build here (this image is amd64),
+# using the aarch64 cross toolchain + multiarch dev packages installed by
+# docker/Dockerfile.linux -- CMakeLists.txt checks for those packages
+# directly (via PKG_CONFIG_LIBDIR), not for anything Docker-specific.
 #
 # Output is written to ./cmake-build-ci-<preset-name> in the repository root
 # (kept out of builds/, which is reserved for non-CI local/IDE build trees).

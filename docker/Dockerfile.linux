@@ -31,8 +31,9 @@ ENV CXX=clang++
 #
 # arm64 multiarch is added the same way for the linux-arm64-* presets: this
 # image runs on an amd64 CI runner, so linux-arm64-release is a genuine
-# cross build (CMakeLists.txt's host-arch guard only allows that inside a
-# container, which this image is). libsdl3-dev:arm64/libusb-1.0-0-dev:arm64/
+# cross build -- CMakeLists.txt checks for these exact packages (via
+# PKG_CONFIG_LIBDIR) rather than gating on being inside a container.
+# libsdl3-dev:arm64/libusb-1.0-0-dev:arm64/
 # libasound2-dev:arm64 supply the aarch64 headers + .pc files (CMakeLists.txt
 # points pkg-config at their multiarch dir via PKG_CONFIG_LIBDIR, mirroring
 # the i386 case above); crossbuild-essential-arm64 is the aarch64 analogue of

@@ -1682,45 +1682,39 @@ else()
     endif()
 
     # ------------------------------------------------------------------
-    # arm64 desktop presets (linux-arm64-*, mac-arm64-*, win-arm64-*) build
-    # ON arm64 hardware -- there is no cross toolchain wired up for them
-    # (unlike win-x86, which cross-links against x86 import libs from an x64
-    # host via vcvarsall/CMAKE_C(XX)_COMPILER_TARGET). Configuring one from
-    # an IDE profile picker on a non-arm64 machine would silently produce a
-    # binary the developer can't run or test locally, so refuse it here --
-    # UNLESS this is a Docker-flavoured build (CLion's linux-docker-release
-    # toolchain, or `docker compose run build-linux`/CI, all of which
-    # genuinely run inside a Linux container). /.dockerenv is Docker's own
-    # marker file, present in every container regardless of which arch it
-    # happens to emulate, so it's a reliable "this isn't really the host's
-    # native CPU check you think it is" escape hatch without needing a
-    # separate opt-in flag threaded through compose.yml/CI.
+    # mac-arm64-* builds ON Apple Silicon hardware -- there is no cross
+    # toolchain wired up for it from an Intel host (unlike win-arm64/
+    # linux-arm64, which both have a real, demonstrated cross path: MSVC's
+    # ARM64 import libs via vcvarsall/CMAKE_C(XX)_COMPILER_TARGET for
+    # Windows, and the aarch64 cross toolchain + multiarch dev packages
+    # baked into docker/Dockerfile.linux for Linux -- see the pkgconfig
+    # check a little further down for the Linux case, and win-x86's total
+    # absence of any such guard for the Windows case). Configuring
+    # mac-arm64 from an IDE profile picker on an Intel Mac would silently
+    # produce a binary the developer can't run or test locally, so refuse
+    # it here.
+    #
+    # This is deliberately narrower than it once was: a previous version of
+    # this check applied to all three arm64 platforms, gating on host CPU
+    # (or /.dockerenv as a Linux-only escape hatch) rather than on whether
+    # a cross toolchain is actually present. That was the wrong signal --
+    # it broke the win-arm64 CI job's genuine vcvarsall-based cross build,
+    # and would equally have broken a Linux dev who installed
+    # gcc-aarch64-linux-gnu natively instead of going through Docker. Each
+    # platform now gets a check that reflects what's actually true for it.
     #
     # CMAKE_HOST_SYSTEM_PROCESSOR (not CMAKE_SYSTEM_PROCESSOR, which
     # reflects the TARGET when cross-compiling) is the real host CPU as
-    # `uname -m`/registry-reported -- arm64 on Windows, aarch64 on
-    # Linux, arm64 on macOS.
+    # registry-reported -- arm64 on macOS.
     # ------------------------------------------------------------------
-    set(_PNES_TARGET_ARCH "")
-    if(TARGET_PLATFORM STREQUAL "mac" AND CMAKE_OSX_ARCHITECTURES)
-        set(_PNES_TARGET_ARCH "${CMAKE_OSX_ARCHITECTURES}")
-    elseif(CMAKE_CXX_COMPILER_TARGET)
-        set(_PNES_TARGET_ARCH "${CMAKE_CXX_COMPILER_TARGET}")
-    endif()
-
-    if(_PNES_TARGET_ARCH MATCHES "aarch64|arm64")
-        if(NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$"
-                AND NOT EXISTS "/.dockerenv")
-            message(FATAL_ERROR
-                    "This preset targets arm64 (${_PNES_TARGET_ARCH}), but the "
-                    "host CPU is '${CMAKE_HOST_SYSTEM_PROCESSOR}'. The arm64 "
-                    "desktop presets build ON arm64 hardware, not cross-compile "
-                    "to it -- run this natively on an arm64 machine instead, or "
-                    "use the Docker-flavoured build (e.g. the linux-docker-* "
-                    "CLion toolchain, or PRESET=linux-arm64-release "
-                    "docker compose run --rm build-linux), which runs inside a "
-                    "real container and is exempt from this check.")
-        endif()
+    if(TARGET_PLATFORM STREQUAL "mac" AND CMAKE_OSX_ARCHITECTURES MATCHES "arm64"
+            AND NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|ARM64)$")
+        message(FATAL_ERROR
+                "This preset targets arm64 (Apple Silicon), but the host CPU "
+                "is '${CMAKE_HOST_SYSTEM_PROCESSOR}'. mac-arm64 builds ON "
+                "Apple Silicon hardware, not cross-compile to it from an "
+                "Intel Mac -- run this natively on an Apple Silicon machine "
+                "instead.")
     endif()
 
     # Alternative nametable wiring (see the TARGET_NES branch's own comment,

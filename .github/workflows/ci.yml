@@ -352,8 +352,8 @@ jobs:
       # installs the arm64 multiarch SDL3/libusb/ALSA -dev packages and
       # crossbuild-essential-arm64, so the linux-arm64-release preset
       # (aarch64-linux-gnu compiler target) genuinely cross-compiles here:
-      # this runner is amd64, and CMakeLists.txt's arm64 host-arch guard
-      # only permits that from inside a container -- which this is.
+      # this runner is amd64, and CMakeLists.txt finds those packages via
+      # PKG_CONFIG_LIBDIR regardless of host arch.
       - name: Build AppImage
         run: |
           docker compose run --rm --build build-linux bash -c '
