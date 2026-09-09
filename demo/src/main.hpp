@@ -1,6 +1,7 @@
 #pragma once
 #include <platform-nes/platform-nes.hpp>
 
+#ifdef TARGET_NES
 // See logger.hpp for what this configures. Both attributes are required, not
 // just `used`: nothing on NES ever reads this, so a real link's --gc-sections
 // pass drops it anyway unless it's KEEP()'d -- reusing .pnes_log (see
@@ -12,7 +13,14 @@
 // constexpr tells the compiler no runtime object is ever needed, which is
 // exactly the reasoning gc-sections/LTO would use to discard it again, used
 // and section() notwithstanding.
+//
+// TARGET_NES-only: logger.hpp's own extern declaration (what makes this an
+// override rather than a stray unrelated global) only exists under
+// TARGET_NES, and .pnes_log/debug-log.ld's KEEP() rule are NES-specific --
+// on another platform this would just be a pointless global sitting in a
+// section name that means nothing to that platform's linker.
 inline const u8 silentHeapAmount __attribute__((used, section(".pnes_log"))) = 0;
+#endif
 
 enum class eGameModes : u8 {
     Title,  // title screen
