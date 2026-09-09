@@ -164,27 +164,48 @@ struct Elf {
         return std::nullopt;
     }
 
-    /// Reads a real, initialized C object's byte value straight out of the
+    /// Reads a real, initialized C object's float value straight out of the
     /// section that backs it -- for a genuine data symbol (some section
     /// index, not SHN_ABS/SHN_UNDEF), `value` is its address, not its
     /// content, so this looks up that section and indexes into the ELF's own
-    /// bytes at the matching file offset. Used for silentHeapAmount
-    /// (logger.hpp/logger.cpp), which is real, weak-by-default C++ storage a
-    /// project can override -- unlike __stack/__heap_start and friends,
-    /// which are address-only linker constants with no storage at all (see
+    /// bytes at the matching file offset, reinterpreted as a little-endian
+    /// IEEE-754 single ("float" on this target, as on the host building this
+    /// tool -- both are plain 4-byte IEEE-754, so a raw memcpy is exact, no
+    /// byte-swapping or format conversion needed). Used for
+    /// silentHeapAmount/silentStackAmount (logger.hpp), each a project's
+    /// OWN opt-in override of what fraction of that region's total size
+    /// should stay quiet -- unlike __stack/__heap_start and friends, which
+    /// are address-only linker constants with no storage at all (see
     /// FindSymbolValue above for those).
-    std::optional<u8> FindSymbolByteValue(const std::string &name) const {
+    std::optional<float> FindSymbolFloatValue(const std::string &name) const {
+        auto off = FindSymbolFileOffset(name, sizeof(float));
+        if (!off) return std::nullopt;
+        float value;
+        std::memcpy(&value, data.data() + *off, sizeof(float));
+        return value;
+    }
+
+private:
+    /// Shared lookup behind FindSymbolFloatValue: resolves `name` to a real,
+    /// initialized C object's file offset -- for a genuine data symbol (some
+    /// section index, not SHN_ABS/SHN_UNDEF), `value` is its address, not its
+    /// content, so this looks up that section and converts to the matching
+    /// file offset. `size` bytes starting there must still fit inside the
+    /// file.
+    std::optional<u32> FindSymbolFileOffset(const std::string &name, u32 size) const {
         for (auto &s : symbols) {
             if (s.name != name) continue;
             if (s.shndx == SHN_UNDEF || s.shndx == SHN_ABS || s.shndx >= sections.size()) return std::nullopt;
             const Section &sec = sections[s.shndx];
             if (s.value < sec.addr) return std::nullopt;
             const u32 fileOff = sec.offset + (s.value - sec.addr);
-            if (fileOff >= data.size()) return std::nullopt;
-            return data[fileOff];
+            if (fileOff + size > data.size()) return std::nullopt;
+            return fileOff;
         }
         return std::nullopt;
     }
+
+public:
 
     // Section whose [addr, addr+size) contains `address`, restricted to real
     // (ALLOC, non-debug, non-.pnes_log) content -- see this file's header
@@ -689,20 +710,51 @@ int main(int argc, char **argv) {
         const auto heapStart = elf.FindSymbolValue("__heap_start");
         const auto heapSize = elf.FindSymbolValue("__heap_default_limit");
         if (stackTop && stackBottom && heapStart && heapSize) {
+            // silentHeapAmount/silentStackAmount (logger.hpp) are each a
+            // FRACTION (0.0-1.0) of that region's total size, not an
+            // absolute byte count -- a project picks e.g. "warn past 25% of
+            // the heap" once, and it stays meaningful even if the region's
+            // actual reserved size changes later. Converted to an absolute
+            // byte count HERE, once, at build time: everything downstream
+            // (logdata.lua, tools/pnes.lua) deals in plain bytes and never
+            // needs to know a fraction was involved at all. Clamped to
+            // [0, maxVolume] in case of a stray out-of-[0,1] override.
+            auto fractionToBytes = [](float fraction, u32 maxVolume) -> u32 {
+                if (fraction < 0.0f) fraction = 0.0f;
+                if (fraction > 1.0f) fraction = 1.0f;
+                return static_cast<u32>(fraction * static_cast<float>(maxVolume) + 0.5f);
+            };
+
             // Not required like the four above: a build predating this knob
-            // (or one whose logger.cpp got fully dead-stripped -- see
-            // logger.hpp's own comment on silentHeapAmount) simply has no
-            // such symbol. Falls back to heapSize itself (fully silent until
-            // a project opts in), matching logger.cpp's own weak default.
-            const u32 silentHeapAmount = elf.FindSymbolByteValue("silentHeapAmount").value_or(static_cast<u8>(std::min<u32>(*heapSize, 255)));
+            // simply has no such symbol. Falls back to heapSize itself
+            // (fully silent until a project opts in) when absent, same
+            // practical default as before this became a fraction.
+            const auto silentHeapFraction = elf.FindSymbolFloatValue("silentHeapAmount");
+            const u32 silentHeapAmount = silentHeapFraction
+                ? fractionToBytes(*silentHeapFraction, *heapSize) : *heapSize;
+
+            // Same idea, for the stack -- see logger.hpp's silentStackAmount
+            // comment. Falls back to a flat 512 (not "fully silent" the way
+            // heapSize is for silentHeapAmount): unlike the heap, a stack
+            // depth under a few hundred bytes is unremarkable on this
+            // platform, so a project that hasn't overridden this at all
+            // still gets a meaningful default warning threshold rather than
+            // silence until it opts in. Capped at the region's own total
+            // size for a project whose reserved stack is smaller than that.
+            const u32 stackTotalBytes = *stackTop - *stackBottom + 1;
+            const auto silentStackFraction = elf.FindSymbolFloatValue("silentStackAmount");
+            const u32 silentStackAmount = silentStackFraction
+                ? fractionToBytes(*silentStackFraction, stackTotalBytes)
+                : std::min<u32>(512, stackTotalBytes);
 
             std::cerr << "lua_log_builder: memory layout -- stack [0x" << std::hex << *stackBottom
                       << ", 0x" << *stackTop << "], heap [0x" << *heapStart << ", 0x"
                       << (*heapStart + *heapSize - 1) << "], silentHeapAmount 0x" << silentHeapAmount
-                      << std::dec << "\n";
+                      << ", silentStackAmount 0x" << silentStackAmount << std::dec << "\n";
             out << "return { memory = { stackTop = " << *stackTop << ", stackBottom = " << *stackBottom
                 << ", heapStart = " << *heapStart << ", heapSize = " << *heapSize
-                << ", silentHeapAmount = " << silentHeapAmount << " }, logs = {\n";
+                << ", silentHeapAmount = " << silentHeapAmount
+                << ", silentStackAmount = " << silentStackAmount << " }, logs = {\n";
         } else {
             std::cerr << "lua_log_builder: warning: __stack/__static_writeable_end/__heap_start/"
                          "__heap_default_limit not all present in " << args.elfPath

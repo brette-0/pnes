@@ -83,29 +83,12 @@ constexpr Arg MakeArg(const volatile T &value) {
 
 } // namespace log_detail
 
-/**
- * @brief Threshold (bytes) below which tools/pnes.lua's heap tracker stays
- * quiet, baked into logdata.lua by lua_log_builder for that tool's sole use
- * -- no code on NES itself ever reads this.
- *
- * Weak: this default (128) lives in logger.cpp; a project overrides it by
- * defining its own copy anywhere, e.g. in main.hpp:
- *
- *   inline u8 silentHeapAmount = 0x40;
- *
- * Deliberately plain C++ linkage, not extern "C": a project's own override
- * (like the one above) may get compiled ahead of any include of this header
- * in the same translation unit -- demo/src/main.cpp does exactly that,
- * including main.hpp (with its own silentHeapAmount definition) before this
- * header -- and a later extern "C" here would conflict with the language
- * linkage main.hpp's plain definition already established. lua_log_builder
- * therefore looks this up by its Itanium-mangled name, not the plain string
- * "silentHeapAmount". It still reads the initialized BYTE VALUE straight out
- * of the linked .elf (not its address, unlike __stack/__heap_start and
- * friends, which are address-only linker constants with no storage of their
- * own).
- */
-extern const u8 silentHeapAmount;
+// Fraction (0.0-1.0) of that region's total size below which
+// tools/pnes.lua's heap/stack trackers stay quiet -- e.g. 0.25 warns past a
+// quarter of the heap. lua_log_builder converts this to an absolute byte
+// count once, at build time; nothing on NES itself ever reads either one.
+extern const float silentHeapAmount;
+extern const float silentStackAmount;
 
 #define PNES_LOG_CAT_(a, b) a##b
 #define PNES_LOG_CAT(a, b)  PNES_LOG_CAT_(a, b)

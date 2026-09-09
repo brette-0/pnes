@@ -19,7 +19,9 @@
 // TARGET_NES, and .pnes_log/debug-log.ld's KEEP() rule are NES-specific --
 // on another platform this would just be a pointless global sitting in a
 // section name that means nothing to that platform's linker.
-inline const u8 silentHeapAmount __attribute__((used, section(".pnes_log"))) = 0;
+inline const float silentHeapAmount  __attribute__((used, section(".pnes_log"))) = 0.0f;
+inline const float silentStackAmount __attribute__((used, section(".pnes_log"))) = 0.0f;
+
 #endif
 
 enum class eGameModes : u8 {

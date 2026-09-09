@@ -56,7 +56,14 @@ local memoryLayout = nil
 -- deferred emu.reset() fires, so whatever ran between Mesen attaching this
 -- script and that reset (already-discarded, pre-power-on-observed activity)
 -- doesn't inflate the high-water mark before real measurement even starts.
-local function startStackTracking(stackTop, stackBottom)
+--
+-- silentStackAmount (from logger.hpp/logger.cpp, baked into logdata.lua by
+-- lua_log_builder -- same mechanism as the heap tracker's silentHeapAmount)
+-- suppresses the "cstack: new high-water mark" line until depth exceeds it.
+-- Defaults to 0xffff (see logger.cpp's own comment on why that, not the
+-- region's own size), i.e. silent out of the box until a project overrides
+-- it.
+local function startStackTracking(stackTop, stackBottom, silentStackAmount)
     local totalBytes = stackTop - stackBottom + 1
     local maxDepth = 0
 
@@ -72,9 +79,11 @@ local function startStackTracking(stackTop, stackBottom)
         local depth = stackTop - sp
         if depth > maxDepth then
             maxDepth = depth
-            local pct = math.floor(100 * maxDepth / totalBytes)
-            emu.log(string.format("cstack: new high-water mark -- %d/%d bytes (%d%%)",
-                maxDepth, totalBytes, pct))
+            if maxDepth > silentStackAmount then
+                local pct = math.floor(100 * maxDepth / totalBytes)
+                emu.log(string.format("cstack: new high-water mark -- %d/%d bytes (%d%%)",
+                    maxDepth, totalBytes, pct))
+            end
         end
     end
 
@@ -184,40 +193,43 @@ local function heapCellTouched(touched, start, stop)
 end
 
 -- Run-length-encodes `touched` into alternating used/empty runs of whole
--- HEAP_GRANULE-byte cells (the last cell short if heapSize isn't a multiple
--- of HEAP_GRANULE) -- e.g. "u(40) e(84)" for a heap where every touched byte
--- happens to fall within the first five 8-byte cells. A cell counts as
--- "used" the moment ANY one of its bytes has ever been touched, so this
+-- HEAP_GRANULE-byte cells -- a.k.a. qwords, this tracker's whole unit of
+-- measurement from here on (see HEAP_GRANULE's own comment on why 8 bytes
+-- is the natural unit: it's the smallest chunk this malloc ever hands out,
+-- so anything finer than that can never be a real, independently-reusable
+-- piece of heap). "u(5) e(11)" means 5 used qwords then 11 empty ones, NOT
+-- bytes -- the very last qword is short (heapSize isn't always a multiple
+-- of HEAP_GRANULE) but still counts as one whole qword here. A cell counts
+-- as "used" the moment ANY one of its bytes has ever been touched, so this
 -- reports real fragmentation (gaps of a full chunk-or-more between live
 -- allocations) without also flagging the sub-chunk padding HEAP_GRANULE
 -- itself creates -- see HEAP_GRANULE's own comment on why that padding was
 -- never a real, reusable hole to begin with.
 --
--- Also returns usedBytes -- the sum of all "used" cells' lengths, i.e. how
--- many bytes the ALLOCATOR has actually committed to chunks, not how many
--- your code happened to write into. This is deliberately NOT the same as
--- counting `touched` directly: a chunk's un-written padding bytes (the
--- reason HEAP_GRANULE exists at all) are memory the allocator has reserved
--- and can never hand to anyone else, so they count as "used" for this
--- purpose even though nothing ever wrote them.
+-- Also returns usedQwords -- how many qwords the ALLOCATOR has actually
+-- committed to chunks, not how many your code happened to write into. This
+-- is deliberately NOT the same as counting `touched` directly: a chunk's
+-- un-written padding bytes (the reason HEAP_GRANULE exists at all) are
+-- memory the allocator has reserved and can never hand to anyone else, so
+-- the whole qword they sit in counts as "used" even though nothing ever
+-- wrote every byte of it.
 local function heapRunLengthEncoding(touched, heapSize)
     local parts = {}
-    local usedRuns, usedBytes = 0, 0
+    local usedRuns, usedQwords = 0, 0
     local runIsUsed, runLen = nil, 0
     local i = 1
     while i <= heapSize do
         local cellEnd = math.min(i + HEAP_GRANULE - 1, heapSize)
-        local cellLen = cellEnd - i + 1
         local isUsed = heapCellTouched(touched, i, cellEnd)
-        if isUsed then usedBytes = usedBytes + cellLen end
+        if isUsed then usedQwords = usedQwords + 1 end
         if runIsUsed == nil then
-            runIsUsed, runLen = isUsed, cellLen
+            runIsUsed, runLen = isUsed, 1
         elseif isUsed == runIsUsed then
-            runLen = runLen + cellLen
+            runLen = runLen + 1
         else
             if runIsUsed then usedRuns = usedRuns + 1 end
             parts[#parts + 1] = string.format("%s(%d)", runIsUsed and "u" or "e", runLen)
-            runIsUsed, runLen = isUsed, cellLen
+            runIsUsed, runLen = isUsed, 1
         end
         i = cellEnd + 1
     end
@@ -225,7 +237,7 @@ local function heapRunLengthEncoding(touched, heapSize)
         if runIsUsed then usedRuns = usedRuns + 1 end
         parts[#parts + 1] = string.format("%s(%d)", runIsUsed and "u" or "e", runLen)
     end
-    return table.concat(parts, " "), usedRuns, usedBytes
+    return table.concat(parts, " "), usedRuns, usedQwords
 end
 
 -- Returns a `reset` function; see startStackTracking's comment above for why.
@@ -248,30 +260,41 @@ local function startHeapTracking(heapStart, heapSize, silentHeapAmount)
         usableSize = heapSize
     end
 
+    -- Everything from here on is in qwords (HEAP_GRANULE-byte units), not
+    -- bytes -- see heapRunLengthEncoding's own comment on why. silentHeapAmount
+    -- arrives from logdata.lua as a byte count (lua_log_builder's job is
+    -- converting a project's override fraction to bytes, nothing more); it's
+    -- converted to qwords exactly once, here, ceiling so a nonzero byte
+    -- threshold never rounds down into an always-warn 0-qword one.
+    local totalQwords = math.ceil(usableSize / HEAP_GRANULE)
+    local silentQwords = math.ceil(silentHeapAmount / HEAP_GRANULE)
+
     local touched = {}
-    -- Last-REPORTED granular usage, not a raw touched-byte count -- see
-    -- heapRunLengthEncoding's own comment on usedBytes. Touching a second
-    -- byte inside an already-committed 8-byte cell changes nothing an
+    -- Last-REPORTED qword usage, not a raw touched-byte count -- see
+    -- heapRunLengthEncoding's own comment on usedQwords. Touching a second
+    -- byte inside an already-committed qword changes nothing an
     -- allocator-level view cares about, so it must not re-print either.
-    local lastReportedUsage = 0
+    local lastReportedQwords = 0
 
     local function onHeapWrite(address)
         local offset = address - usableStart + 1
         if touched[offset] then return end
         touched[offset] = true
 
-        local pattern, usedRuns, usedBytes = heapRunLengthEncoding(touched, usableSize)
-        if usedBytes ~= lastReportedUsage then
-            lastReportedUsage = usedBytes
-            if usedBytes > silentHeapAmount then
-                emu.log(string.format("app: heap usage %d bytes", usedBytes))
+        local pattern, usedRuns, usedQwords = heapRunLengthEncoding(touched, usableSize)
+        if usedQwords ~= lastReportedQwords then
+            lastReportedQwords = usedQwords
+            if usedQwords > silentQwords then
+                local pct = math.floor(100 * usedQwords / totalQwords)
+                emu.log(string.format("app: heap usage (%d/%d qwords) %d%%",
+                    usedQwords, totalQwords, pct))
                 if usedRuns > 1 then
                     emu.log("app: heap frag " .. pattern)
                 end
             end
 
-            if usedBytes == usableSize then
-                emu.log("app: heap exhausted -- every usable byte is now committed to some "
+            if usedQwords == totalQwords then
+                emu.log("app: heap exhausted -- every usable qword is now committed to some "
                     .. "chunk; grow __heap_default_limit (see demo/link.ld) or reduce allocations.")
             end
         end
@@ -282,7 +305,7 @@ local function startHeapTracking(heapStart, heapSize, silentHeapAmount)
 
     return function()
         touched = {}
-        lastReportedUsage = 0
+        lastReportedQwords = 0
     end
 end
 
@@ -305,7 +328,12 @@ local function startMemoryTracking(memory)
         memory.stackBottom, memory.stackTop, memory.stackTop - memory.stackBottom + 1,
         memory.heapStart, memory.heapStart + memory.heapSize - 1, memory.heapSize))
     local hunks = buildHunks(memory)
-    local resetStack = startStackTracking(memory.stackTop, memory.stackBottom)
+    -- memory.silentStackAmount can be absent from a logdata.lua generated by
+    -- an older lua_log_builder -- fall back to the region's own total size
+    -- (fully silent), same as memory.silentHeapAmount's own fallback below.
+    local stackTotalBytes = memory.stackTop - memory.stackBottom + 1
+    local resetStack = startStackTracking(memory.stackTop, memory.stackBottom,
+        memory.silentStackAmount or stackTotalBytes)
     local resetOverflowGuard = startStackOverflowGuard(hunks, memory.stackTop, memory.stackBottom)
     -- memory.silentHeapAmount can be absent from a logdata.lua generated by
     -- an older lua_log_builder -- fall back to fully silent, same default
