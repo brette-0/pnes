@@ -29,8 +29,9 @@
 #       act -j dsi
 #       act -j linux
 #
-#   act cannot emulate GitHub's macOS/Windows runners, so the `mac` and `win`
-#   jobs are GitHub-hosted only -- there is no local equivalent on a Linux box.
+#   act cannot emulate GitHub's macOS/Windows runners, so the `mac`, `win-x64`
+#   and `win-x86` jobs are GitHub-hosted only -- there is no local equivalent
+#   on a Linux box.
 name: CI
 
 on:
@@ -327,8 +328,8 @@ jobs:
             cmake-build-mac-release/sfx
           if-no-files-found: error
 
-  win:
-    name: Windows (exe)
+  win-x64:
+    name: Windows (x64) (exe)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -340,25 +341,65 @@ jobs:
       # would reject.
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Cache build tree
         uses: actions/cache@v5
         with:
-          path: cmake-build-win-release
-          key: win-v2-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
-          restore-keys: win-v2-
+          path: cmake-build-win-x64-release
+          key: win-x64-v2-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: win-x64-v2-
 
       - name: Build demo
         shell: cmd
         run: |
-          cmake --preset win-release -B cmake-build-win-release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-          cmake --build cmake-build-win-release -j
+          cmake --preset win-x64-release -B cmake-build-win-x64-release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build cmake-build-win-x64-release -j
 
       - uses: actions/upload-artifact@v7
         with:
-          name: demo-windows
+          name: demo-windows-x64
           path: |
-            cmake-build-win-release/demo.exe
-            cmake-build-win-release/tracks
-            cmake-build-win-release/sfx
+            cmake-build-win-x64-release/demo.exe
+            cmake-build-win-x64-release/tracks
+            cmake-build-win-x64-release/sfx
+          if-no-files-found: error
+
+  win-x86:
+    name: Windows (x86) (exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same MSVC-environment/clang setup as win-x64, but arch: x86 puts the
+      # 32-bit link.exe and Windows SDK import libs on PATH instead. Clang
+      # itself still needs CMAKE_C(XX)_COMPILER_TARGET (set by the
+      # win-x86-release preset) to stop targeting the runner's native
+      # x86_64 -- vcvarsall alone doesn't change clang's default target.
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
+      - name: Cache build tree
+        uses: actions/cache@v5
+        with:
+          path: cmake-build-win-x86-release
+          key: win-x86-v2-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: win-x86-v2-
+
+      - name: Build demo
+        shell: cmd
+        run: |
+          cmake --preset win-x86-release -B cmake-build-win-x86-release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build cmake-build-win-x86-release -j
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: demo-windows-x86
+          path: |
+            cmake-build-win-x86-release/demo.exe
+            cmake-build-win-x86-release/tracks
+            cmake-build-win-x86-release/sfx
           if-no-files-found: error

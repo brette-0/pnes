@@ -43,7 +43,7 @@
     {
       "name": "linux-release",
       "inherits": "_base",
-      "displayName": "Linux (Release)",
+      "displayName": "Linux (x64) (Release)",
       "description": "Linux desktop build. Clang is enforced (not the host default gcc) so the ELF carries LLVM-flavoured DWARF that matches the llvm-mos NES toolchain's debug info. Both compilers are pinned: the engine is C++-only, but the SDL3 dependency enables C, and an unset CMAKE_C_COMPILER would fall back to gcc and mix toolchains in one binary. Absolute paths are deliberate: the llvm-mos SDK's bin dir is typically ahead of /usr/bin on PATH, so a bare 'clang++' resolves to the 6502 cross-compiler and links the desktop binary against NES crt0/link.ld.",
       "cacheVariables": {
         "TARGET_PLATFORM": "linux",
@@ -55,13 +55,13 @@
     {
       "name": "linux-debug",
       "inherits": "linux-release",
-      "displayName": "Linux (Debug)",
+      "displayName": "Linux (x64) (Debug)",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "linux-docker-release",
       "inherits": "linux-release",
-      "displayName": "Linux (Release, Docker)",
+      "displayName": "Linux (x64, Docker) (Release)",
       "description": "Linux desktop build routed through the CLion Docker toolchain.",
       "vendor": {
         "jetbrains.com/clion": { "toolchain": "Docker" }
@@ -70,16 +70,19 @@
     {
       "name": "linux-docker-debug",
       "inherits": "linux-docker-release",
-      "displayName": "Linux (Debug, Docker)",
+      "displayName": "Linux (x64, Docker) (Debug)",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
-      "name": "win-release",
+      "name": "win-x64-release",
       "inherits": "_base",
-      "displayName": "Windows (Release)",
+      "displayName": "Windows (x64) (Release)",
+      "description": "64-bit Windows desktop build. Run inside a matching x64 MSVC developer environment (vcvarsall x64 / msvc-dev-cmd's default arch) so link.exe and the Windows SDK import libs match; CMAKE_C(XX)_COMPILER_TARGET pins clang to the x64 MSVC ABI triple explicitly rather than relying on clang's host-default target.",
       "cacheVariables": {
         "TARGET_PLATFORM": "win",
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER_TARGET": "x86_64-pc-windows-msvc",
+        "CMAKE_CXX_COMPILER_TARGET": "x86_64-pc-windows-msvc"
       },
       "condition": {
         "type": "equals",
@@ -88,9 +91,32 @@
       }
     },
     {
-      "name": "win-debug",
-      "inherits": "win-release",
-      "displayName": "Windows (Debug)",
+      "name": "win-x64-debug",
+      "inherits": "win-x64-release",
+      "displayName": "Windows (x64) (Debug)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "win-x86-release",
+      "inherits": "_base",
+      "displayName": "Windows (x86) (Release)",
+      "description": "32-bit Windows desktop build. Run inside a matching x86 MSVC developer environment (vcvarsall x86 / msvc-dev-cmd's arch: x86) so link.exe and the Windows SDK import libs are 32-bit; CMAKE_C(XX)_COMPILER_TARGET is required here because clang otherwise defaults to the host's native x86_64 target regardless of which vcvarsall was loaded.",
+      "cacheVariables": {
+        "TARGET_PLATFORM": "win",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER_TARGET": "i686-pc-windows-msvc",
+        "CMAKE_CXX_COMPILER_TARGET": "i686-pc-windows-msvc"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "win-x86-debug",
+      "inherits": "win-x86-release",
+      "displayName": "Windows (x86) (Debug)",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
