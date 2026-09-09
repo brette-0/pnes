@@ -315,8 +315,11 @@ jobs:
 
       # Same image as linux-x64 -- docker/Dockerfile.linux also installs the
       # i386 multiarch SDL3/libusb/ALSA -dev packages and g++-multilib, so the
-      # linux-x86-release preset (i686-linux-gnu compiler target + i386
-      # PKG_CONFIG_LIBDIR) builds and packages a real 32-bit AppImage here.
+      # linux-x86-release preset (i686-linux-gnu compiler target) builds and
+      # packages a real 32-bit AppImage here. CMakeLists.txt auto-detects the
+      # right PKG_CONFIG_LIBDIR for whichever 32-bit pkgconfig layout is
+      # present (this image's Debian i386 multiarch dir, or Arch/openSUSE's
+      # /usr/lib32 for local native builds) -- no hardcoded env var needed.
       - name: Build AppImage
         run: |
           docker compose run --rm --build build-linux bash -c '
