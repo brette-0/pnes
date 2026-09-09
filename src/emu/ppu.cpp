@@ -98,10 +98,22 @@ static constexpr u32 nes_rgb[64] = {
 #ifdef _WIN32
 // Anchor symbol for the merged CHR ROM section on the MSVC/COFF target (the
 // other targets get __start_chr_rom from the linker). See video.hpp's CHR_ROM.
+//
+// Inline asm labels bypass the compiler's extern "C" name decoration, so the
+// raw symbol emitted here must already match whatever decorated name video.hpp's
+// `extern "C" const u8 _chr_rom[]` compiles down to for the active ABI: on
+// x86_64 that's the undecorated `_chr_rom`, but on i686 cdecl prepends an
+// extra leading underscore to every extern "C" symbol, so the reference is
+// actually to `__chr_rom`.
+#if defined(_M_IX86) || defined(__i386__)
+  #define PNES_CHR_ROM_ANCHOR "__chr_rom"
+#else
+  #define PNES_CHR_ROM_ANCHOR "_chr_rom"
+#endif
 __asm__(
     ".pushsection chr_rom$a,\"dr\"\n"
-    ".global _chr_rom\n"
-    "_chr_rom:\n"
+    ".global " PNES_CHR_ROM_ANCHOR "\n"
+    PNES_CHR_ROM_ANCHOR ":\n"
     ".popsection\n"
 );
 #endif
