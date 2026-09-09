@@ -90,6 +90,24 @@ end
 -- touched (the real answer to "how big does the heap reservation need to
 -- be"), not bytes live right now. Spotting live fragmentation would mean
 -- walking the allocator's own free list instead; not attempted here.
+--
+-- BOUNDARY_TAG_BYTES excludes this platform's malloc's own bookkeeping from
+-- both ends: confirmed by disassembling a real build's malloc -- its
+-- one-time init writes a 2-byte header (size+flags) at the very start of the
+-- initial free chunk, and FreeChunk::insert writes a matching 2-byte footer
+-- (a duplicate of the chunk's size, for O(1) backward-coalescing on free) at
+-- that chunk's very end. With one giant initial free chunk spanning the
+-- whole arena, those land exactly at the heap's own first/last 2 bytes.
+--
+-- THIS IS ONLY EXACT FOR THAT INITIAL STATE. Every free chunk gets its own
+-- header+footer, not just the first one -- once allocations/frees fragment
+-- the heap into more than one free chunk, later headers/footers can land
+-- anywhere inside the arena, not just these fixed 4 bytes, and this
+-- correction will no longer fully account for them (it'll undercount total
+-- overhead, not overcount). Treated as an acceptable approximation for now;
+-- exact accounting would mean hooking malloc's own argument/return values
+-- instead of just watching raw writes.
+local BOUNDARY_TAG_BYTES = 2 -- at EACH end (header, footer)
 
 -- Run-length-encodes `touched` into alternating used/empty runs, e.g.
 -- "u(28) e(50) u(50)" for a 128-byte heap touched at both ends but not the
@@ -119,11 +137,23 @@ end
 -- i.e. silent out of the box until a project deliberately lowers it. The
 -- exhaustion warning ignores this: it's a hard error condition, not noise.
 local function startHeapTracking(heapStart, heapSize, silentHeapAmount)
+    -- Usable-heap window this tracker actually watches, with the initial
+    -- chunk's header/footer (see BOUNDARY_TAG_BYTES's own comment) excluded
+    -- from both ends. Falls back to the whole region, untrimmed, for a heap
+    -- too small to have any room left after excluding both -- better to
+    -- overcount usage on a tiny heap than watch a negative-length range.
+    local usableStart = heapStart + BOUNDARY_TAG_BYTES
+    local usableSize = heapSize - 2 * BOUNDARY_TAG_BYTES
+    if usableSize <= 0 then
+        usableStart = heapStart
+        usableSize = heapSize
+    end
+
     local touched = {}
     local touchedCount = 0
 
     local function onHeapWrite(address)
-        local offset = address - heapStart + 1
+        local offset = address - usableStart + 1
         if touched[offset] then return end
         touched[offset] = true
         touchedCount = touchedCount + 1
@@ -131,20 +161,20 @@ local function startHeapTracking(heapStart, heapSize, silentHeapAmount)
         if touchedCount > silentHeapAmount then
             emu.log(string.format("app: heap usage %d bytes", touchedCount))
 
-            local pattern, usedRuns = heapRunLengthEncoding(touched, heapSize)
+            local pattern, usedRuns = heapRunLengthEncoding(touched, usableSize)
             if usedRuns > 1 then
                 emu.log("app: heap frag " .. pattern)
             end
         end
 
-        if touchedCount == heapSize then
-            emu.log("app: heap exhausted -- every reserved byte has now been touched at least "
+        if touchedCount == usableSize then
+            emu.log("app: heap exhausted -- every usable byte has now been touched at least "
                 .. "once; grow __heap_default_limit (see demo/link.ld) or reduce allocations.")
         end
     end
 
     emu.addMemoryCallback(onHeapWrite, emu.callbackType.write,
-        heapStart, heapStart + heapSize - 1, emu.cpuType.nes, emu.memType.nesMemory)
+        usableStart, usableStart + usableSize - 1, emu.cpuType.nes, emu.memType.nesMemory)
 
     return function()
         touched = {}
