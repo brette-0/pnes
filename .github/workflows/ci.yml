@@ -1,5 +1,5 @@
 # Build matrix for platform-nes: NES ROM + GameCube/Wii .dol + 3DS .3dsx +
-# desktop targets (Linux x64/x86, macOS, Windows x64/x86).
+# desktop targets (Linux x64/x86/arm64, macOS arm64/x64, Windows x64/x86/arm64).
 #
 # Local reproduction:
 #   The `nes`, `gc`, `wii`, `ctr`, `linux-x64` and `linux-x86` jobs are just
@@ -31,9 +31,9 @@
 #       act -j linux-x64
 #       act -j linux-x86
 #
-#   act cannot emulate GitHub's macOS/Windows runners, so the `mac`, `win-x64`
-#   and `win-x86` jobs are GitHub-hosted only -- there is no local equivalent
-#   on a Linux box.
+#   act cannot emulate GitHub's macOS/Windows runners, so the `mac-arm64`,
+#   `mac-x64`, `win-x64`, `win-x86` and `win-arm64` jobs are GitHub-hosted
+#   only -- there is no local equivalent on a Linux box.
 name: CI
 
 on:
@@ -334,8 +334,8 @@ jobs:
           path: cmake-build-ci-linux-x86-release/*.AppImage
           if-no-files-found: error
 
-  mac:
-    name: macOS (app)
+  mac-arm64:
+    name: macOS (ARM64) (app)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -346,22 +346,52 @@ jobs:
       - name: Cache build tree
         uses: actions/cache@v5
         with:
-          path: cmake-build-mac-release
-          key: mac-v2-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
-          restore-keys: mac-v2-
+          path: cmake-build-mac-arm64-release
+          key: mac-arm64-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: mac-arm64-v1-
 
       - name: Build demo
         run: |
-          cmake --preset mac-release -B cmake-build-mac-release
-          cmake --build cmake-build-mac-release -j"$(sysctl -n hw.ncpu)"
+          cmake --preset mac-arm64-release -B cmake-build-mac-arm64-release
+          cmake --build cmake-build-mac-arm64-release -j"$(sysctl -n hw.ncpu)"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: demo-macos
+          name: demo-macos-arm64
           path: |
-            cmake-build-mac-release/demo
-            cmake-build-mac-release/tracks
-            cmake-build-mac-release/sfx
+            cmake-build-mac-arm64-release/demo
+            cmake-build-mac-arm64-release/tracks
+            cmake-build-mac-arm64-release/sfx
+          if-no-files-found: error
+
+  mac-x64:
+    name: macOS (x64) (app)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build tools
+        run: brew install ninja
+
+      - name: Cache build tree
+        uses: actions/cache@v5
+        with:
+          path: cmake-build-mac-x64-release
+          key: mac-x64-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: mac-x64-v1-
+
+      - name: Build demo
+        run: |
+          cmake --preset mac-x64-release -B cmake-build-mac-x64-release
+          cmake --build cmake-build-mac-x64-release -j"$(sysctl -n hw.ncpu)"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: demo-macos-x64
+          path: |
+            cmake-build-mac-x64-release/demo
+            cmake-build-mac-x64-release/tracks
+            cmake-build-mac-x64-release/sfx
           if-no-files-found: error
 
   win-x64:
@@ -438,4 +468,43 @@ jobs:
             cmake-build-win-x86-release/demo.exe
             cmake-build-win-x86-release/tracks
             cmake-build-win-x86-release/sfx
+          if-no-files-found: error
+
+  win-arm64:
+    name: Windows (ARM64) (exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same MSVC-environment/clang setup as win-x64, but arch: arm64 puts
+      # the ARM64 link.exe and Windows SDK import libs on PATH instead --
+      # windows-latest is an x64 runner, so this is a host=x64/target=arm64
+      # cross environment. Clang itself still needs CMAKE_C(XX)_COMPILER_TARGET
+      # (set by the win-arm64-release preset) to stop targeting the runner's
+      # native x86_64 -- vcvarsall alone doesn't change clang's default target.
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Cache build tree
+        uses: actions/cache@v5
+        with:
+          path: cmake-build-win-arm64-release
+          key: win-arm64-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: win-arm64-v1-
+
+      - name: Build demo
+        shell: cmd
+        run: |
+          cmake --preset win-arm64-release -B cmake-build-win-arm64-release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build cmake-build-win-arm64-release -j
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: demo-windows-arm64
+          path: |
+            cmake-build-win-arm64-release/demo.exe
+            cmake-build-win-arm64-release/tracks
+            cmake-build-win-arm64-release/sfx
           if-no-files-found: error

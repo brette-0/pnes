@@ -94,6 +94,26 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
+      "name": "linux-arm64-release",
+      "inherits": "_base",
+      "displayName": "Linux (ARM64) (Release)",
+      "description": "64-bit ARM (AArch64) Linux desktop build, e.g. for ARMv8/ARMv9 hosts. Targets the generic aarch64-linux-gnu baseline rather than pinning -march to a specific ARMv9 feature set, so the resulting binary runs on any 64-bit ARM Linux machine (ARMv8-A and up), not just ARMv9 silicon. Requires the aarch64 SDL3+libusb+ALSA dev packages for the host distro; when cross-compiling from x86_64, install the aarch64 cross toolchain and matching multiarch dev packages (gcc-aarch64-linux-gnu + libc6-dev-arm64-cross on Debian/Ubuntu) so clang can find aarch64 headers/libs.",
+      "cacheVariables": {
+        "TARGET_PLATFORM": "linux",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "/usr/bin/clang",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "CMAKE_C_COMPILER_TARGET": "aarch64-linux-gnu",
+        "CMAKE_CXX_COMPILER_TARGET": "aarch64-linux-gnu"
+      }
+    },
+    {
+      "name": "linux-arm64-debug",
+      "inherits": "linux-arm64-release",
+      "displayName": "Linux (ARM64) (Debug)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
       "name": "win-x64-release",
       "inherits": "_base",
       "displayName": "Windows (x64) (Release)",
@@ -134,18 +154,43 @@
       }
     },
     {
+      "name": "win-arm64-release",
+      "inherits": "_base",
+      "displayName": "Windows (ARM64) (Release)",
+      "description": "64-bit ARM (AArch64) Windows desktop build, e.g. Surface Pro X / other Windows-on-ARM devices. Run inside a matching ARM64 MSVC developer environment (vcvarsall arm64 / msvc-dev-cmd's arch: arm64) so link.exe and the Windows SDK import libs match; CMAKE_C(XX)_COMPILER_TARGET pins clang to the arm64 MSVC ABI triple explicitly, the same way win-x64/win-x86 do for their own architectures.",
+      "cacheVariables": {
+        "TARGET_PLATFORM": "win",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER_TARGET": "aarch64-pc-windows-msvc",
+        "CMAKE_CXX_COMPILER_TARGET": "aarch64-pc-windows-msvc"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "win-arm64-debug",
+      "inherits": "win-arm64-release",
+      "displayName": "Windows (ARM64) (Debug)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
       "name": "win-x86-debug",
       "inherits": "win-x86-release",
       "displayName": "Windows (x86) (Debug)",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
-      "name": "mac-release",
+      "name": "mac-arm64-release",
       "inherits": "_base",
-      "displayName": "macOS (Release)",
+      "displayName": "macOS (ARM64) (Release)",
+      "description": "Apple Silicon (arm64) macOS build. CMAKE_OSX_ARCHITECTURES pins the architecture explicitly rather than relying on the host's default (which happens to be arm64 on an Apple Silicon Mac, but isn't guaranteed -- e.g. under Rosetta or on an Intel Mac cross-building for Apple Silicon).",
       "cacheVariables": {
         "TARGET_PLATFORM": "mac",
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_ARCHITECTURES": "arm64"
       },
       "condition": {
         "type": "equals",
@@ -154,9 +199,31 @@
       }
     },
     {
-      "name": "mac-debug",
-      "inherits": "mac-release",
-      "displayName": "macOS (Debug)",
+      "name": "mac-arm64-debug",
+      "inherits": "mac-arm64-release",
+      "displayName": "macOS (ARM64) (Debug)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "mac-x64-release",
+      "inherits": "_base",
+      "displayName": "macOS (x64) (Release)",
+      "description": "Intel (x86_64) macOS build. CMAKE_OSX_ARCHITECTURES pins the architecture explicitly; building this on an Apple Silicon host cross-compiles via clang's built-in multi-arch support (no separate toolchain needed) but any FetchContent-built dependency (SDL3) is compiled for x86_64 too, so it still links and runs correctly under Rosetta 2.",
+      "cacheVariables": {
+        "TARGET_PLATFORM": "mac",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_ARCHITECTURES": "x86_64"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "mac-x64-debug",
+      "inherits": "mac-x64-release",
+      "displayName": "macOS (x64) (Debug)",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {

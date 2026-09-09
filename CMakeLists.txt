@@ -1873,11 +1873,14 @@ else()
             set(APPDIR "${CMAKE_BINARY_DIR}/AppDir")
 
             # The forced-bundle libasound path below is a multiarch triplet
-            # directory, which differs between the linux-release (x64) and
-            # linux-x86-release presets; derive it from the same compiler
-            # target the presets already set, rather than hardcoding x64.
+            # directory, which differs between the linux-release (x64),
+            # linux-x86-release, and linux-arm64-release presets; derive it
+            # from the same compiler target the presets already set, rather
+            # than hardcoding x64.
             if(CMAKE_CXX_COMPILER_TARGET MATCHES "^i[3-6]86-")
                 set(_LINUX_MULTIARCH_TRIPLET "i386-linux-gnu")
+            elseif(CMAKE_CXX_COMPILER_TARGET MATCHES "^aarch64-")
+                set(_LINUX_MULTIARCH_TRIPLET "aarch64-linux-gnu")
             else()
                 set(_LINUX_MULTIARCH_TRIPLET "x86_64-linux-gnu")
             endif()
