@@ -28,7 +28,18 @@ ENV CXX=clang++
 # include the 32-bit crt objects/libstdc++/libgcc that clang --target=
 # i686-linux-gnu needs to actually link (verified: without it, ld fails with
 # "cannot find crtbeginS.o"/"-lstdc++"/"-lgcc_s"/"-lgcc").
-RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-install-recommends \
+#
+# arm64 multiarch is added the same way for the linux-arm64-* presets: this
+# image runs on an amd64 CI runner, so linux-arm64-release is a genuine
+# cross build (CMakeLists.txt's host-arch guard only allows that inside a
+# container, which this image is). libsdl3-dev:arm64/libusb-1.0-0-dev:arm64/
+# libasound2-dev:arm64 supply the aarch64 headers + .pc files (CMakeLists.txt
+# points pkg-config at their multiarch dir via PKG_CONFIG_LIBDIR, mirroring
+# the i386 case above); crossbuild-essential-arm64 is the aarch64 analogue of
+# g++-multilib -- it pulls in aarch64-linux-gnu-gcc/g++ plus the aarch64 crt
+# objects/libstdc++/libgcc clang --target=aarch64-linux-gnu needs to link.
+RUN dpkg --add-architecture i386 && dpkg --add-architecture arm64 \
+    && apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         clang \
         lld \
@@ -47,6 +58,10 @@ RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-in
         libusb-1.0-0-dev:i386 \
         libasound2-dev:i386 \
         g++-multilib \
+        libsdl3-dev:arm64 \
+        libusb-1.0-0-dev:arm64 \
+        libasound2-dev:arm64 \
+        crossbuild-essential-arm64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Debian Bullseye ships CMake 3.18, but the intsh/tuple dependencies declare

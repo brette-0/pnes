@@ -16,6 +16,7 @@
 #       docker compose run --rm build-dsi      # == the `dsi` job
 #       docker compose run --rm build-linux    # == the `linux-x64` job's compile
 #       PRESET=linux-x86-release docker compose run --rm build-linux  # == the `linux-x86` job's compile
+#       PRESET=linux-arm64-release docker compose run --rm build-linux  # == the `linux-arm64` job's compile
 #
 #   To run the workflow itself locally, use act (https://github.com/nektos/act),
 #   which executes Linux-container jobs against the host Docker daemon:
@@ -332,6 +333,39 @@ jobs:
         with:
           name: demo-linux-x86-appimage
           path: cmake-build-ci-linux-x86-release/*.AppImage
+          if-no-files-found: error
+
+  linux-arm64:
+    name: Linux (ARM64) (AppImage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache build tree
+        uses: actions/cache@v5
+        with:
+          path: cmake-build-ci-linux-arm64-release
+          key: linux-arm64-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'docker/Dockerfile.linux') }}
+          restore-keys: linux-arm64-
+
+      # Same image as linux-x64/linux-x86 -- docker/Dockerfile.linux also
+      # installs the arm64 multiarch SDL3/libusb/ALSA -dev packages and
+      # crossbuild-essential-arm64, so the linux-arm64-release preset
+      # (aarch64-linux-gnu compiler target) genuinely cross-compiles here:
+      # this runner is amd64, and CMakeLists.txt's arm64 host-arch guard
+      # only permits that from inside a container -- which this is.
+      - name: Build AppImage
+        run: |
+          docker compose run --rm --build build-linux bash -c '
+            set -euo pipefail
+            cmake --preset linux-arm64-release -B cmake-build-ci-linux-arm64-release
+            cmake --build cmake-build-ci-linux-arm64-release --target demo-appimage -j"$(nproc)"
+          '
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: demo-linux-arm64-appimage
+          path: cmake-build-ci-linux-arm64-release/*.AppImage
           if-no-files-found: error
 
   mac-arm64:
