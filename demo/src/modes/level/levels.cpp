@@ -278,6 +278,7 @@ namespace level {
         const u8 ap = (attr_column + prev_parity_fix()) & 1;   // odd-width parity fix
         const u8 mask = ap ? 0xCC : 0x00;
         for (auto & j : AttributeBuffer) j &= mask;
+        AttributeBuffer[0] |= 0x0F;   // HUD rows 0-1 share attr_idx 0's top quadrant with level rows 2-3; pin it to palette 3
 
         const u8* col = ColMapColumn(worldCol);
         if (!col) return;                            // out of window (never in steady scroll)
