@@ -1914,10 +1914,29 @@ else()
     # Strip the final executable in non-Debug builds. MSVC has no strip
     # (symbols live in a separate .pdb), so only run when CMAKE_STRIP is
     # available (GCC/Clang/MinGW toolchains).
+    #
+    # CMAKE_STRIP is whatever host binutils `strip` CMake found -- for the
+    # linux-x86-release cross build that's fine, since x86_64 binutils'
+    # strip/objcopy understands the i386 ELF machine type natively (biarch).
+    # It is NOT fine for linux-arm64-release: the host's strip can't
+    # recognise the aarch64 ELF machine type at all ("Unable to recognise
+    # the format of the input file"), so the cross-arch aarch64-linux-gnu-*
+    # strip from binutils-aarch64-linux-gnu (installed in
+    # docker/Dockerfile.linux alongside the rest of the arm64 cross bits)
+    # is used instead when it's present.
     # ------------------------------------------------------------------
-    if(CMAKE_STRIP AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(_PNES_STRIP "${CMAKE_STRIP}")
+    if(CMAKE_CXX_COMPILER_TARGET MATCHES "^aarch64-"
+            AND NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+        find_program(_PNES_AARCH64_STRIP aarch64-linux-gnu-strip)
+        if(_PNES_AARCH64_STRIP)
+            set(_PNES_STRIP "${_PNES_AARCH64_STRIP}")
+        endif()
+    endif()
+
+    if(_PNES_STRIP AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_custom_command(TARGET demo POST_BUILD
-                COMMAND ${CMAKE_STRIP} $<TARGET_FILE:demo>
+                COMMAND ${_PNES_STRIP} $<TARGET_FILE:demo>
                 COMMENT "Stripping demo executable"
         )
     endif()
@@ -1944,6 +1963,22 @@ else()
                 set(_LINUX_MULTIARCH_TRIPLET "aarch64-linux-gnu")
             else()
                 set(_LINUX_MULTIARCH_TRIPLET "x86_64-linux-gnu")
+            endif()
+
+            # linuxdeploy bundles its own x86_64 `strip` inside its AppImage
+            # (it doesn't consult PATH for one), so when cross-packaging for
+            # aarch64 on an x86_64 host it fails with "Unable to recognise
+            # the architecture of the input file" on every ELF it deploys --
+            # the same host/target mismatch _PNES_STRIP works around above,
+            # but linuxdeploy has no equivalent --strip-tool flag to point
+            # at aarch64-linux-gnu-strip instead. It does honour a documented
+            # NO_STRIP env var to skip that step entirely, which is fine
+            # here: the demo executable this AppImage bundles is already
+            # stripped above, and libasound.so.2 doesn't need to be.
+            set(_PNES_LINUXDEPLOY_ENV "")
+            if(CMAKE_CXX_COMPILER_TARGET MATCHES "^aarch64-"
+                    AND NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+                set(_PNES_LINUXDEPLOY_ENV "NO_STRIP=1")
             endif()
 
             configure_file(
@@ -1986,7 +2021,8 @@ exec ./demo \"\$@\"
                     COMMAND ${CMAKE_COMMAND} -E copy
                             "${CMAKE_BINARY_DIR}/AppRun"      "${APPDIR}/AppRun"
                     COMMAND chmod +x "${APPDIR}/AppRun"
-                    COMMAND ${LINUXDEPLOY}
+                    COMMAND ${CMAKE_COMMAND} -E env ${_PNES_LINUXDEPLOY_ENV}
+                            ${LINUXDEPLOY}
                             --appdir "${APPDIR}"
                             --executable "${APPDIR}/usr/bin/demo"
                             --desktop-file "${CMAKE_BINARY_DIR}/demo.desktop"

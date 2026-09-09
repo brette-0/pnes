@@ -33,12 +33,24 @@ ENV CXX=clang++
 # image runs on an amd64 CI runner, so linux-arm64-release is a genuine
 # cross build -- CMakeLists.txt checks for these exact packages (via
 # PKG_CONFIG_LIBDIR) rather than gating on being inside a container.
-# libsdl3-dev:arm64/libusb-1.0-0-dev:arm64/
-# libasound2-dev:arm64 supply the aarch64 headers + .pc files (CMakeLists.txt
-# points pkg-config at their multiarch dir via PKG_CONFIG_LIBDIR, mirroring
-# the i386 case above); crossbuild-essential-arm64 is the aarch64 analogue of
-# g++-multilib -- it pulls in aarch64-linux-gnu-gcc/g++ plus the aarch64 crt
-# objects/libstdc++/libgcc clang --target=aarch64-linux-gnu needs to link.
+# libsdl3-dev:arm64/libusb-1.0-0-dev:arm64/libasound2-dev:arm64 supply the
+# aarch64 headers + .pc files (CMakeLists.txt points pkg-config at their
+# multiarch dir via PKG_CONFIG_LIBDIR, mirroring the i386 case above).
+#
+# Deliberately NOT crossbuild-essential-arm64 here, unlike the i386 case's
+# g++-multilib: on Trixie that meta-package pulls in gcc-14-aarch64-linux-gnu,
+# which Conflicts with gcc-multilib (pulled in by g++-multilib above) --
+# apt refuses to install both gcc flavours in the same image ("held broken
+# packages"). clang --target=aarch64-linux-gnu never uses that cross-gcc
+# binary anyway, only the crt objects/libstdc++/libgcc/binutils it would
+# otherwise have dragged in as dependencies -- so those are installed
+# directly instead, sidestepping the gcc-vs-gcc conflict entirely:
+# binutils-aarch64-linux-gnu (as/ld, needed for "unrecognised emulation
+# mode: aarch64linux" otherwise), libc6-dev-arm64-cross +
+# linux-libc-dev-arm64-cross (crt objects/headers), and
+# libstdc++-14-dev-arm64-cross + libgcc-14-dev-arm64-cross (verified:
+# without these, linking a real binary fails the same way the i386 case's
+# comment describes).
 RUN dpkg --add-architecture i386 && dpkg --add-architecture arm64 \
     && apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
@@ -62,7 +74,11 @@ RUN dpkg --add-architecture i386 && dpkg --add-architecture arm64 \
         libsdl3-dev:arm64 \
         libusb-1.0-0-dev:arm64 \
         libasound2-dev:arm64 \
-        crossbuild-essential-arm64 \
+        binutils-aarch64-linux-gnu \
+        libc6-dev-arm64-cross \
+        linux-libc-dev-arm64-cross \
+        libstdc++-14-dev-arm64-cross \
+        libgcc-14-dev-arm64-cross \
     && rm -rf /var/lib/apt/lists/*
 
 # Debian Bullseye ships CMake 3.18, but the intsh/tuple dependencies declare
