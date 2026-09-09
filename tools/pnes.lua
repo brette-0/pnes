@@ -164,24 +164,68 @@ end
 -- instead of just watching raw writes.
 local BOUNDARY_TAG_BYTES = 2 -- at EACH end (header, footer)
 
--- Run-length-encodes `touched` into alternating used/empty runs, e.g.
--- "u(28) e(50) u(50)" for a 128-byte heap touched at both ends but not the
--- middle. Also returns how many separate used runs there are -- more than
--- one means the touched bytes aren't contiguous, i.e. there's a gap of
--- never-touched bytes sitting between two used ones.
+-- Same 8-byte minimum this malloc clamps every chunk to (BOUNDARY_TAG_BYTES's
+-- own comment cites the exact disassembly: d63e cpx #$7 / d640 bcs / d642 ldx
+-- #$8) -- reused here as the frag report's granule, not just the boundary
+-- trim above. A used/empty gap SHORTER than one full chunk-granule can never
+-- be a real reusable hole: nothing this allocator ever hands out is smaller
+-- than HEAP_GRANULE bytes, so a 1- or 2-byte gap is just quantization slop
+-- inside/between chunks, not memory a future allocation could ever actually
+-- land in. Reporting it as "fragmentation" alongside genuine reusable gaps
+-- (a gap of a full chunk-or-more) overstates what's actually wrong.
+local HEAP_GRANULE = 8
+
+-- True if any byte in `touched`'s [start, stop] range has ever been written.
+local function heapCellTouched(touched, start, stop)
+    for i = start, stop do
+        if touched[i] then return true end
+    end
+    return false
+end
+
+-- Run-length-encodes `touched` into alternating used/empty runs of whole
+-- HEAP_GRANULE-byte cells (the last cell short if heapSize isn't a multiple
+-- of HEAP_GRANULE) -- e.g. "u(40) e(84)" for a heap where every touched byte
+-- happens to fall within the first five 8-byte cells. A cell counts as
+-- "used" the moment ANY one of its bytes has ever been touched, so this
+-- reports real fragmentation (gaps of a full chunk-or-more between live
+-- allocations) without also flagging the sub-chunk padding HEAP_GRANULE
+-- itself creates -- see HEAP_GRANULE's own comment on why that padding was
+-- never a real, reusable hole to begin with.
+--
+-- Also returns usedBytes -- the sum of all "used" cells' lengths, i.e. how
+-- many bytes the ALLOCATOR has actually committed to chunks, not how many
+-- your code happened to write into. This is deliberately NOT the same as
+-- counting `touched` directly: a chunk's un-written padding bytes (the
+-- reason HEAP_GRANULE exists at all) are memory the allocator has reserved
+-- and can never hand to anyone else, so they count as "used" for this
+-- purpose even though nothing ever wrote them.
 local function heapRunLengthEncoding(touched, heapSize)
     local parts = {}
-    local usedRuns = 0
+    local usedRuns, usedBytes = 0, 0
+    local runIsUsed, runLen = nil, 0
     local i = 1
     while i <= heapSize do
-        local isUsed = touched[i] or false
-        local runStart = i
-        repeat i = i + 1 until i > heapSize or (touched[i] or false) ~= isUsed
-        local runLen = i - runStart
-        if isUsed then usedRuns = usedRuns + 1 end
-        parts[#parts + 1] = string.format("%s(%d)", isUsed and "u" or "e", runLen)
+        local cellEnd = math.min(i + HEAP_GRANULE - 1, heapSize)
+        local cellLen = cellEnd - i + 1
+        local isUsed = heapCellTouched(touched, i, cellEnd)
+        if isUsed then usedBytes = usedBytes + cellLen end
+        if runIsUsed == nil then
+            runIsUsed, runLen = isUsed, cellLen
+        elseif isUsed == runIsUsed then
+            runLen = runLen + cellLen
+        else
+            if runIsUsed then usedRuns = usedRuns + 1 end
+            parts[#parts + 1] = string.format("%s(%d)", runIsUsed and "u" or "e", runLen)
+            runIsUsed, runLen = isUsed, cellLen
+        end
+        i = cellEnd + 1
     end
-    return table.concat(parts, " "), usedRuns
+    if runIsUsed ~= nil then
+        if runIsUsed then usedRuns = usedRuns + 1 end
+        parts[#parts + 1] = string.format("%s(%d)", runIsUsed and "u" or "e", runLen)
+    end
+    return table.concat(parts, " "), usedRuns, usedBytes
 end
 
 -- Returns a `reset` function; see startStackTracking's comment above for why.
@@ -205,26 +249,31 @@ local function startHeapTracking(heapStart, heapSize, silentHeapAmount)
     end
 
     local touched = {}
-    local touchedCount = 0
+    -- Last-REPORTED granular usage, not a raw touched-byte count -- see
+    -- heapRunLengthEncoding's own comment on usedBytes. Touching a second
+    -- byte inside an already-committed 8-byte cell changes nothing an
+    -- allocator-level view cares about, so it must not re-print either.
+    local lastReportedUsage = 0
 
     local function onHeapWrite(address)
         local offset = address - usableStart + 1
         if touched[offset] then return end
         touched[offset] = true
-        touchedCount = touchedCount + 1
 
-        if touchedCount > silentHeapAmount then
-            emu.log(string.format("app: heap usage %d bytes", touchedCount))
-
-            local pattern, usedRuns = heapRunLengthEncoding(touched, usableSize)
-            if usedRuns > 1 then
-                emu.log("app: heap frag " .. pattern)
+        local pattern, usedRuns, usedBytes = heapRunLengthEncoding(touched, usableSize)
+        if usedBytes ~= lastReportedUsage then
+            lastReportedUsage = usedBytes
+            if usedBytes > silentHeapAmount then
+                emu.log(string.format("app: heap usage %d bytes", usedBytes))
+                if usedRuns > 1 then
+                    emu.log("app: heap frag " .. pattern)
+                end
             end
-        end
 
-        if touchedCount == usableSize then
-            emu.log("app: heap exhausted -- every usable byte has now been touched at least "
-                .. "once; grow __heap_default_limit (see demo/link.ld) or reduce allocations.")
+            if usedBytes == usableSize then
+                emu.log("app: heap exhausted -- every usable byte is now committed to some "
+                    .. "chunk; grow __heap_default_limit (see demo/link.ld) or reduce allocations.")
+            end
         end
     end
 
@@ -233,7 +282,7 @@ local function startHeapTracking(heapStart, heapSize, silentHeapAmount)
 
     return function()
         touched = {}
-        touchedCount = 0
+        lastReportedUsage = 0
     end
 end
 

@@ -95,6 +95,14 @@ namespace title {
             initCursor
         );
 
+        // Free whatever a PREVIOUS visit to the title screen left behind --
+        // Make()'s result is heap-allocated and caller-owned (see
+        // singlechoice.hpp's own comment on Make()), and pMenuChunks is a
+        // file-static that just gets silently overwritten on re-entry
+        // otherwise, leaking a fresh buffer<u8*>[kMenuOptions] every single
+        // time. Safe on the very first call too: pMenuChunks starts null,
+        // and delete[] on a null pointer is a no-op.
+        delete[] pMenuChunks;
         pMenuChunks = menuChunks;
         menuClearAddr = ppu::CartesianToAddress({static_cast<u16>(menuCol - 2), static_cast<u16>(kBottomRightNT + 1)});
         menuAddr = ppu::CartesianToAddress({menuCol, static_cast<u16>(kBottomRightNT + 1)});
@@ -103,6 +111,8 @@ namespace title {
         const u16 playModeCol = kMenuNT + (viewport_mx() << 1) - 1 - kPlayModeBoxWidth;
         ui::choice::SingleChoice playMode(TitleUnselect, TitleSelect, kPlayModeOptions);
         playModePos = {playModeCol, static_cast<u16>(kBottomRightNT + 1)};
+        // Same leak, same fix -- see pMenuChunks's own comment above.
+        delete[] pPlayModeChunks;
         pPlayModeChunks = playMode.Make(
             SIZED_OBJ(msg_playMode),
             playModePos,
