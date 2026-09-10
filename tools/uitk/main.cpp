@@ -21,6 +21,7 @@
 #include <functional>
 #include <QTimer>
 #include <QTreeWidget>
+#include <QAbstractItemModel>
 #include <QMenu>
 #include <QInputDialog>
 #include <QMouseEvent>
@@ -192,12 +193,53 @@ constexpr int kErrorMaskRole = Qt::UserRole + 13;
 // property failing to resolve, so it's tracked separately even though both
 // end up shown the same way (red highlight + status-bar banner).
 constexpr int kNegSpaceViolationRole = Qt::UserRole + 14;
+// The one-character word boundary used when wrapping kTextContentRole across
+// a textbox's rows (see wrapTextIntoRows()) -- defaults to a space, but any
+// single character is allowed since it's just the character that marks
+// where a line break is permitted.
+constexpr int kSplitterRole = Qt::UserRole + 15;
+// Which physical NES nametable (0-3, i.e. $2000/$2400/$2800/$2C00) this
+// node's position resolves into in-game. The PPU only ever fetches a tile
+// from one of four 32x30 quadrants, selected by the horizontal/vertical bits
+// of the tile coordinate (see ppu::CartesianToAddress / xy_to_nt_addr,
+// src/nes/video.cpp: nt_h from x>>5, nt_v from y/30) -- this is that same
+// quadrant selection, made an explicit per-node property instead of implicit
+// in a raw tile coordinate, since a design's own tile space isn't required
+// to line up with the PPU's 32x30 quadrant boundaries.
+constexpr int kNametableRole = Qt::UserRole + 16;
 constexpr char kComponentKind[] = "component";
 constexpr char kNegSpaceKind[] = "negspace";
 constexpr char kTextboxPrefix[] = "[T] ";
 constexpr char kNegSpacePrefix[] = "[N] ";
 
 enum class TextAlign { Left = 0, Center = 1, Right = 2 };
+
+// Splits `text` into rows of at most `w` characters, breaking only at
+// `splitter` boundaries where possible -- a "word" is a maximal run of
+// characters between splitters. Words are greedily packed onto the current
+// row (rejoined with a single splitter between them) until the next word
+// wouldn't fit; that word starts the next row instead. A word that's wider
+// than `w` all on its own is never broken up -- it's placed at the start of
+// its row regardless and left to overflow past the row's width rather than
+// being force-wrapped mid-word.
+QStringList wrapTextIntoRows(const QString& text, QChar splitter, int w) {
+    const QStringList words = text.split(splitter);
+    QStringList rows;
+    QString current;
+    for (const QString& word : words) {
+        if (current.isEmpty()) {
+            current = word;
+        } else if (current.length() + 1 + word.length() <= w) {
+            current += splitter;
+            current += word;
+        } else {
+            rows << current;
+            current = word;
+        }
+    }
+    rows << current;
+    return rows;
+}
 
 bool isComponentItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kComponentKind);
@@ -358,7 +400,12 @@ private:
         }
         if (c == '(') {
             ++pos_;
-            ExprPtr inner = parseExpr(ok);
+            // Full grammar, not just the additive level -- otherwise a shift
+            // inside parentheses (e.g. "(VIEWPORT_TX >> 2) - 1") can never
+            // parse: parseExpr() alone has no notion of << / >>, so it stops
+            // right before the shift operator and the missing ')' check
+            // below fails.
+            ExprPtr inner = parseShift(ok);
             skipSpace();
             if (!ok || peek() != ')') {
                 ok = false;
@@ -475,9 +522,11 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
         obj["posYExpr"] = item->data(0, kPosYExprRole).toString();
         obj["sizeWExpr"] = item->data(0, kSizeWExprRole).toString();
         obj["sizeHExpr"] = item->data(0, kSizeHExprRole).toString();
+        obj["nametable"] = item->data(0, kNametableRole).toInt();
         if (isComponentItem(item)) {
             obj["align"] = item->data(0, kAlignRole).toInt();
             obj["text"] = item->data(0, kTextContentRole).toString();
+            obj["splitter"] = item->data(0, kSplitterRole).toString();
         }
     } else {
         obj["kind"] = QStringLiteral("branch");
@@ -521,9 +570,11 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
         ok = false;
         item->setData(0, kSizeHRole, sizeHExpr.toInt(&ok));
         if (!ok) item->setData(0, kSizeHRole, 1);
+        item->setData(0, kNametableRole, std::clamp(obj["nametable"].toInt(0), 0, 3));
         if (isComponent) {
             item->setData(0, kAlignRole, obj["align"].toInt());
             item->setData(0, kTextContentRole, obj["text"].toString());
+            item->setData(0, kSplitterRole, obj["splitter"].toString(QStringLiteral(" ")));
         }
         item->setData(0, kLastValidNameRole, item->text(0));
     }
@@ -629,13 +680,16 @@ protected:
                 painter.setPen(Qt::white);
 
                 const auto align = static_cast<TextAlign>(item->data(0, kAlignRole).toInt());
-                // Text flows row-major through the region at one character
-                // per cell, wrapping to the next row after `w` characters
-                // (extra characters beyond the region's w*h capacity are
-                // dropped). Alignment positions each row's run of
-                // characters within that row's w cells.
-                for (int row = 0; row < h; ++row) {
-                    const QString rowText = text.mid(row * w, w);
+                const QString splitterStr = item->data(0, kSplitterRole).toString();
+                const QChar splitter = splitterStr.isEmpty() ? QLatin1Char(' ') : splitterStr.at(0);
+                // Text is wrapped into words at `splitter` boundaries (see
+                // wrapTextIntoRows()) and flows one row of words per cell
+                // row, top to bottom; rows beyond the region's h are
+                // dropped. Alignment positions each row's run of characters
+                // within that row's w cells.
+                const QStringList rows = wrapTextIntoRows(text, splitter, w);
+                for (int row = 0; row < h && row < rows.size(); ++row) {
+                    const QString& rowText = rows.at(row);
                     if (rowText.isEmpty()) {
                         break;
                     }
@@ -698,14 +752,6 @@ protected:
                                                      hit->data(0, kTextContentRole).toString(), &ok);
         if (ok) {
             hit->setData(0, kTextContentRole, text);
-            // Text longer than the box is otherwise silently truncated by
-            // the row-wrap in paintEvent() -- growing the box to fit
-            // instead keeps newly-typed text visible without also having to
-            // separately resize it. Like a drag, this overwrites any
-            // existing width formula with a plain literal.
-            if (text.length() > hit->data(0, kSizeWRole).toInt()) {
-                hit->setData(0, kSizeWExprRole, QString::number(text.length()));
-            }
         }
     }
 
@@ -1055,6 +1101,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     auto* sizeWEdit = new QLineEdit(properties);
     auto* sizeHEdit = new QLineEdit(properties);
     auto* alignCombo = new QComboBox(properties);
+    auto* splitterEdit = new QLineEdit(properties);
+    auto* nametableCombo = new QComboBox(properties);
     const QString exprHint = "A number, or a formula like Other.pos.x + 1.\n"
                               "Operators: + - * / << >> and parentheses.\n"
                               "VIEWPORT_TX/TY = viewport size in tiles, VIEWPORT_PX/PY = in pixels.";
@@ -1063,6 +1111,13 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     sizeWEdit->setToolTip(exprHint);
     sizeHEdit->setToolTip(exprHint);
     alignCombo->addItems({"Left", "Center", "Right"});
+    splitterEdit->setMaxLength(1);
+    splitterEdit->setToolTip("The single character that marks a word boundary when wrapping text "
+                              "onto the next row (default: space).");
+    nametableCombo->addItems({"0 ($2000)", "1 ($2400)", "2 ($2800)", "3 ($2C00)"});
+    nametableCombo->setToolTip("Which physical NES nametable this node's tile position resolves "
+                                "into in-game -- the same $2000/$2400/$2800/$2C00 quadrant "
+                                "ppu::CartesianToAddress selects from a tile coordinate.");
 
     auto* propertiesForm = new QFormLayout(properties);
     // The sidebar is only ~100-200px wide -- a label sharing a row with its
@@ -1075,17 +1130,22 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     propertiesForm->addRow("Size X", sizeWEdit);
     propertiesForm->addRow("Size Y", sizeHEdit);
     propertiesForm->addRow("Alignment", alignCombo);
+    propertiesForm->addRow("Splitter", splitterEdit);
+    propertiesForm->addRow("Nametable", nametableCombo);
     properties->setVisible(false);
 
     // Populates the panel's fields from `item` without re-triggering the
     // edit handlers below (which would otherwise write the same values
     // straight back -- harmless, but pointless).
-    auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo](QTreeWidgetItem* item) {
+    auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, splitterEdit,
+                         nametableCombo](QTreeWidgetItem* item) {
         const QSignalBlocker bx(posXEdit);
         const QSignalBlocker by(posYEdit);
         const QSignalBlocker bw(sizeWEdit);
         const QSignalBlocker bh(sizeHEdit);
         const QSignalBlocker ba(alignCombo);
+        const QSignalBlocker bs(splitterEdit);
+        const QSignalBlocker bn(nametableCombo);
         auto exprOr = [item](int exprRole, int fallback) {
             const QString s = item->data(0, exprRole).toString();
             return s.isEmpty() ? QString::number(fallback) : s;
@@ -1095,6 +1155,9 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         sizeWEdit->setText(exprOr(kSizeWExprRole, 1));
         sizeHEdit->setText(exprOr(kSizeHExprRole, 1));
         alignCombo->setCurrentIndex(item->data(0, kAlignRole).toInt());
+        const QString splitter = item->data(0, kSplitterRole).toString();
+        splitterEdit->setText(splitter.isEmpty() ? QStringLiteral(" ") : splitter);
+        nametableCombo->setCurrentIndex(std::clamp(item->data(0, kNametableRole).toInt(), 0, 3));
     };
 
     // Flags the exact field(s) the resolver couldn't work out for the
@@ -1113,13 +1176,16 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
 
     QObject::connect(
         tree, &QTreeWidget::currentItemChanged,
-        [properties, propertiesForm, alignCombo, populateFrom, updateErrorHighlight](QTreeWidgetItem* current,
-                                                                                       QTreeWidgetItem*) {
+        [properties, propertiesForm, alignCombo, splitterEdit, populateFrom,
+         updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
             const bool selected = isGeometryItem(current);
             properties->setVisible(selected);
-            // Alignment only means something for a textbox's text -- a
-            // negative-space zone has none.
+            // Alignment and the word-wrap splitter only mean something for a
+            // textbox's text -- a negative-space zone has none. Nametable
+            // applies to any geometry node's position, so it stays visible
+            // for both kinds (no setRowVisible call needed for it).
             propertiesForm->setRowVisible(alignCombo, isComponentItem(current));
+            propertiesForm->setRowVisible(splitterEdit, isComponentItem(current));
             if (selected) {
                 populateFrom(current);
                 updateErrorHighlight(current);
@@ -1127,19 +1193,20 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         });
 
     // The selected item's geometry can also change from outside the panel
-    // -- dragging it on the canvas, the text-length auto-grow, or the
-    // resolver recomputing a formula -- so keep the panel's fields from
+    // -- dragging it on the canvas, or the resolver recomputing a formula --
+    // so keep the panel's fields from
     // going stale whenever that happens. Skipped while a field has focus so
     // an unrelated change elsewhere doesn't clobber an in-progress edit.
     QObject::connect(
         tree, &QTreeWidget::itemChanged,
-        [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit,
-         sizeHEdit](QTreeWidgetItem* item, int column) {
+        [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit, sizeHEdit,
+         splitterEdit](QTreeWidgetItem* item, int column) {
             if (column != 0 || item != tree->currentItem() || !isGeometryItem(item)) {
                 return;
             }
             updateErrorHighlight(item);
-            if (posXEdit->hasFocus() || posYEdit->hasFocus() || sizeWEdit->hasFocus() || sizeHEdit->hasFocus()) {
+            if (posXEdit->hasFocus() || posYEdit->hasFocus() || sizeWEdit->hasFocus() || sizeHEdit->hasFocus() ||
+                splitterEdit->hasFocus()) {
                 return;
             }
             populateFrom(item);
@@ -1170,6 +1237,19 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             item->setData(0, kAlignRole, v);
         }
     });
+    QObject::connect(splitterEdit, &QLineEdit::editingFinished, [tree, splitterEdit] {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isComponentItem(item)) {
+            const QString text = splitterEdit->text();
+            item->setData(0, kSplitterRole, text.isEmpty() ? QStringLiteral(" ") : text);
+        }
+    });
+    QObject::connect(nametableCombo, qOverload<int>(&QComboBox::currentIndexChanged), [tree](int v) {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isGeometryItem(item)) {
+            item->setData(0, kNametableRole, v);
+        }
+    });
 
     // addComponentNode()/addNegativeSpaceNode() take an explicit parent so
     // nesting under other nodes (not just root) already works -- there's
@@ -1196,6 +1276,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         child->setData(0, kSizeWRole, 1);
         child->setData(0, kSizeHRole, 1);
         child->setData(0, kAlignRole, static_cast<int>(TextAlign::Left));
+        child->setData(0, kSplitterRole, QStringLiteral(" "));
+        child->setData(0, kNametableRole, 0);
         child->setData(0, kLastValidNameRole, name);
         parent->setExpanded(true);
         return child;
@@ -1215,6 +1297,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         child->setData(0, kPosYRole, 0);
         child->setData(0, kSizeWRole, 1);
         child->setData(0, kSizeHRole, 1);
+        child->setData(0, kNametableRole, 0);
         child->setData(0, kLastValidNameRole, name);
         parent->setExpanded(true);
         return child;
@@ -1574,6 +1657,16 @@ ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidge
     // dragging on the canvas itself, without each of those needing to know
     // about the grid directly.
     QObject::connect(tree, &QTreeWidget::itemChanged, grid, [grid](QTreeWidgetItem*, int) { grid->update(); });
+
+    // Deleting (or otherwise structurally adding/removing) a node doesn't
+    // go through setData() at all, so itemChanged alone never fires for it
+    // -- without this, a deleted component's drawn cell would keep showing
+    // until something unrelated happened to repaint the canvas. QTreeWidget
+    // delegates to a real QAbstractItemModel underneath, which does report
+    // structural changes regardless of what API triggered them.
+    QObject::connect(tree->model(), &QAbstractItemModel::rowsRemoved, grid, [grid] { grid->update(); });
+    QObject::connect(tree->model(), &QAbstractItemModel::rowsInserted, grid, [grid] { grid->update(); });
+    QObject::connect(tree->model(), &QAbstractItemModel::modelReset, grid, [grid] { grid->update(); });
 
     auto sync = std::make_shared<std::function<void()>>();
     *sync = [grid, tilePx, xEdit, yEdit, window] {

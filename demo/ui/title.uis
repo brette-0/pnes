@@ -5,34 +5,14 @@
             "children": [
             ],
             "kind": "component",
-            "name": "[T] tbMary",
-            "posXExpr": "28",
-            "posYExpr": "0",
-            "sizeHExpr": "1",
-            "sizeWExpr": "4",
-            "text": "mary"
-        },
-        {
-            "children": [
-            ],
-            "kind": "negspace",
-            "name": "[N] NegativeSpace1",
-            "posXExpr": "0",
-            "posYExpr": "2",
-            "sizeHExpr": "VIEWPORT_TY - 8",
-            "sizeWExpr": "VIEWPORT_TX"
-        },
-        {
-            "align": 0,
-            "children": [
-            ],
-            "kind": "component",
-            "name": "[T] tbCoins",
-            "posXExpr": "29",
+            "name": "[T] tbTitle",
+            "nametable": 3,
+            "posXExpr": "1",
             "posYExpr": "1",
-            "sizeHExpr": "1",
-            "sizeWExpr": "3",
-            "text": "X00"
+            "sizeHExpr": "3",
+            "sizeWExpr": "( VIEWPORT_TX >> 2 ) - 1",
+            "splitter": " ",
+            "text": "SUPER MARY SISTERS"
         }
     ],
     "version": 1
