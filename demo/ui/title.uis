@@ -1,5 +1,17 @@
 {
     "nodes": [
+        {
+            "align": 0,
+            "children": [
+            ],
+            "kind": "component",
+            "name": "[T] Textbox1",
+            "posXExpr": "0",
+            "posYExpr": "0",
+            "sizeHExpr": "1",
+            "sizeWExpr": "4",
+            "text": "idea"
+        }
     ],
     "version": 1
 }

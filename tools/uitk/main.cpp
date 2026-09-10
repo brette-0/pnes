@@ -27,11 +27,11 @@
 #include <QColor>
 #include <QVector>
 #include <QSplitter>
-#include <QSpinBox>
 #include <QComboBox>
 #include <QSignalBlocker>
 #include <QFontDatabase>
 #include <QMenuBar>
+#include <QStatusBar>
 #include <QAction>
 #include <QKeySequence>
 #include <QFileDialog>
@@ -43,6 +43,13 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QtAlgorithms>
+#include <QRegularExpression>
+#include <QSet>
+#include <QHash>
+#include <QBrush>
+#include <map>
+#include <optional>
+#include <utility>
 
 namespace {
 
@@ -57,8 +64,9 @@ constexpr double kReferenceHeight = 1080.0;
 // unusable.
 constexpr int kMinGridDimensionPx = 100;
 
-// Same reference scaling as the tile grid: 100px at 1080p, 200px at 4K.
-constexpr double kSidebarWidthPxAt1080p = 100.0;
+// Same reference scaling as the tile grid: 200px at 1080p, 400px at 4K
+// (doubled from the original 100px/200px).
+constexpr double kSidebarWidthPxAt1080p = 200.0;
 
 // Reserve room for the window's own frame (title bar, borders) when sizing
 // against the screen -- without this, a window requested at exactly the
@@ -151,11 +159,33 @@ protected:
 // there, rather than each occupied cell separately holding a copy of it.
 constexpr int kKindRole = Qt::UserRole;
 constexpr int kTextContentRole = Qt::UserRole + 1;
+// kPos*Role/kSize*Role hold the *resolved* (computed) values -- the ints the
+// canvas and hit-testing actually read. kPos*ExprRole/kSize*ExprRole hold what
+// the user actually typed for that property: either a bare literal ("5") or a
+// formula referencing other nodes by name ("Player1.pos.x + 1"). The resolver
+// (see ExprParser/evalExpr/resolveAll's definition in createSidebar) turns
+// the latter into the former.
 constexpr int kPosXRole = Qt::UserRole + 2;
 constexpr int kPosYRole = Qt::UserRole + 3;
 constexpr int kSizeWRole = Qt::UserRole + 4;
 constexpr int kSizeHRole = Qt::UserRole + 5;
 constexpr int kAlignRole = Qt::UserRole + 6;
+constexpr int kPosXExprRole = Qt::UserRole + 7;
+constexpr int kPosYExprRole = Qt::UserRole + 8;
+constexpr int kSizeWExprRole = Qt::UserRole + 9;
+constexpr int kSizeHExprRole = Qt::UserRole + 10;
+// Set by the resolver when one or more of a component's properties couldn't
+// be resolved -- either a parse error, a reference to an unknown/duplicate
+// name, or a dependency cycle that never bottoms out.
+constexpr int kErrorRole = Qt::UserRole + 11;
+// The last name (including the "[T] " prefix) that passed validation --
+// restored verbatim if an edit produces something that isn't a valid,
+// unique identifier.
+constexpr int kLastValidNameRole = Qt::UserRole + 12;
+// Bitmask (bit 0=posX, 1=posY, 2=sizeW, 3=sizeH) of specifically which
+// properties failed to resolve, so the properties panel can flag the exact
+// field at fault rather than just the node as a whole.
+constexpr int kErrorMaskRole = Qt::UserRole + 13;
 constexpr char kComponentKind[] = "component";
 constexpr char kTextboxPrefix[] = "[T] ";
 
@@ -163,6 +193,241 @@ enum class TextAlign { Left = 0, Center = 1, Right = 2 };
 
 bool isComponentItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kComponentKind);
+}
+
+// Walks the whole tree (not just direct children) collecting every component
+// node -- shared by the canvas (rendering/hit-testing), name validation, and
+// the expression resolver.
+QVector<QTreeWidgetItem*> collectComponentItems(QTreeWidgetItem* node) {
+    QVector<QTreeWidgetItem*> result;
+    std::function<void(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* n) {
+        for (int i = 0; i < n->childCount(); ++i) {
+            QTreeWidgetItem* child = n->child(i);
+            if (isComponentItem(child)) {
+                result.push_back(child);
+            }
+            visit(child);
+        }
+    };
+    visit(node);
+    return result;
+}
+
+// --- Property expressions -----------------------------------------------
+//
+// A property's stored text is a small arithmetic expression over integer
+// literals, +/-/*//, parentheses, and identifiers of the form
+// `NodeName.pos.x`, `NodeName.pos.y`, `NodeName.size.w`, `NodeName.size.h`
+// (referencing another component by its bare name, sans the "[T] " prefix --
+// the same name that will identify it in generated C++), plus the two bare
+// globals VIEWPORT_TX and VIEWPORT_PY (the viewport's configured tile
+// width/height). Node names are therefore constrained to be valid C++
+// identifiers and unique, since they're both the expression namespace here
+// and the symbol that later code generation will emit.
+struct ExprNode {
+    enum class Kind { Number, Ident, Add, Sub, Mul, Div, Shl, Shr, Neg };
+    Kind kind = Kind::Number;
+    long long number = 0;
+    QString identName;  // component base name, or "VIEWPORT_TX"/"VIEWPORT_PY"
+    int identProp = -1;  // 0=pos.x, 1=pos.y, 2=size.w, 3=size.h; -1 for the bare globals
+    std::shared_ptr<ExprNode> a;
+    std::shared_ptr<ExprNode> b;
+};
+using ExprPtr = std::shared_ptr<ExprNode>;
+
+// Small hand-rolled recursive-descent parser -- the grammar is deliberately
+// tiny (arithmetic + dotted identifiers), so a dependency like a full
+// expression-parsing library would be overkill.
+class ExprParser {
+public:
+    explicit ExprParser(const QString& src) : s_(src) {}
+
+    ExprPtr parse(bool& ok) {
+        ok = true;
+        skipSpace();
+        ExprPtr e = parseShift(ok);
+        skipSpace();
+        if (!ok || pos_ != s_.length()) {
+            ok = false;
+            return nullptr;
+        }
+        return e;
+    }
+
+private:
+    void skipSpace() {
+        while (pos_ < s_.length() && s_.at(pos_).isSpace()) ++pos_;
+    }
+    QChar peek() const { return pos_ < s_.length() ? s_.at(pos_) : QChar(); }
+    QChar peek2() const { return pos_ + 1 < s_.length() ? s_.at(pos_ + 1) : QChar(); }
+
+    // C++'s own precedence has shift binding weaker than +/- (so
+    // `a + b >> 1` parses the way it would in generated C++ code), hence
+    // this sits above parseExpr rather than beside it.
+    ExprPtr parseShift(bool& ok) {
+        ExprPtr left = parseExpr(ok);
+        while (ok) {
+            skipSpace();
+            const QChar c = peek();
+            if ((c != '<' && c != '>') || peek2() != c) break;
+            pos_ += 2;
+            ExprPtr right = parseExpr(ok);
+            if (!ok) return nullptr;
+            auto node = std::make_shared<ExprNode>();
+            node->kind = (c == '<') ? ExprNode::Kind::Shl : ExprNode::Kind::Shr;
+            node->a = left;
+            node->b = right;
+            left = node;
+        }
+        return ok ? left : nullptr;
+    }
+
+    ExprPtr parseExpr(bool& ok) {
+        ExprPtr left = parseTerm(ok);
+        while (ok) {
+            skipSpace();
+            const QChar c = peek();
+            if (c != '+' && c != '-') break;
+            ++pos_;
+            ExprPtr right = parseTerm(ok);
+            if (!ok) return nullptr;
+            auto node = std::make_shared<ExprNode>();
+            node->kind = (c == '+') ? ExprNode::Kind::Add : ExprNode::Kind::Sub;
+            node->a = left;
+            node->b = right;
+            left = node;
+        }
+        return ok ? left : nullptr;
+    }
+
+    ExprPtr parseTerm(bool& ok) {
+        ExprPtr left = parseFactor(ok);
+        while (ok) {
+            skipSpace();
+            const QChar c = peek();
+            if (c != '*' && c != '/') break;
+            ++pos_;
+            ExprPtr right = parseFactor(ok);
+            if (!ok) return nullptr;
+            auto node = std::make_shared<ExprNode>();
+            node->kind = (c == '*') ? ExprNode::Kind::Mul : ExprNode::Kind::Div;
+            node->a = left;
+            node->b = right;
+            left = node;
+        }
+        return ok ? left : nullptr;
+    }
+
+    ExprPtr parseFactor(bool& ok) {
+        skipSpace();
+        const QChar c = peek();
+        if (c == '-') {
+            ++pos_;
+            ExprPtr inner = parseFactor(ok);
+            if (!ok) return nullptr;
+            auto node = std::make_shared<ExprNode>();
+            node->kind = ExprNode::Kind::Neg;
+            node->a = inner;
+            return node;
+        }
+        if (c == '(') {
+            ++pos_;
+            ExprPtr inner = parseExpr(ok);
+            skipSpace();
+            if (!ok || peek() != ')') {
+                ok = false;
+                return nullptr;
+            }
+            ++pos_;
+            return inner;
+        }
+        if (c.isDigit()) {
+            const int start = pos_;
+            while (pos_ < s_.length() && s_.at(pos_).isDigit()) ++pos_;
+            auto node = std::make_shared<ExprNode>();
+            node->kind = ExprNode::Kind::Number;
+            node->number = s_.mid(start, pos_ - start).toLongLong();
+            return node;
+        }
+        if (c.isLetter() || c == '_') {
+            const int start = pos_;
+            while (pos_ < s_.length() &&
+                   (s_.at(pos_).isLetterOrNumber() || s_.at(pos_) == '_' || s_.at(pos_) == '.')) {
+                ++pos_;
+            }
+            const QString token = s_.mid(start, pos_ - start);
+            const QStringList parts = token.split('.');
+            auto node = std::make_shared<ExprNode>();
+            node->kind = ExprNode::Kind::Ident;
+            if (parts.size() == 1) {
+                if (token != QLatin1String("VIEWPORT_TX") && token != QLatin1String("VIEWPORT_PY")) {
+                    ok = false;
+                    return nullptr;
+                }
+                node->identName = token;
+                node->identProp = -1;
+                return node;
+            }
+            if (parts.size() == 3) {
+                static const QHash<QString, int> kPropMap{
+                    {"pos.x", 0}, {"pos.y", 1}, {"size.w", 2}, {"size.h", 3}};
+                const QString propKey = parts.at(1) + "." + parts.at(2);
+                if (!kPropMap.contains(propKey)) {
+                    ok = false;
+                    return nullptr;
+                }
+                node->identName = parts.at(0);
+                node->identProp = kPropMap.value(propKey);
+                return node;
+            }
+            ok = false;
+            return nullptr;
+        }
+        ok = false;
+        return nullptr;
+    }
+
+    QString s_;
+    int pos_ = 0;
+};
+
+// Evaluates `node`, deferring to `resolveIdent` for identifiers -- it returns
+// nullopt for anything not yet resolvable (an as-yet-unresolved dependency),
+// which propagates up as an overall nullopt so the caller's fixed-point loop
+// knows to simply try again on a later pass rather than treating it as an
+// error immediately.
+std::optional<long long> evalExpr(
+    const ExprPtr& node, const std::function<std::optional<long long>(const QString&, int)>& resolveIdent) {
+    if (!node) return std::nullopt;
+    switch (node->kind) {
+        case ExprNode::Kind::Number:
+            return node->number;
+        case ExprNode::Kind::Ident:
+            return resolveIdent(node->identName, node->identProp);
+        case ExprNode::Kind::Neg: {
+            const auto v = evalExpr(node->a, resolveIdent);
+            return v ? std::optional<long long>(-*v) : std::nullopt;
+        }
+        default: {
+            const auto a = evalExpr(node->a, resolveIdent);
+            const auto b = evalExpr(node->b, resolveIdent);
+            if (!a || !b) return std::nullopt;
+            switch (node->kind) {
+                case ExprNode::Kind::Add: return *a + *b;
+                case ExprNode::Kind::Sub: return *a - *b;
+                case ExprNode::Kind::Mul: return *a * *b;
+                case ExprNode::Kind::Div: return (*b != 0) ? std::optional<long long>(*a / *b) : std::nullopt;
+                // Matches C++'s own undefined-behavior boundary: a negative
+                // or out-of-range shift count is rejected as unresolvable
+                // rather than silently producing a nonsense value.
+                case ExprNode::Kind::Shl:
+                    return (*b >= 0 && *b < 63) ? std::optional<long long>(*a << *b) : std::nullopt;
+                case ExprNode::Kind::Shr:
+                    return (*b >= 0 && *b < 63) ? std::optional<long long>(*a >> *b) : std::nullopt;
+                default: return std::nullopt;
+            }
+        }
+    }
 }
 
 // .uis ("User Interface Scene") file format: a JSON object holding a flat
@@ -175,10 +440,10 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
     obj["name"] = item->text(0);
     if (isComponentItem(item)) {
         obj["kind"] = QStringLiteral("component");
-        obj["posX"] = item->data(0, kPosXRole).toInt();
-        obj["posY"] = item->data(0, kPosYRole).toInt();
-        obj["sizeW"] = item->data(0, kSizeWRole).toInt();
-        obj["sizeH"] = item->data(0, kSizeHRole).toInt();
+        obj["posXExpr"] = item->data(0, kPosXExprRole).toString();
+        obj["posYExpr"] = item->data(0, kPosYExprRole).toString();
+        obj["sizeWExpr"] = item->data(0, kSizeWExprRole).toString();
+        obj["sizeHExpr"] = item->data(0, kSizeHExprRole).toString();
         obj["align"] = item->data(0, kAlignRole).toInt();
         obj["text"] = item->data(0, kTextContentRole).toString();
     } else {
@@ -197,12 +462,32 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
     if (obj["kind"].toString() == QLatin1String("component")) {
         item->setFlags(item->flags() | Qt::ItemIsEditable);
         item->setData(0, kKindRole, QString(kComponentKind));
-        item->setData(0, kPosXRole, obj["posX"].toInt());
-        item->setData(0, kPosYRole, obj["posY"].toInt());
-        item->setData(0, kSizeWRole, obj["sizeW"].toInt(1));
-        item->setData(0, kSizeHRole, obj["sizeH"].toInt(1));
+        const QString posXExpr = obj["posXExpr"].toString(QStringLiteral("0"));
+        const QString posYExpr = obj["posYExpr"].toString(QStringLiteral("0"));
+        const QString sizeWExpr = obj["sizeWExpr"].toString(QStringLiteral("1"));
+        const QString sizeHExpr = obj["sizeHExpr"].toString(QStringLiteral("1"));
+        item->setData(0, kPosXExprRole, posXExpr);
+        item->setData(0, kPosYExprRole, posYExpr);
+        item->setData(0, kSizeWExprRole, sizeWExpr);
+        item->setData(0, kSizeHExprRole, sizeHExpr);
+        // Best-effort literal seed so the canvas has something sane to paint
+        // before the resolver's first pass runs (called once by the caller
+        // after the whole scene is loaded).
+        bool ok = false;
+        item->setData(0, kPosXRole, posXExpr.toInt(&ok));
+        if (!ok) item->setData(0, kPosXRole, 0);
+        ok = false;
+        item->setData(0, kPosYRole, posYExpr.toInt(&ok));
+        if (!ok) item->setData(0, kPosYRole, 0);
+        ok = false;
+        item->setData(0, kSizeWRole, sizeWExpr.toInt(&ok));
+        if (!ok) item->setData(0, kSizeWRole, 1);
+        ok = false;
+        item->setData(0, kSizeHRole, sizeHExpr.toInt(&ok));
+        if (!ok) item->setData(0, kSizeHRole, 1);
         item->setData(0, kAlignRole, obj["align"].toInt());
         item->setData(0, kTextContentRole, obj["text"].toString());
+        item->setData(0, kLastValidNameRole, item->text(0));
     }
     for (const QJsonValue& child : obj["children"].toArray()) {
         deserializeNode(item, child.toObject());
@@ -325,11 +610,14 @@ protected:
             const QPoint cell = cellAt(event->pos());
             const int newX = std::max(0, dragOriginX_ + (cell.x() - dragAnchorCell_.x()));
             const int newY = std::max(0, dragOriginY_ + (cell.y() - dragAnchorCell_.y()));
-            // setData() drives QTreeWidget::itemChanged, which the caller
-            // that installed this grid uses to repaint -- no need to call
-            // update() here too.
-            dragItem_->setData(0, kPosXRole, newX);
-            dragItem_->setData(0, kPosYRole, newY);
+            // Dragging always overwrites the position with a plain literal,
+            // even if it was previously a formula -- there's no sensible way
+            // to "drag" a computed value, so direct manipulation just
+            // replaces it. setData() drives QTreeWidget::itemChanged, which
+            // both the resolver and the caller that installed this grid
+            // (repainting) are hooked to -- no need to call update() here.
+            dragItem_->setData(0, kPosXExprRole, QString::number(newX));
+            dragItem_->setData(0, kPosYExprRole, QString::number(newY));
         }
         QWidget::mouseMoveEvent(event);
     }
@@ -352,9 +640,10 @@ protected:
             // Text longer than the box is otherwise silently truncated by
             // the row-wrap in paintEvent() -- growing the box to fit
             // instead keeps newly-typed text visible without also having to
-            // separately resize it.
+            // separately resize it. Like a drag, this overwrites any
+            // existing width formula with a plain literal.
             if (text.length() > hit->data(0, kSizeWRole).toInt()) {
-                hit->setData(0, kSizeWRole, text.length());
+                hit->setData(0, kSizeWExprRole, QString::number(text.length()));
             }
         }
     }
@@ -407,20 +696,7 @@ private:
     // Walks the whole tree (not just root's direct children) so components
     // nested deeper -- not reachable from the UI yet, but already valid
     // structurally -- are rendered and hit-testable too.
-    QVector<QTreeWidgetItem*> collectComponents() const {
-        QVector<QTreeWidgetItem*> result;
-        std::function<void(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* node) {
-            for (int i = 0; i < node->childCount(); ++i) {
-                QTreeWidgetItem* child = node->child(i);
-                if (isComponentItem(child)) {
-                    result.push_back(child);
-                }
-                visit(child);
-            }
-        };
-        visit(tree_->invisibleRootItem());
-        return result;
-    }
+    QVector<QTreeWidgetItem*> collectComponents() const { return collectComponentItems(tree_->invisibleRootItem()); }
 
     // Later-added components are drawn on top, so hit-testing prefers the
     // last match for overlapping regions to stay consistent with what's
@@ -502,14 +778,44 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
 
     // Renaming a component must never lose the "[T]" prefix that marks it as
     // a textbox -- if an edit strips it, put it back rather than reject the
-    // whole edit, so the rest of the typed name survives.
+    // whole edit, so the rest of the typed name survives. The name after the
+    // prefix also has to be a valid, unique C++ identifier: it's both the
+    // namespace expressions reference other nodes through, and the symbol
+    // that later code generation will emit, so anything else is reverted
+    // outright to the last name that was valid.
     QObject::connect(tree, &QTreeWidget::itemChanged, [](QTreeWidgetItem* item, int column) {
         if (column != 0 || !isComponentItem(item)) {
             return;
         }
-        if (!item->text(0).startsWith(kTextboxPrefix)) {
-            item->setText(0, QString(kTextboxPrefix) + item->text(0));
+        QString text = item->text(0);
+        if (!text.startsWith(kTextboxPrefix)) {
+            text = QString(kTextboxPrefix) + text;
         }
+        const QString base = text.mid(QString(kTextboxPrefix).length());
+        static const QRegularExpression kIdentRe(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        bool valid = kIdentRe.match(base).hasMatch();
+        if (valid) {
+            for (QTreeWidgetItem* other : collectComponentItems(item->treeWidget()->invisibleRootItem())) {
+                if (other != item && other->text(0) == text) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        if (!valid) {
+            const QString last = item->data(0, kLastValidNameRole).toString();
+            if (item->text(0) != last) {
+                // setText() re-enters this handler synchronously; the nested
+                // call sees an already-valid name and returns having stored
+                // it, so this call has nothing left to do once it returns.
+                item->setText(0, last);
+            }
+            return;
+        }
+        if (item->text(0) != text) {
+            item->setText(0, text);
+        }
+        item->setData(0, kLastValidNameRole, text);
     });
 
     // --- File menu: New / Open / Save / Save As, plus unsaved-changes
@@ -524,6 +830,12 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // itself an unsaved change.
     auto loading = std::make_shared<bool>(false);
 
+    // Forward-declared the same way ViewportPanel's `sync` is: connections
+    // below can capture and call through this pointer immediately, but the
+    // actual resolution logic is only assigned once xEdit/yEdit (needed for
+    // VIEWPORT_TX/VIEWPORT_PY) exist, further down.
+    auto resolveAllPtr = std::make_shared<std::function<void()>>([] {});
+
     auto updateTitle = [window, currentPath, dirty] {
         const QString name =
             currentPath->isEmpty() ? QStringLiteral("Untitled") : QFileInfo(*currentPath).fileName();
@@ -535,6 +847,17 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         if (!*loading) {
             *dirty = true;
             updateTitle();
+        }
+    });
+
+    // Any structural or property change can affect what's resolvable (a
+    // rename changes the identifier other nodes reference; any property edit
+    // can be someone else's dependency) -- re-resolve everything on every
+    // change. Skipped while a scene is being rebuilt wholesale (New/Open),
+    // which call resolveAllPtr explicitly once after they finish instead.
+    QObject::connect(tree, &QTreeWidget::itemChanged, [resolveAllPtr, loading](QTreeWidgetItem*, int) {
+        if (!*loading) {
+            (*resolveAllPtr)();
         }
     });
 
@@ -588,19 +911,21 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     };
     window->confirmClose = confirmDiscard;
 
-    auto doNew = [rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard] {
+    auto doNew = [rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard, resolveAllPtr] {
         if (!confirmDiscard()) {
             return;
         }
         *loading = true;
         qDeleteAll(rootItem->takeChildren());
         *loading = false;
+        (*resolveAllPtr)();
         currentPath->clear();
         *dirty = false;
         updateTitle();
     };
 
-    auto doOpen = [window, tree, rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard] {
+    auto doOpen = [window, tree, rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard,
+                   resolveAllPtr] {
         if (!confirmDiscard()) {
             return;
         }
@@ -621,6 +946,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             deserializeNode(rootItem, node.toObject());
         }
         *loading = false;
+        (*resolveAllPtr)();
         tree->expandItem(rootItem);
         *currentPath = path;
         *dirty = false;
@@ -643,17 +969,24 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // and alignment. Hidden entirely (not just grayed out) whenever the
     // selection isn't a component (e.g. root, or nothing selected) -- a
     // root/branch node has no such properties at all, so there's nothing
-    // here for it to show.
+    // here for it to show. Position/size fields accept either a plain
+    // literal ("5") or a formula referencing other nodes by name
+    // ("Other.pos.x + 1") -- the resolver (assigned to *resolveAllPtr below,
+    // once xEdit/yEdit exist) turns whichever was typed into the resolved
+    // int the canvas actually uses.
     auto* properties = new QWidget(content);
-    auto* posXSpin = new QSpinBox(properties);
-    auto* posYSpin = new QSpinBox(properties);
-    auto* sizeWSpin = new QSpinBox(properties);
-    auto* sizeHSpin = new QSpinBox(properties);
+    auto* posXEdit = new QLineEdit(properties);
+    auto* posYEdit = new QLineEdit(properties);
+    auto* sizeWEdit = new QLineEdit(properties);
+    auto* sizeHEdit = new QLineEdit(properties);
     auto* alignCombo = new QComboBox(properties);
-    posXSpin->setRange(0, 999);
-    posYSpin->setRange(0, 999);
-    sizeWSpin->setRange(1, 999);
-    sizeHSpin->setRange(1, 999);
+    const QString exprHint = "A number, or a formula like Other.pos.x + 1.\n"
+                              "Operators: + - * / << >> and parentheses.\n"
+                              "VIEWPORT_TX / VIEWPORT_PY refer to the viewport size.";
+    posXEdit->setToolTip(exprHint);
+    posYEdit->setToolTip(exprHint);
+    sizeWEdit->setToolTip(exprHint);
+    sizeHEdit->setToolTip(exprHint);
     alignCombo->addItems({"Left", "Center", "Right"});
 
     auto* propertiesForm = new QFormLayout(properties);
@@ -662,64 +995,98 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // the label on its own row above the field instead, so it's always
     // fully readable.
     propertiesForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
-    propertiesForm->addRow("Position X", posXSpin);
-    propertiesForm->addRow("Position Y", posYSpin);
-    propertiesForm->addRow("Size W", sizeWSpin);
-    propertiesForm->addRow("Size H", sizeHSpin);
+    propertiesForm->addRow("Position X", posXEdit);
+    propertiesForm->addRow("Position Y", posYEdit);
+    propertiesForm->addRow("Size W", sizeWEdit);
+    propertiesForm->addRow("Size H", sizeHEdit);
     propertiesForm->addRow("Alignment", alignCombo);
     properties->setVisible(false);
 
     // Populates the panel's fields from `item` without re-triggering the
     // edit handlers below (which would otherwise write the same values
     // straight back -- harmless, but pointless).
-    auto populateFrom = [posXSpin, posYSpin, sizeWSpin, sizeHSpin, alignCombo](QTreeWidgetItem* item) {
-        const QSignalBlocker bx(posXSpin);
-        const QSignalBlocker by(posYSpin);
-        const QSignalBlocker bw(sizeWSpin);
-        const QSignalBlocker bh(sizeHSpin);
+    auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo](QTreeWidgetItem* item) {
+        const QSignalBlocker bx(posXEdit);
+        const QSignalBlocker by(posYEdit);
+        const QSignalBlocker bw(sizeWEdit);
+        const QSignalBlocker bh(sizeHEdit);
         const QSignalBlocker ba(alignCombo);
-        posXSpin->setValue(item->data(0, kPosXRole).toInt());
-        posYSpin->setValue(item->data(0, kPosYRole).toInt());
-        sizeWSpin->setValue(item->data(0, kSizeWRole).toInt());
-        sizeHSpin->setValue(item->data(0, kSizeHRole).toInt());
+        auto exprOr = [item](int exprRole, int fallback) {
+            const QString s = item->data(0, exprRole).toString();
+            return s.isEmpty() ? QString::number(fallback) : s;
+        };
+        posXEdit->setText(exprOr(kPosXExprRole, 0));
+        posYEdit->setText(exprOr(kPosYExprRole, 0));
+        sizeWEdit->setText(exprOr(kSizeWExprRole, 1));
+        sizeHEdit->setText(exprOr(kSizeHExprRole, 1));
         alignCombo->setCurrentIndex(item->data(0, kAlignRole).toInt());
     };
 
+    // Flags the exact field(s) the resolver couldn't work out for the
+    // current selection with a red border -- independent of populateFrom
+    // (and never skipped for having focus), since restyling a border
+    // doesn't clobber whatever the user is mid-typing the way overwriting
+    // its text would.
+    auto updateErrorHighlight = [posXEdit, posYEdit, sizeWEdit, sizeHEdit](QTreeWidgetItem* item) {
+        const int mask = item ? item->data(0, kErrorMaskRole).toInt() : 0;
+        static const QString kErrorStyle = QStringLiteral("border: 1px solid red;");
+        posXEdit->setStyleSheet((mask & 1) ? kErrorStyle : QString());
+        posYEdit->setStyleSheet((mask & 2) ? kErrorStyle : QString());
+        sizeWEdit->setStyleSheet((mask & 4) ? kErrorStyle : QString());
+        sizeHEdit->setStyleSheet((mask & 8) ? kErrorStyle : QString());
+    };
+
     QObject::connect(tree, &QTreeWidget::currentItemChanged,
-                      [properties, populateFrom](QTreeWidgetItem* current, QTreeWidgetItem*) {
+                      [properties, populateFrom, updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
                           const bool selected = isComponentItem(current);
                           properties->setVisible(selected);
                           if (selected) {
                               populateFrom(current);
+                              updateErrorHighlight(current);
                           }
                       });
 
     // The selected item's geometry can also change from outside the panel
-    // -- dragging it on the canvas, or the text-length auto-grow below --
-    // so keep the panel's fields from going stale whenever that happens.
-    QObject::connect(tree, &QTreeWidget::itemChanged,
-                      [tree, populateFrom](QTreeWidgetItem* item, int column) {
-                          if (column == 0 && item == tree->currentItem() && isComponentItem(item)) {
-                              populateFrom(item);
-                          }
-                      });
+    // -- dragging it on the canvas, the text-length auto-grow, or the
+    // resolver recomputing a formula -- so keep the panel's fields from
+    // going stale whenever that happens. Skipped while a field has focus so
+    // an unrelated change elsewhere doesn't clobber an in-progress edit.
+    QObject::connect(
+        tree, &QTreeWidget::itemChanged,
+        [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit,
+         sizeHEdit](QTreeWidgetItem* item, int column) {
+            if (column != 0 || item != tree->currentItem() || !isComponentItem(item)) {
+                return;
+            }
+            updateErrorHighlight(item);
+            if (posXEdit->hasFocus() || posYEdit->hasFocus() || sizeWEdit->hasFocus() || sizeHEdit->hasFocus()) {
+                return;
+            }
+            populateFrom(item);
+        });
 
-    auto writeToSelection = [tree](int role, int value) {
+    // Committed on editingFinished (Enter, or losing focus), not on every
+    // keystroke -- a formula is only meaningful once fully typed.
+    auto writeToSelection = [tree](int exprRole, const QString& value) {
         QTreeWidgetItem* item = tree->currentItem();
         if (isComponentItem(item)) {
-            item->setData(0, role, value);
+            item->setData(0, exprRole, value);
         }
     };
-    QObject::connect(posXSpin, qOverload<int>(&QSpinBox::valueChanged),
-                      [writeToSelection](int v) { writeToSelection(kPosXRole, v); });
-    QObject::connect(posYSpin, qOverload<int>(&QSpinBox::valueChanged),
-                      [writeToSelection](int v) { writeToSelection(kPosYRole, v); });
-    QObject::connect(sizeWSpin, qOverload<int>(&QSpinBox::valueChanged),
-                      [writeToSelection](int v) { writeToSelection(kSizeWRole, v); });
-    QObject::connect(sizeHSpin, qOverload<int>(&QSpinBox::valueChanged),
-                      [writeToSelection](int v) { writeToSelection(kSizeHRole, v); });
-    QObject::connect(alignCombo, qOverload<int>(&QComboBox::currentIndexChanged),
-                      [writeToSelection](int v) { writeToSelection(kAlignRole, v); });
+    QObject::connect(posXEdit, &QLineEdit::editingFinished,
+                      [writeToSelection, posXEdit] { writeToSelection(kPosXExprRole, posXEdit->text()); });
+    QObject::connect(posYEdit, &QLineEdit::editingFinished,
+                      [writeToSelection, posYEdit] { writeToSelection(kPosYExprRole, posYEdit->text()); });
+    QObject::connect(sizeWEdit, &QLineEdit::editingFinished,
+                      [writeToSelection, sizeWEdit] { writeToSelection(kSizeWExprRole, sizeWEdit->text()); });
+    QObject::connect(sizeHEdit, &QLineEdit::editingFinished,
+                      [writeToSelection, sizeHEdit] { writeToSelection(kSizeHExprRole, sizeHEdit->text()); });
+    QObject::connect(alignCombo, qOverload<int>(&QComboBox::currentIndexChanged), [tree](int v) {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isComponentItem(item)) {
+            item->setData(0, kAlignRole, v);
+        }
+    });
 
     // addComponentNode() takes an explicit parent so nesting components
     // under other nodes (not just root) already works -- there's just no UI
@@ -729,16 +1096,24 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // the canvas or use the properties panel to place/resize them.
     auto componentCounter = std::make_shared<int>(1);
     auto addComponentNode = [componentCounter](QTreeWidgetItem* parent) {
-        auto* child = new QTreeWidgetItem(parent, QStringList{QString(kTextboxPrefix) + "Textbox " +
-                                                                QString::number((*componentCounter)++)});
+        // No space in the default name -- it has to already be a valid C++
+        // identifier, since it's usable immediately in another node's
+        // expression.
+        const QString name = QString(kTextboxPrefix) + "Textbox" + QString::number((*componentCounter)++);
+        auto* child = new QTreeWidgetItem(parent, QStringList{name});
         child->setFlags(child->flags() | Qt::ItemIsEditable);
         child->setData(0, kKindRole, QString(kComponentKind));
         child->setData(0, kTextContentRole, QString());
+        child->setData(0, kPosXExprRole, QStringLiteral("0"));
+        child->setData(0, kPosYExprRole, QStringLiteral("0"));
+        child->setData(0, kSizeWExprRole, QStringLiteral("1"));
+        child->setData(0, kSizeHExprRole, QStringLiteral("1"));
         child->setData(0, kPosXRole, 0);
         child->setData(0, kPosYRole, 0);
         child->setData(0, kSizeWRole, 1);
         child->setData(0, kSizeHRole, 1);
         child->setData(0, kAlignRole, static_cast<int>(TextAlign::Left));
+        child->setData(0, kLastValidNameRole, name);
         parent->setExpanded(true);
         return child;
     };
@@ -799,6 +1174,172 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // clamped down if the monitor can't actually fit that many tiles.
     xEdit->setText(QString::number(std::min(32, maxTilesX)));
     yEdit->setText(QString::number(std::min(30, maxTilesY)));
+
+    // --- Expression resolution: turns every component's stored pos/size
+    // expression text into the resolved int the canvas reads, by repeatedly
+    // attempting whatever hasn't resolved yet until a full pass makes no new
+    // progress -- the same "lazy declaration" idea as forward references in
+    // a compiler, applied to nodes that can reference each other in any
+    // order or before they're otherwise fully set up. Whatever's still
+    // unresolved once progress stalls (a parse error, an unknown or
+    // duplicate name, or a dependency cycle) is flagged via kErrorRole and
+    // shown in red with an explanatory tooltip, rather than silently left
+    // with a stale or wrong value.
+    auto resolving = std::make_shared<bool>(false);
+    *resolveAllPtr = [window, rootItem, xEdit, yEdit, resolving]() {
+        if (*resolving) {
+            // Re-entrant call: our own setData() calls below re-fire
+            // itemChanged, which is also wired to call this function. The
+            // in-flight call already accounts for everything.
+            return;
+        }
+        *resolving = true;
+
+        const long long viewportTx = xEdit->text().toInt();
+        const long long viewportPy = yEdit->text().toInt();
+
+        const QVector<QTreeWidgetItem*> components = collectComponentItems(rootItem);
+
+        QHash<QString, QTreeWidgetItem*> byName;
+        QSet<QString> duplicateNames;
+        for (QTreeWidgetItem* item : components) {
+            const QString base = item->text(0).mid(QString(kTextboxPrefix).length());
+            if (byName.contains(base)) {
+                duplicateNames.insert(base);
+            }
+            byName.insert(base, item);
+        }
+
+        struct Pending {
+            QTreeWidgetItem* item;
+            int prop;
+            ExprPtr ast;
+        };
+        static constexpr int kRoles[4] = {kPosXRole, kPosYRole, kSizeWRole, kSizeHRole};
+        static constexpr int kExprRoles[4] = {kPosXExprRole, kPosYExprRole, kSizeWExprRole, kSizeHExprRole};
+        static constexpr long long kDefaults[4] = {0, 0, 1, 1};
+
+        QVector<Pending> pending;
+        std::map<std::pair<QTreeWidgetItem*, int>, long long> resolved;
+        // Bitmask per errored item: bit `prop` set means that property
+        // specifically failed to resolve -- lets the properties panel flag
+        // the exact field at fault, not just the node as a whole.
+        QHash<QTreeWidgetItem*, int> errorMask;
+
+        for (QTreeWidgetItem* item : components) {
+            for (int prop = 0; prop < 4; ++prop) {
+                QString src = item->data(0, kExprRoles[prop]).toString().trimmed();
+                if (src.isEmpty()) {
+                    src = QString::number(kDefaults[prop]);
+                }
+                bool ok = false;
+                ExprPtr ast = ExprParser(src).parse(ok);
+                if (!ok) {
+                    errorMask[item] |= (1 << prop);
+                    continue;
+                }
+                pending.push_back({item, prop, ast});
+            }
+        }
+
+        std::function<std::optional<long long>(const QString&, int)> resolveIdent =
+            [&](const QString& name, int prop) -> std::optional<long long> {
+            if (prop < 0) {
+                if (name == QLatin1String("VIEWPORT_TX")) return viewportTx;
+                if (name == QLatin1String("VIEWPORT_PY")) return viewportPy;
+                return std::nullopt;
+            }
+            if (duplicateNames.contains(name)) {
+                return std::nullopt;
+            }
+            const auto it = byName.find(name);
+            if (it == byName.end()) {
+                return std::nullopt;
+            }
+            const auto found = resolved.find({it.value(), prop});
+            return found != resolved.end() ? std::optional<long long>(found->second) : std::nullopt;
+        };
+
+        bool progress = true;
+        while (progress && !pending.isEmpty()) {
+            progress = false;
+            for (int i = pending.size() - 1; i >= 0; --i) {
+                const auto v = evalExpr(pending[i].ast, resolveIdent);
+                if (v) {
+                    resolved[{pending[i].item, pending[i].prop}] = *v;
+                    pending.removeAt(i);
+                    progress = true;
+                }
+            }
+        }
+        // Anything left after progress stalls can never resolve on its own
+        // -- an unknown/duplicate reference or a dependency cycle -- same
+        // bucket as an outright parse error.
+        for (const Pending& p : pending) {
+            errorMask[p.item] |= (1 << p.prop);
+        }
+        for (const QString& dup : duplicateNames) {
+            if (QTreeWidgetItem* item = byName.value(dup)) {
+                errorMask[item] |= 0xF;  // ambiguous which property -- flag all of them
+            }
+        }
+
+        QStringList errorNames;
+        for (QTreeWidgetItem* item : components) {
+            for (int prop = 0; prop < 4; ++prop) {
+                const auto it = resolved.find({item, prop});
+                long long value = (it != resolved.end()) ? it->second : kDefaults[prop];
+                value = (prop >= 2) ? std::max<long long>(1, value) : std::max<long long>(0, value);
+                if (item->data(0, kRoles[prop]).toLongLong() != value) {
+                    item->setData(0, kRoles[prop], static_cast<int>(value));
+                }
+            }
+            const int mask = errorMask.value(item, 0);
+            const bool hasError = mask != 0;
+            // Only touch item-level roles/appearance when the error state
+            // actually changed -- setData() unconditionally re-fires
+            // itemChanged even when the value is identical, and doing that
+            // on every single resolve pass would falsely mark the scene
+            // dirty just from redundant no-op writes.
+            if (item->data(0, kErrorMaskRole).toInt() != mask) {
+                item->setData(0, kErrorMaskRole, mask);
+                item->setData(0, kErrorRole, hasError);
+                QFont font = item->font(0);
+                font.setBold(hasError);
+                item->setFont(0, font);
+                item->setForeground(0, hasError ? QBrush(Qt::red) : QBrush());
+                item->setBackground(0, hasError ? QBrush(QColor(90, 20, 20)) : QBrush());
+                item->setToolTip(0, hasError
+                                         ? QStringLiteral("Cannot resolve one or more properties -- check for "
+                                                           "typos, unknown/duplicate names, or a dependency cycle.")
+                                         : QString());
+            }
+            if (hasError) {
+                errorNames << item->text(0).mid(QString(kTextboxPrefix).length());
+            }
+        }
+
+        // A red status-bar banner is the loud, hard-to-miss alert a subtle
+        // tree-item color change alone wasn't -- it persists (no timeout)
+        // until every error is fixed.
+        if (errorNames.isEmpty()) {
+            window->statusBar()->clearMessage();
+            window->statusBar()->setStyleSheet(QString());
+        } else {
+            window->statusBar()->setStyleSheet(
+                QStringLiteral("QStatusBar{background:#7a1f1f;color:white;font-weight:bold;}"));
+            window->statusBar()->showMessage(
+                QStringLiteral("⚠ Cannot resolve: %1").arg(errorNames.join(QStringLiteral(", "))));
+        }
+
+        *resolving = false;
+    };
+    (*resolveAllPtr)();
+
+    // VIEWPORT_TX/VIEWPORT_PY change whenever these fields do, so anything
+    // referencing them needs a fresh resolution pass too.
+    QObject::connect(xEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
+    QObject::connect(yEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
 
     layout->addWidget(new QLabel("Viewport (tx)", content));
     auto* form = new QFormLayout();
