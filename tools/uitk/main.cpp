@@ -31,6 +31,18 @@
 #include <QComboBox>
 #include <QSignalBlocker>
 #include <QFontDatabase>
+#include <QMenuBar>
+#include <QAction>
+#include <QKeySequence>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QCloseEvent>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QFile>
+#include <QFileInfo>
+#include <QtAlgorithms>
 
 namespace {
 
@@ -107,6 +119,26 @@ private:
     std::function<void()> callback_;
 };
 
+// QMainWindow subclass that defers to `confirmClose` -- wired up once the
+// sidebar's File-menu/dirty-tracking logic exists -- before actually
+// closing, so closing the window goes through the same "save changes?"
+// prompt as New/Open. Overriding closeEvent() needs no signals/slots, so
+// there's no need for Q_OBJECT/moc here despite the QObject-derived base.
+class UitkMainWindow : public QMainWindow {
+public:
+    using QMainWindow::QMainWindow;
+    std::function<bool()> confirmClose;
+
+protected:
+    void closeEvent(QCloseEvent* event) override {
+        if (confirmClose && !confirmClose()) {
+            event->ignore();
+            return;
+        }
+        QMainWindow::closeEvent(event);
+    }
+};
+
 // Component-node data, stashed on the QTreeWidgetItem itself so both the
 // sidebar tree, the properties panel, and the canvas can read/write it
 // without a separate registry. kKindRole marks which items are components at
@@ -131,6 +163,84 @@ enum class TextAlign { Left = 0, Center = 1, Right = 2 };
 
 bool isComponentItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kComponentKind);
+}
+
+// .uis ("User Interface Scene") file format: a JSON object holding a flat
+// "version" and a "nodes" array -- root's own children, each recursively
+// carrying its own "children". Only component nodes carry geometry/text;
+// anything else (currently just "root" and, structurally, future branch
+// nodes) round-trips as a plain named node.
+QJsonObject serializeNode(const QTreeWidgetItem* item) {
+    QJsonObject obj;
+    obj["name"] = item->text(0);
+    if (isComponentItem(item)) {
+        obj["kind"] = QStringLiteral("component");
+        obj["posX"] = item->data(0, kPosXRole).toInt();
+        obj["posY"] = item->data(0, kPosYRole).toInt();
+        obj["sizeW"] = item->data(0, kSizeWRole).toInt();
+        obj["sizeH"] = item->data(0, kSizeHRole).toInt();
+        obj["align"] = item->data(0, kAlignRole).toInt();
+        obj["text"] = item->data(0, kTextContentRole).toString();
+    } else {
+        obj["kind"] = QStringLiteral("branch");
+    }
+    QJsonArray children;
+    for (int i = 0; i < item->childCount(); ++i) {
+        children.append(serializeNode(item->child(i)));
+    }
+    obj["children"] = children;
+    return obj;
+}
+
+void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
+    auto* item = new QTreeWidgetItem(parent, QStringList{obj["name"].toString()});
+    if (obj["kind"].toString() == QLatin1String("component")) {
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
+        item->setData(0, kKindRole, QString(kComponentKind));
+        item->setData(0, kPosXRole, obj["posX"].toInt());
+        item->setData(0, kPosYRole, obj["posY"].toInt());
+        item->setData(0, kSizeWRole, obj["sizeW"].toInt(1));
+        item->setData(0, kSizeHRole, obj["sizeH"].toInt(1));
+        item->setData(0, kAlignRole, obj["align"].toInt());
+        item->setData(0, kTextContentRole, obj["text"].toString());
+    }
+    for (const QJsonValue& child : obj["children"].toArray()) {
+        deserializeNode(item, child.toObject());
+    }
+}
+
+bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem) {
+    QJsonArray nodes;
+    for (int i = 0; i < rootItem->childCount(); ++i) {
+        nodes.append(serializeNode(rootItem->child(i)));
+    }
+    QJsonObject doc;
+    doc["version"] = 1;
+    doc["nodes"] = nodes;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+    file.write(QJsonDocument(doc).toJson());
+    return true;
+}
+
+// Parses a .uis file's node list without touching any tree -- callers apply
+// it (or don't, on failure) themselves, so a corrupt/unreadable file never
+// wipes out whatever scene was already open.
+bool parseUisFile(const QString& path, QJsonArray& outNodes) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    QJsonParseError error;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !doc.isObject()) {
+        return false;
+    }
+    outNodes = doc.object()["nodes"].toArray();
+    return true;
 }
 
 // A viewport preview: fills the space it's given with the tile grid (its
@@ -369,14 +479,15 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         }
     });
 
+    // `parent` is always the UitkMainWindow constructed in main().
+    auto* window = static_cast<UitkMainWindow*>(parent);
+
     // The sidebar's required height isn't fixed -- the properties panel
     // appears/disappears with selection, and nodes get added to the tree --
     // so the window (locked to a fixed size elsewhere) needs to be re-fit
     // any time that happens, not just when the viewport's tile counts
-    // change. `parent` is always the QMainWindow here (see main()).
-    if (auto* window = qobject_cast<QMainWindow*>(parent)) {
-        window->installEventFilter(new LayoutChangeNotifier([window] { lockWindowToContents(window); }, parent));
-    }
+    // change.
+    window->installEventFilter(new LayoutChangeNotifier([window] { lockWindowToContents(window); }, window));
 
     auto* content = new QWidget(dock);
     auto* layout = new QVBoxLayout(content);
@@ -400,6 +511,133 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             item->setText(0, QString(kTextboxPrefix) + item->text(0));
         }
     });
+
+    // --- File menu: New / Open / Save / Save As, plus unsaved-changes
+    // tracking so those and closing the window never silently discard work.
+    // An empty currentPath means "no file yet" -- a new scene doesn't ask
+    // for a name until it's actually saved.
+    auto currentPath = std::make_shared<QString>();
+    auto dirty = std::make_shared<bool>(false);
+    // Suppresses dirty-marking while a scene is being rebuilt wholesale
+    // (New/Open) -- that goes through the same setData()/itemChanged path a
+    // real edit would, but starting or having just opened a scene isn't
+    // itself an unsaved change.
+    auto loading = std::make_shared<bool>(false);
+
+    auto updateTitle = [window, currentPath, dirty] {
+        const QString name =
+            currentPath->isEmpty() ? QStringLiteral("Untitled") : QFileInfo(*currentPath).fileName();
+        window->setWindowTitle(QString("uitk - %1%2").arg(name, *dirty ? "*" : ""));
+    };
+    updateTitle();
+
+    QObject::connect(tree, &QTreeWidget::itemChanged, [dirty, loading, updateTitle](QTreeWidgetItem*, int) {
+        if (!*loading) {
+            *dirty = true;
+            updateTitle();
+        }
+    });
+
+    auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle]() {
+        QString path = QFileDialog::getSaveFileName(window, "Save Scene", QString(), "UI Scene (*.uis)");
+        if (path.isEmpty()) {
+            return false;
+        }
+        if (!path.endsWith(".uis", Qt::CaseInsensitive)) {
+            path += ".uis";
+        }
+        if (!writeUisFile(path, rootItem)) {
+            QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + path);
+            return false;
+        }
+        *currentPath = path;
+        *dirty = false;
+        updateTitle();
+        return true;
+    };
+
+    auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window]() {
+        if (currentPath->isEmpty()) {
+            return doSaveAs();
+        }
+        if (!writeUisFile(*currentPath, rootItem)) {
+            QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + *currentPath);
+            return false;
+        }
+        *dirty = false;
+        updateTitle();
+        return true;
+    };
+
+    // Shared by New, Open, and closing the window -- returns whether it's
+    // OK to proceed (false only when the user picks Cancel, or picks Save
+    // and the save itself is cancelled/fails).
+    auto confirmDiscard = [window, currentPath, dirty, doSave]() {
+        if (!*dirty) {
+            return true;
+        }
+        const QString name =
+            currentPath->isEmpty() ? QStringLiteral("Untitled") : QFileInfo(*currentPath).fileName();
+        const auto choice = QMessageBox::question(
+            window, "Unsaved Changes", QString("Save changes to \"%1\" before continuing?").arg(name),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+        if (choice == QMessageBox::Cancel) {
+            return false;
+        }
+        return choice == QMessageBox::Discard || doSave();
+    };
+    window->confirmClose = confirmDiscard;
+
+    auto doNew = [rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard] {
+        if (!confirmDiscard()) {
+            return;
+        }
+        *loading = true;
+        qDeleteAll(rootItem->takeChildren());
+        *loading = false;
+        currentPath->clear();
+        *dirty = false;
+        updateTitle();
+    };
+
+    auto doOpen = [window, tree, rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard] {
+        if (!confirmDiscard()) {
+            return;
+        }
+        const QString path = QFileDialog::getOpenFileName(window, "Open Scene", QString(), "UI Scene (*.uis)");
+        if (path.isEmpty()) {
+            return;
+        }
+        // Parse before touching the tree, so a corrupt/unreadable file never
+        // wipes out whatever scene was already open.
+        QJsonArray nodes;
+        if (!parseUisFile(path, nodes)) {
+            QMessageBox::warning(window, "Open Failed", "Could not read file:\n" + path);
+            return;
+        }
+        *loading = true;
+        qDeleteAll(rootItem->takeChildren());
+        for (const QJsonValue& node : nodes) {
+            deserializeNode(rootItem, node.toObject());
+        }
+        *loading = false;
+        tree->expandItem(rootItem);
+        *currentPath = path;
+        *dirty = false;
+        updateTitle();
+    };
+
+    auto* fileMenu = window->menuBar()->addMenu("&File");
+    auto addFileAction = [fileMenu](const QString& text, QKeySequence::StandardKey key, auto&& handler) {
+        QAction* action = fileMenu->addAction(text);
+        action->setShortcut(key);
+        QObject::connect(action, &QAction::triggered, handler);
+    };
+    addFileAction("New", QKeySequence::New, doNew);
+    addFileAction("Open...", QKeySequence::Open, doOpen);
+    fileMenu->addSeparator();
+    addFileAction("Save", QKeySequence::Save, doSave);
+    addFileAction("Save As...", QKeySequence::SaveAs, doSaveAs);
 
     // --- Properties panel: shows/edits the selected component's geometry
     // and alignment. Hidden entirely (not just grayed out) whenever the
@@ -628,7 +866,7 @@ ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidge
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
 
-    QMainWindow window;
+    UitkMainWindow window;
     window.setWindowTitle("uitk");
 
     // QGuiApplication::primaryScreen() is unreliable under Wayland, which has
