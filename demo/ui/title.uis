@@ -5,12 +5,34 @@
             "children": [
             ],
             "kind": "component",
-            "name": "[T] Textbox1",
-            "posXExpr": "0",
+            "name": "[T] tbMary",
+            "posXExpr": "28",
             "posYExpr": "0",
             "sizeHExpr": "1",
             "sizeWExpr": "4",
-            "text": "idea"
+            "text": "mary"
+        },
+        {
+            "children": [
+            ],
+            "kind": "negspace",
+            "name": "[N] NegativeSpace1",
+            "posXExpr": "0",
+            "posYExpr": "2",
+            "sizeHExpr": "VIEWPORT_TY - 8",
+            "sizeWExpr": "VIEWPORT_TX"
+        },
+        {
+            "align": 0,
+            "children": [
+            ],
+            "kind": "component",
+            "name": "[T] tbCoins",
+            "posXExpr": "29",
+            "posYExpr": "1",
+            "sizeHExpr": "1",
+            "sizeWExpr": "3",
+            "text": "X00"
         }
     ],
     "version": 1

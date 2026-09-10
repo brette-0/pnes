@@ -34,6 +34,7 @@
 #include <QStatusBar>
 #include <QAction>
 #include <QKeySequence>
+#include <QShortcut>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QCloseEvent>
@@ -186,8 +187,15 @@ constexpr int kLastValidNameRole = Qt::UserRole + 12;
 // properties failed to resolve, so the properties panel can flag the exact
 // field at fault rather than just the node as a whole.
 constexpr int kErrorMaskRole = Qt::UserRole + 13;
+// Set by the resolver when a negative-space zone's cells overlap another
+// node's (or vice versa) -- a spatial-layout problem, distinct from a
+// property failing to resolve, so it's tracked separately even though both
+// end up shown the same way (red highlight + status-bar banner).
+constexpr int kNegSpaceViolationRole = Qt::UserRole + 14;
 constexpr char kComponentKind[] = "component";
+constexpr char kNegSpaceKind[] = "negspace";
 constexpr char kTextboxPrefix[] = "[T] ";
+constexpr char kNegSpacePrefix[] = "[N] ";
 
 enum class TextAlign { Left = 0, Center = 1, Right = 2 };
 
@@ -195,15 +203,32 @@ bool isComponentItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kComponentKind);
 }
 
-// Walks the whole tree (not just direct children) collecting every component
-// node -- shared by the canvas (rendering/hit-testing), name validation, and
-// the expression resolver.
+bool isNegSpaceItem(const QTreeWidgetItem* item) {
+    return item && item->data(0, kKindRole).toString() == QLatin1String(kNegSpaceKind);
+}
+
+// Anything with a position/size -- placeable on the canvas, draggable,
+// referenceable in another node's expressions -- regardless of what kind of
+// thing it visually is.
+bool isGeometryItem(const QTreeWidgetItem* item) { return isComponentItem(item) || isNegSpaceItem(item); }
+
+// The "[T] "/"[N] " prefix a node's kind requires, or empty for kinds (root,
+// plain branch nodes) that don't have one.
+QString requiredPrefixFor(const QTreeWidgetItem* item) {
+    if (isComponentItem(item)) return QString(kTextboxPrefix);
+    if (isNegSpaceItem(item)) return QString(kNegSpacePrefix);
+    return QString();
+}
+
+// Walks the whole tree (not just direct children) collecting every geometry
+// node (textbox or negative-space zone) -- shared by the canvas
+// (rendering/hit-testing), name validation, and the expression resolver.
 QVector<QTreeWidgetItem*> collectComponentItems(QTreeWidgetItem* node) {
     QVector<QTreeWidgetItem*> result;
     std::function<void(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* n) {
         for (int i = 0; i < n->childCount(); ++i) {
             QTreeWidgetItem* child = n->child(i);
-            if (isComponentItem(child)) {
+            if (isGeometryItem(child)) {
                 result.push_back(child);
             }
             visit(child);
@@ -217,19 +242,20 @@ QVector<QTreeWidgetItem*> collectComponentItems(QTreeWidgetItem* node) {
 //
 // A property's stored text is a small arithmetic expression over integer
 // literals, +/-/*//, parentheses, and identifiers of the form
-// `NodeName.pos.x`, `NodeName.pos.y`, `NodeName.size.w`, `NodeName.size.h`
+// `NodeName.pos.x`, `NodeName.pos.y`, `NodeName.size.x`, `NodeName.size.y`
 // (referencing another component by its bare name, sans the "[T] " prefix --
 // the same name that will identify it in generated C++), plus the two bare
-// globals VIEWPORT_TX and VIEWPORT_PY (the viewport's configured tile
-// width/height). Node names are therefore constrained to be valid C++
+// globals VIEWPORT_TX/VIEWPORT_TY (the viewport's configured size in tiles)
+// and VIEWPORT_PX/VIEWPORT_PY (the same, in pixels, at the current display's
+// tile scale). Node names are therefore constrained to be valid C++
 // identifiers and unique, since they're both the expression namespace here
 // and the symbol that later code generation will emit.
 struct ExprNode {
     enum class Kind { Number, Ident, Add, Sub, Mul, Div, Shl, Shr, Neg };
     Kind kind = Kind::Number;
     long long number = 0;
-    QString identName;  // component base name, or "VIEWPORT_TX"/"VIEWPORT_PY"
-    int identProp = -1;  // 0=pos.x, 1=pos.y, 2=size.w, 3=size.h; -1 for the bare globals
+    QString identName;  // component base name, or "VIEWPORT_{T,P}{X,Y}"
+    int identProp = -1;  // 0=pos.x, 1=pos.y, 2=size.x, 3=size.y; -1 for the bare globals
     std::shared_ptr<ExprNode> a;
     std::shared_ptr<ExprNode> b;
 };
@@ -360,7 +386,11 @@ private:
             auto node = std::make_shared<ExprNode>();
             node->kind = ExprNode::Kind::Ident;
             if (parts.size() == 1) {
-                if (token != QLatin1String("VIEWPORT_TX") && token != QLatin1String("VIEWPORT_PY")) {
+                // VIEWPORT_T{X,Y} are the viewport's size in tiles;
+                // VIEWPORT_P{X,Y} are the same in pixels.
+                static const QSet<QString> kViewportIdents{"VIEWPORT_TX", "VIEWPORT_TY", "VIEWPORT_PX",
+                                                             "VIEWPORT_PY"};
+                if (!kViewportIdents.contains(token)) {
                     ok = false;
                     return nullptr;
                 }
@@ -370,7 +400,7 @@ private:
             }
             if (parts.size() == 3) {
                 static const QHash<QString, int> kPropMap{
-                    {"pos.x", 0}, {"pos.y", 1}, {"size.w", 2}, {"size.h", 3}};
+                    {"pos.x", 0}, {"pos.y", 1}, {"size.x", 2}, {"size.y", 3}};
                 const QString propKey = parts.at(1) + "." + parts.at(2);
                 if (!kPropMap.contains(propKey)) {
                     ok = false;
@@ -432,20 +462,23 @@ std::optional<long long> evalExpr(
 
 // .uis ("User Interface Scene") file format: a JSON object holding a flat
 // "version" and a "nodes" array -- root's own children, each recursively
-// carrying its own "children". Only component nodes carry geometry/text;
-// anything else (currently just "root" and, structurally, future branch
-// nodes) round-trips as a plain named node.
+// carrying its own "children". Component and negative-space nodes carry
+// geometry (the latter has no text/alignment, having no text); anything
+// else (currently just "root" and, structurally, future branch nodes)
+// round-trips as a plain named node.
 QJsonObject serializeNode(const QTreeWidgetItem* item) {
     QJsonObject obj;
     obj["name"] = item->text(0);
-    if (isComponentItem(item)) {
-        obj["kind"] = QStringLiteral("component");
+    if (isGeometryItem(item)) {
+        obj["kind"] = isComponentItem(item) ? QStringLiteral("component") : QStringLiteral("negspace");
         obj["posXExpr"] = item->data(0, kPosXExprRole).toString();
         obj["posYExpr"] = item->data(0, kPosYExprRole).toString();
         obj["sizeWExpr"] = item->data(0, kSizeWExprRole).toString();
         obj["sizeHExpr"] = item->data(0, kSizeHExprRole).toString();
-        obj["align"] = item->data(0, kAlignRole).toInt();
-        obj["text"] = item->data(0, kTextContentRole).toString();
+        if (isComponentItem(item)) {
+            obj["align"] = item->data(0, kAlignRole).toInt();
+            obj["text"] = item->data(0, kTextContentRole).toString();
+        }
     } else {
         obj["kind"] = QStringLiteral("branch");
     }
@@ -459,9 +492,12 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
 
 void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
     auto* item = new QTreeWidgetItem(parent, QStringList{obj["name"].toString()});
-    if (obj["kind"].toString() == QLatin1String("component")) {
+    const QString kind = obj["kind"].toString();
+    const bool isComponent = (kind == QLatin1String("component"));
+    const bool isNegSpace = (kind == QLatin1String("negspace"));
+    if (isComponent || isNegSpace) {
         item->setFlags(item->flags() | Qt::ItemIsEditable);
-        item->setData(0, kKindRole, QString(kComponentKind));
+        item->setData(0, kKindRole, QString(isComponent ? kComponentKind : kNegSpaceKind));
         const QString posXExpr = obj["posXExpr"].toString(QStringLiteral("0"));
         const QString posYExpr = obj["posYExpr"].toString(QStringLiteral("0"));
         const QString sizeWExpr = obj["sizeWExpr"].toString(QStringLiteral("1"));
@@ -485,8 +521,10 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
         ok = false;
         item->setData(0, kSizeHRole, sizeHExpr.toInt(&ok));
         if (!ok) item->setData(0, kSizeHRole, 1);
-        item->setData(0, kAlignRole, obj["align"].toInt());
-        item->setData(0, kTextContentRole, obj["text"].toString());
+        if (isComponent) {
+            item->setData(0, kAlignRole, obj["align"].toInt());
+            item->setData(0, kTextContentRole, obj["text"].toString());
+        }
         item->setData(0, kLastValidNameRole, item->text(0));
     }
     for (const QJsonValue& child : obj["children"].toArray()) {
@@ -554,7 +592,29 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing);
         painter.fillRect(rect(), Qt::black);
 
+        // Negative-space zones paint first, one flat red cell at a time --
+        // they're an exclusion zone, not a widget, so nothing (no text, no
+        // border styling) draws on top of them here besides whatever
+        // (legitimately or not) overlaps them.
         for (QTreeWidgetItem* item : collectComponents()) {
+            if (!isNegSpaceItem(item)) {
+                continue;
+            }
+            const int x = item->data(0, kPosXRole).toInt();
+            const int y = item->data(0, kPosYRole).toInt();
+            const int w = std::max(1, item->data(0, kSizeWRole).toInt());
+            const int h = std::max(1, item->data(0, kSizeHRole).toInt());
+            for (int row = 0; row < h; ++row) {
+                for (int col = 0; col < w; ++col) {
+                    painter.fillRect(tileRect(x + col, y + row), QColor(200, 0, 0));
+                }
+            }
+        }
+
+        for (QTreeWidgetItem* item : collectComponents()) {
+            if (!isComponentItem(item)) {
+                continue;
+            }
             const int x = item->data(0, kPosXRole).toInt();
             const int y = item->data(0, kPosYRole).toInt();
             const int w = std::max(1, item->data(0, kSizeWRole).toInt());
@@ -629,7 +689,8 @@ protected:
 
     void mouseDoubleClickEvent(QMouseEvent* event) override {
         QTreeWidgetItem* hit = hitTest(event->pos());
-        if (!hit) {
+        if (!hit || !isComponentItem(hit)) {
+            // Negative-space zones have no text to edit.
             return;
         }
         bool ok = false;
@@ -700,20 +761,32 @@ private:
 
     // Later-added components are drawn on top, so hit-testing prefers the
     // last match for overlapping regions to stay consistent with what's
-    // visually on top.
+    // visually on top. Textboxes always paint over negative-space zones
+    // (see paintEvent()), so they're likewise preferred here -- clicking on
+    // a textbox sitting in a violated zone selects/drags the textbox, not
+    // the exclusion zone underneath it.
     QTreeWidgetItem* hitTest(const QPoint& pos) const {
         const QPoint cell = cellAt(pos);
-        QTreeWidgetItem* match = nullptr;
-        for (QTreeWidgetItem* item : collectComponents()) {
+        auto contains = [&cell](QTreeWidgetItem* item) {
             const int x = item->data(0, kPosXRole).toInt();
             const int y = item->data(0, kPosYRole).toInt();
             const int w = std::max(1, item->data(0, kSizeWRole).toInt());
             const int h = std::max(1, item->data(0, kSizeHRole).toInt());
-            if (cell.x() >= x && cell.x() < x + w && cell.y() >= y && cell.y() < y + h) {
-                match = item;
+            return cell.x() >= x && cell.x() < x + w && cell.y() >= y && cell.y() < y + h;
+        };
+        QTreeWidgetItem* componentMatch = nullptr;
+        QTreeWidgetItem* negSpaceMatch = nullptr;
+        for (QTreeWidgetItem* item : collectComponents()) {
+            if (!contains(item)) {
+                continue;
+            }
+            if (isComponentItem(item)) {
+                componentMatch = item;
+            } else {
+                negSpaceMatch = item;
             }
         }
-        return match;
+        return componentMatch ? componentMatch : negSpaceMatch;
     }
 
     double tilePx_;
@@ -735,8 +808,9 @@ struct Sidebar {
 
 // `maxTilesX`/`maxTilesY` bound the fields to whatever will actually fit on
 // the detected monitor at the current tile scale -- see the call site in
-// main() for how those are derived.
-Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY) {
+// main() for how those are derived. `tilePx` is that same scale, needed here
+// (not just by the canvas) so VIEWPORT_PX/VIEWPORT_PY can be computed.
+Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY, double tilePx) {
     auto* dock = new QDockWidget("Sidebar", parent);
     dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
     dock->setFixedWidth(widthPx);
@@ -776,22 +850,23 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     tree->addTopLevelItem(rootItem);
     tree->expandItem(rootItem);
 
-    // Renaming a component must never lose the "[T]" prefix that marks it as
-    // a textbox -- if an edit strips it, put it back rather than reject the
-    // whole edit, so the rest of the typed name survives. The name after the
-    // prefix also has to be a valid, unique C++ identifier: it's both the
-    // namespace expressions reference other nodes through, and the symbol
-    // that later code generation will emit, so anything else is reverted
-    // outright to the last name that was valid.
+    // Renaming a geometry node must never lose the "[T]"/"[N] " prefix that
+    // marks its kind -- if an edit strips it, put it back rather than reject
+    // the whole edit, so the rest of the typed name survives. The name after
+    // the prefix also has to be a valid, unique C++ identifier: it's both
+    // the namespace expressions reference other nodes through, and the
+    // symbol that later code generation will emit, so anything else is
+    // reverted outright to the last name that was valid.
     QObject::connect(tree, &QTreeWidget::itemChanged, [](QTreeWidgetItem* item, int column) {
-        if (column != 0 || !isComponentItem(item)) {
+        if (column != 0 || !isGeometryItem(item)) {
             return;
         }
+        const QString prefix = requiredPrefixFor(item);
         QString text = item->text(0);
-        if (!text.startsWith(kTextboxPrefix)) {
-            text = QString(kTextboxPrefix) + text;
+        if (!text.startsWith(prefix)) {
+            text = prefix + text;
         }
-        const QString base = text.mid(QString(kTextboxPrefix).length());
+        const QString base = text.mid(prefix.length());
         static const QRegularExpression kIdentRe(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
         bool valid = kIdentRe.match(base).hasMatch();
         if (valid) {
@@ -982,7 +1057,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     auto* alignCombo = new QComboBox(properties);
     const QString exprHint = "A number, or a formula like Other.pos.x + 1.\n"
                               "Operators: + - * / << >> and parentheses.\n"
-                              "VIEWPORT_TX / VIEWPORT_PY refer to the viewport size.";
+                              "VIEWPORT_TX/TY = viewport size in tiles, VIEWPORT_PX/PY = in pixels.";
     posXEdit->setToolTip(exprHint);
     posYEdit->setToolTip(exprHint);
     sizeWEdit->setToolTip(exprHint);
@@ -997,8 +1072,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     propertiesForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     propertiesForm->addRow("Position X", posXEdit);
     propertiesForm->addRow("Position Y", posYEdit);
-    propertiesForm->addRow("Size W", sizeWEdit);
-    propertiesForm->addRow("Size H", sizeHEdit);
+    propertiesForm->addRow("Size X", sizeWEdit);
+    propertiesForm->addRow("Size Y", sizeHEdit);
     propertiesForm->addRow("Alignment", alignCombo);
     properties->setVisible(false);
 
@@ -1036,15 +1111,20 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         sizeHEdit->setStyleSheet((mask & 8) ? kErrorStyle : QString());
     };
 
-    QObject::connect(tree, &QTreeWidget::currentItemChanged,
-                      [properties, populateFrom, updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
-                          const bool selected = isComponentItem(current);
-                          properties->setVisible(selected);
-                          if (selected) {
-                              populateFrom(current);
-                              updateErrorHighlight(current);
-                          }
-                      });
+    QObject::connect(
+        tree, &QTreeWidget::currentItemChanged,
+        [properties, propertiesForm, alignCombo, populateFrom, updateErrorHighlight](QTreeWidgetItem* current,
+                                                                                       QTreeWidgetItem*) {
+            const bool selected = isGeometryItem(current);
+            properties->setVisible(selected);
+            // Alignment only means something for a textbox's text -- a
+            // negative-space zone has none.
+            propertiesForm->setRowVisible(alignCombo, isComponentItem(current));
+            if (selected) {
+                populateFrom(current);
+                updateErrorHighlight(current);
+            }
+        });
 
     // The selected item's geometry can also change from outside the panel
     // -- dragging it on the canvas, the text-length auto-grow, or the
@@ -1055,7 +1135,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         tree, &QTreeWidget::itemChanged,
         [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit,
          sizeHEdit](QTreeWidgetItem* item, int column) {
-            if (column != 0 || item != tree->currentItem() || !isComponentItem(item)) {
+            if (column != 0 || item != tree->currentItem() || !isGeometryItem(item)) {
                 return;
             }
             updateErrorHighlight(item);
@@ -1069,7 +1149,10 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // keystroke -- a formula is only meaningful once fully typed.
     auto writeToSelection = [tree](int exprRole, const QString& value) {
         QTreeWidgetItem* item = tree->currentItem();
-        if (isComponentItem(item)) {
+        // Position/size apply to any geometry node -- textbox or negative
+        // space -- with identical expression support (VIEWPORT_TX/PY,
+        // references to other nodes, etc.); only alignment is textbox-only.
+        if (isGeometryItem(item)) {
             item->setData(0, exprRole, value);
         }
     };
@@ -1088,11 +1171,11 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         }
     });
 
-    // addComponentNode() takes an explicit parent so nesting components
-    // under other nodes (not just root) already works -- there's just no UI
-    // for it yet, since every add here always targets root, keeping newly
-    // added components as root's siblings-of-each-other for now. New
-    // textboxes start at the origin (0,0) with a 1x1 footprint; drag them on
+    // addComponentNode()/addNegativeSpaceNode() take an explicit parent so
+    // nesting under other nodes (not just root) already works -- there's
+    // just no UI for it yet, since every add here always targets root,
+    // keeping newly added nodes as root's siblings-of-each-other for now.
+    // New nodes start at the origin (0,0) with a 1x1 footprint; drag them on
     // the canvas or use the properties panel to place/resize them.
     auto componentCounter = std::make_shared<int>(1);
     auto addComponentNode = [componentCounter](QTreeWidgetItem* parent) {
@@ -1118,15 +1201,72 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         return child;
     };
 
+    auto negSpaceCounter = std::make_shared<int>(1);
+    auto addNegativeSpaceNode = [negSpaceCounter](QTreeWidgetItem* parent) {
+        const QString name = QString(kNegSpacePrefix) + "NegativeSpace" + QString::number((*negSpaceCounter)++);
+        auto* child = new QTreeWidgetItem(parent, QStringList{name});
+        child->setFlags(child->flags() | Qt::ItemIsEditable);
+        child->setData(0, kKindRole, QString(kNegSpaceKind));
+        child->setData(0, kPosXExprRole, QStringLiteral("0"));
+        child->setData(0, kPosYExprRole, QStringLiteral("0"));
+        child->setData(0, kSizeWExprRole, QStringLiteral("1"));
+        child->setData(0, kSizeHExprRole, QStringLiteral("1"));
+        child->setData(0, kPosXRole, 0);
+        child->setData(0, kPosYRole, 0);
+        child->setData(0, kSizeWRole, 1);
+        child->setData(0, kSizeHRole, 1);
+        child->setData(0, kLastValidNameRole, name);
+        parent->setExpanded(true);
+        return child;
+    };
+
+    // Deleting a node is structural (unlike every other edit here, which
+    // goes through setData()/itemChanged), so it has to explicitly do what
+    // itemChanged would otherwise trigger automatically: mark the scene
+    // dirty, and re-resolve everything, since any other node's expression
+    // that referenced the deleted one by name now refers to nothing and
+    // needs to be (re-)flagged as unresolvable. Root is never deletable --
+    // it's the one node the scene can't be without.
+    auto deleteNode = [rootItem, dirty, updateTitle, resolveAllPtr](QTreeWidgetItem* item) {
+        if (!item || item == rootItem) {
+            return;
+        }
+        delete item;
+        *dirty = true;
+        updateTitle();
+        (*resolveAllPtr)();
+    };
+
+    // Scoped to the tree (and its inline-rename editor) specifically, not
+    // the whole window -- otherwise Delete would also fire while, say, a
+    // properties field has focus.
+    auto* deleteShortcut = new QShortcut(QKeySequence::Delete, tree);
+    deleteShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    QObject::connect(deleteShortcut, &QShortcut::activated,
+                      [tree, deleteNode] { deleteNode(tree->currentItem()); });
+
     tree->setContextMenuPolicy(Qt::CustomContextMenu);
-    QObject::connect(tree, &QTreeWidget::customContextMenuRequested,
-                      [tree, rootItem, addComponentNode](const QPoint& pos) {
-                          QMenu menu;
-                          QAction* addAction = menu.addAction("Add Textbox Component");
-                          if (menu.exec(tree->viewport()->mapToGlobal(pos)) == addAction) {
-                              tree->setCurrentItem(addComponentNode(rootItem));
-                          }
-                      });
+    QObject::connect(
+        tree, &QTreeWidget::customContextMenuRequested,
+        [tree, rootItem, addComponentNode, addNegativeSpaceNode, deleteNode](const QPoint& pos) {
+            QTreeWidgetItem* clicked = tree->itemAt(pos);
+            QMenu menu;
+            QAction* addTextboxAction = menu.addAction("Add Textbox Component");
+            QAction* addNegSpaceAction = menu.addAction("Add Negative Space");
+            QAction* deleteAction = nullptr;
+            if (clicked && clicked != rootItem) {
+                menu.addSeparator();
+                deleteAction = menu.addAction("Delete");
+            }
+            QAction* chosen = menu.exec(tree->viewport()->mapToGlobal(pos));
+            if (chosen == addTextboxAction) {
+                tree->setCurrentItem(addComponentNode(rootItem));
+            } else if (chosen == addNegSpaceAction) {
+                tree->setCurrentItem(addNegativeSpaceNode(rootItem));
+            } else if (chosen && chosen == deleteAction) {
+                deleteNode(clicked);
+            }
+        });
 
     // Tree and properties share the space above the viewport controls,
     // resizable against each other; the viewport controls stay pinned to
@@ -1186,7 +1326,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // shown in red with an explanatory tooltip, rather than silently left
     // with a stale or wrong value.
     auto resolving = std::make_shared<bool>(false);
-    *resolveAllPtr = [window, rootItem, xEdit, yEdit, resolving]() {
+    *resolveAllPtr = [window, rootItem, xEdit, yEdit, tilePx, resolving]() {
         if (*resolving) {
             // Re-entrant call: our own setData() calls below re-fire
             // itemChanged, which is also wired to call this function. The
@@ -1195,15 +1335,19 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         }
         *resolving = true;
 
-        const long long viewportTx = xEdit->text().toInt();
-        const long long viewportPy = yEdit->text().toInt();
+        const long long viewportTilesX = xEdit->text().toInt();
+        const long long viewportTilesY = yEdit->text().toInt();
+        // Same rounding TileGridWidget itself uses to turn tile counts into
+        // actual pixel dimensions at the current display's scale.
+        const long long viewportPixelsX = qRound(viewportTilesX * tilePx);
+        const long long viewportPixelsY = qRound(viewportTilesY * tilePx);
 
         const QVector<QTreeWidgetItem*> components = collectComponentItems(rootItem);
 
         QHash<QString, QTreeWidgetItem*> byName;
         QSet<QString> duplicateNames;
         for (QTreeWidgetItem* item : components) {
-            const QString base = item->text(0).mid(QString(kTextboxPrefix).length());
+            const QString base = item->text(0).mid(requiredPrefixFor(item).length());
             if (byName.contains(base)) {
                 duplicateNames.insert(base);
             }
@@ -1245,8 +1389,10 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         std::function<std::optional<long long>(const QString&, int)> resolveIdent =
             [&](const QString& name, int prop) -> std::optional<long long> {
             if (prop < 0) {
-                if (name == QLatin1String("VIEWPORT_TX")) return viewportTx;
-                if (name == QLatin1String("VIEWPORT_PY")) return viewportPy;
+                if (name == QLatin1String("VIEWPORT_TX")) return viewportTilesX;
+                if (name == QLatin1String("VIEWPORT_TY")) return viewportTilesY;
+                if (name == QLatin1String("VIEWPORT_PX")) return viewportPixelsX;
+                if (name == QLatin1String("VIEWPORT_PY")) return viewportPixelsY;
                 return std::nullopt;
             }
             if (duplicateNames.contains(name)) {
@@ -1284,60 +1430,114 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             }
         }
 
-        QStringList errorNames;
+        QHash<QTreeWidgetItem*, QRect> rects;
         for (QTreeWidgetItem* item : components) {
+            long long values[4];
             for (int prop = 0; prop < 4; ++prop) {
                 const auto it = resolved.find({item, prop});
                 long long value = (it != resolved.end()) ? it->second : kDefaults[prop];
                 value = (prop >= 2) ? std::max<long long>(1, value) : std::max<long long>(0, value);
+                values[prop] = value;
                 if (item->data(0, kRoles[prop]).toLongLong() != value) {
                     item->setData(0, kRoles[prop], static_cast<int>(value));
                 }
             }
+            rects[item] = QRect(static_cast<int>(values[0]), static_cast<int>(values[1]),
+                                 static_cast<int>(values[2]), static_cast<int>(values[3]));
+        }
+
+        // Negative-space zones are exclusion zones: any other geometry node
+        // whose (now fully resolved) cells overlap one is a violation,
+        // reported against both the zone and whatever's intruding on it.
+        QHash<QTreeWidgetItem*, QStringList> violationPartners;
+        for (QTreeWidgetItem* negItem : components) {
+            if (!isNegSpaceItem(negItem)) {
+                continue;
+            }
+            for (QTreeWidgetItem* other : components) {
+                if (other == negItem || isNegSpaceItem(other)) {
+                    continue;
+                }
+                if (rects.value(negItem).intersects(rects.value(other))) {
+                    violationPartners[negItem] << other->text(0).mid(requiredPrefixFor(other).length());
+                    violationPartners[other] << negItem->text(0).mid(requiredPrefixFor(negItem).length());
+                }
+            }
+        }
+
+        QStringList errorNames;
+        QStringList violationDescriptions;
+        for (QTreeWidgetItem* item : components) {
             const int mask = errorMask.value(item, 0);
-            const bool hasError = mask != 0;
+            const bool hasExprError = mask != 0;
+            const bool hasViolation = violationPartners.contains(item);
+            const bool hasProblem = hasExprError || hasViolation;
             // Only touch item-level roles/appearance when the error state
             // actually changed -- setData() unconditionally re-fires
             // itemChanged even when the value is identical, and doing that
             // on every single resolve pass would falsely mark the scene
             // dirty just from redundant no-op writes.
-            if (item->data(0, kErrorMaskRole).toInt() != mask) {
+            const bool maskChanged = item->data(0, kErrorMaskRole).toInt() != mask;
+            const bool violationChanged = item->data(0, kNegSpaceViolationRole).toBool() != hasViolation;
+            if (maskChanged || violationChanged) {
                 item->setData(0, kErrorMaskRole, mask);
-                item->setData(0, kErrorRole, hasError);
+                item->setData(0, kNegSpaceViolationRole, hasViolation);
+                item->setData(0, kErrorRole, hasProblem);
                 QFont font = item->font(0);
-                font.setBold(hasError);
+                font.setBold(hasProblem);
                 item->setFont(0, font);
-                item->setForeground(0, hasError ? QBrush(Qt::red) : QBrush());
-                item->setBackground(0, hasError ? QBrush(QColor(90, 20, 20)) : QBrush());
-                item->setToolTip(0, hasError
-                                         ? QStringLiteral("Cannot resolve one or more properties -- check for "
-                                                           "typos, unknown/duplicate names, or a dependency cycle.")
-                                         : QString());
+                item->setForeground(0, hasProblem ? QBrush(Qt::red) : QBrush());
+                item->setBackground(0, hasProblem ? QBrush(QColor(90, 20, 20)) : QBrush());
+                QStringList tooltipLines;
+                if (hasExprError) {
+                    tooltipLines << QStringLiteral(
+                        "Cannot resolve one or more properties -- check for typos, unknown/duplicate names, or a "
+                        "dependency cycle.");
+                }
+                if (hasViolation) {
+                    tooltipLines << QStringLiteral("Violated negative space: overlaps %1")
+                                        .arg(violationPartners.value(item).join(QStringLiteral(", ")));
+                }
+                item->setToolTip(0, tooltipLines.join(QStringLiteral("\n")));
             }
-            if (hasError) {
-                errorNames << item->text(0).mid(QString(kTextboxPrefix).length());
+            if (hasExprError) {
+                errorNames << item->text(0).mid(requiredPrefixFor(item).length());
+            }
+            // Each violation is symmetric (recorded against both partners),
+            // so only report it once, keyed off the negative-space side.
+            if (hasViolation && isNegSpaceItem(item)) {
+                violationDescriptions << QStringLiteral("%1 overlaps %2")
+                                             .arg(item->text(0).mid(requiredPrefixFor(item).length()),
+                                                  violationPartners.value(item).join(QStringLiteral(", ")));
             }
         }
 
         // A red status-bar banner is the loud, hard-to-miss alert a subtle
         // tree-item color change alone wasn't -- it persists (no timeout)
         // until every error is fixed.
-        if (errorNames.isEmpty()) {
+        QStringList bannerParts;
+        if (!errorNames.isEmpty()) {
+            bannerParts << QStringLiteral("Cannot resolve: %1").arg(errorNames.join(QStringLiteral(", ")));
+        }
+        if (!violationDescriptions.isEmpty()) {
+            bannerParts << QStringLiteral("Violated negative space: %1")
+                                .arg(violationDescriptions.join(QStringLiteral("; ")));
+        }
+        if (bannerParts.isEmpty()) {
             window->statusBar()->clearMessage();
             window->statusBar()->setStyleSheet(QString());
         } else {
             window->statusBar()->setStyleSheet(
                 QStringLiteral("QStatusBar{background:#7a1f1f;color:white;font-weight:bold;}"));
-            window->statusBar()->showMessage(
-                QStringLiteral("⚠ Cannot resolve: %1").arg(errorNames.join(QStringLiteral(", "))));
+            window->statusBar()->showMessage(QStringLiteral("⚠ %1").arg(bannerParts.join(QStringLiteral(" | "))));
         }
 
         *resolving = false;
     };
     (*resolveAllPtr)();
 
-    // VIEWPORT_TX/VIEWPORT_PY change whenever these fields do, so anything
-    // referencing them needs a fresh resolution pass too.
+    // All four VIEWPORT_* globals derive from these fields, so anything
+    // referencing any of them needs a fresh resolution pass too.
     QObject::connect(xEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
     QObject::connect(yEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
 
@@ -1432,7 +1632,7 @@ int main(int argc, char** argv) {
     const int maxTilesY =
         std::max(1, static_cast<int>((available.height() - kWindowChromeMarginPx) / tilePx));
 
-    const Sidebar sidebar = createSidebar(&window, sidebarWidthPx, maxTilesX, maxTilesY);
+    const Sidebar sidebar = createSidebar(&window, sidebarWidthPx, maxTilesX, maxTilesY, tilePx);
     const ViewportPanel viewport =
         createViewportPanel(&window, tilePx, sidebar.tree, sidebar.xEdit, sidebar.yEdit);
     window.setCentralWidget(viewport.grid);
