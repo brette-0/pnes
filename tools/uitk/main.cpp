@@ -12,11 +12,11 @@
 #include <QCursor>
 #include <QIntValidator>
 #include <QFontMetrics>
-#include <QScrollArea>
 #include <QtGlobal>
 #include <QPainter>
 #include <QObject>
 #include <algorithm>
+#include <functional>
 
 namespace {
 
@@ -26,12 +26,17 @@ namespace {
 constexpr double kTilePxAt1080p = 8.0;
 constexpr double kReferenceHeight = 1080.0;
 
+// The grid drives the window's size, but never below this in either
+// dimension, so a tiny tile count can't shrink the window to something
+// unusable.
+constexpr int kMinGridDimensionPx = 100;
+
 double tilePxForScreen(const QRect& screenGeometry) {
     return kTilePxAt1080p * (screenGeometry.height() / kReferenceHeight);
 }
 
-// A viewport preview: draws a per-tile grid so tile boundaries are visible,
-// and otherwise just fills the space it's given (its size is driven
+// A viewport preview: draws a per-tile checkerboard so tile boundaries are
+// visible, and otherwise just fills the space it's given (its size is driven
 // externally by the sidebar's tile counts, not by its own size hint).
 class TileGridWidget : public QWidget {
 public:
@@ -41,13 +46,26 @@ public:
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
-        painter.fillRect(rect(), Qt::black);
-        painter.setPen(QColor(40, 40, 40));
-        for (double x = tilePx_; x < width(); x += tilePx_) {
-            painter.drawLine(QPointF(x, 0), QPointF(x, height()));
-        }
-        for (double y = tilePx_; y < height(); y += tilePx_) {
-            painter.drawLine(QPointF(0, y), QPointF(width(), y));
+
+        // tilePx_ is typically fractional (e.g. ~5.93px), so tile boundaries
+        // are rounded to the nearest pixel independently rather than
+        // accumulated by repeated addition. That keeps every tile a solid,
+        // non-overlapping rect -- filling cells (instead of stroking grid
+        // lines) means a tile that rounds to 1px narrower than its neighbor
+        // is still a flat, uniformly-colored rect, not a sliver where two
+        // anti-aliased lines nearly coincide and blend into a darker line.
+        int prevX = 0;
+        for (int col = 0; prevX < width(); ++col) {
+            const int nextX = std::min(width(), qRound((col + 1) * tilePx_));
+            int prevY = 0;
+            for (int row = 0; prevY < height(); ++row) {
+                const int nextY = std::min(height(), qRound((row + 1) * tilePx_));
+                const bool light = (col + row) % 2 == 0;
+                painter.fillRect(QRect(prevX, prevY, nextX - prevX, nextY - prevY),
+                                  light ? QColor(24, 24, 24) : Qt::black);
+                prevY = nextY;
+            }
+            prevX = nextX;
         }
     }
 
@@ -115,27 +133,44 @@ Sidebar createSidebar(QWidget* parent) {
     return {dock, xEdit, yEdit};
 }
 
-// Creates the viewport panel directly in the central area (no separate
-// window/frame around it), sized to `tilesX x tilesY` tiles at `tilePx`
-// pixels each and kept in sync whenever the sidebar's X/Y fields change. A
-// scroll area handles the case where the panel outgrows the visible space.
-QScrollArea* createViewportPanel(QWidget* parent, double tilePx, QLineEdit* xEdit, QLineEdit* yEdit) {
+// Re-fits `window` around its current contents and locks it at that size --
+// the window is meant to be resized only by the app (as the grid changes
+// size), never dragged by the user.
+void lockWindowToContents(QMainWindow* window) {
+    window->setMinimumSize(0, 0);
+    window->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+    window->adjustSize();
+    window->setFixedSize(window->size());
+}
+
+// Creates the viewport panel widget (not yet parented), sized to
+// `tilesX x tilesY` tiles at `tilePx` pixels each (floored at
+// kMinGridDimensionPx per axis). The grid drives the whole window's size and
+// is kept in sync whenever the sidebar's X/Y fields change -- but that only
+// works once the grid is actually installed as `window`'s central widget, so
+// the caller must install it before invoking the returned sync function the
+// first time.
+struct ViewportPanel {
+    TileGridWidget* grid;
+    std::function<void()> sync;
+};
+
+ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QLineEdit* xEdit, QLineEdit* yEdit) {
     auto* grid = new TileGridWidget(tilePx);
 
-    auto resizeToTiles = [grid, tilePx, xEdit, yEdit] {
+    auto sync = std::make_shared<std::function<void()>>();
+    *sync = [grid, tilePx, xEdit, yEdit, window] {
         const int tilesX = std::max(1, xEdit->text().toInt());
         const int tilesY = std::max(1, yEdit->text().toInt());
-        grid->setFixedSize(qRound(tilesX * tilePx), qRound(tilesY * tilePx));
+        const int gridWidth = std::max(kMinGridDimensionPx, qRound(tilesX * tilePx));
+        const int gridHeight = std::max(kMinGridDimensionPx, qRound(tilesY * tilePx));
+        grid->setFixedSize(gridWidth, gridHeight);
+        lockWindowToContents(window);
     };
-    QObject::connect(xEdit, &QLineEdit::textChanged, resizeToTiles);
-    QObject::connect(yEdit, &QLineEdit::textChanged, resizeToTiles);
-    resizeToTiles();
+    QObject::connect(xEdit, &QLineEdit::textChanged, [sync] { (*sync)(); });
+    QObject::connect(yEdit, &QLineEdit::textChanged, [sync] { (*sync)(); });
 
-    auto* scrollArea = new QScrollArea(parent);
-    scrollArea->setWidget(grid);
-    scrollArea->setWidgetResizable(false);
-    scrollArea->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    return scrollArea;
+    return {grid, [sync] { (*sync)(); }};
 }
 
 }  // namespace
@@ -155,13 +190,13 @@ int main(int argc, char** argv) {
     if (!screen) {
         screen = app.primaryScreen();
     }
-    const QRect screenGeometry = screen->geometry();
-    window.resize(screenGeometry.width() >> 1, screenGeometry.height() >> 1);
-    const double tilePx = tilePxForScreen(screenGeometry);
+    const double tilePx = tilePxForScreen(screen->geometry());
 
     const Sidebar sidebar = createSidebar(&window);
-    window.setCentralWidget(createViewportPanel(&window, tilePx, sidebar.xEdit, sidebar.yEdit));
+    const ViewportPanel viewport = createViewportPanel(&window, tilePx, sidebar.xEdit, sidebar.yEdit);
+    window.setCentralWidget(viewport.grid);
     window.addDockWidget(Qt::RightDockWidgetArea, sidebar.dock);
+    viewport.sync();
 
     window.show();
 
