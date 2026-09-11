@@ -73,6 +73,16 @@ namespace title {
         mmc3::SwitchCHRBank(mmc3::chr3Control, 1);
         mmc3::SwitchCHRBank(mmc3::chr4Control, 6);
         mmc3::SwitchCHRBank(mmc3::chr5Control, 7);
+        // MUST be set explicitly, same as EnterLevelSetup's (level.cpp): $A000
+        // is one of the MMC3 registers power-on leaves undefined (see
+        // mmc3.hpp's own comment on why the mapper's ::_reset doesn't seed
+        // it), and title::main is the FIRST code RESET reaches (gameMode
+        // starts at Title). With no explicit write here, every nametable/
+        // attribute write below (::ppu::Flush onward) races an undefined
+        // mirroring arrangement -- fine on hardware/emulators that happen to
+        // power up at 0, corrupted on any that don't (e.g. Mesen's
+        // "Randomize power-on state").
+        mmc3::SetMirroring(false);
         ppu::Flush(chrHUDWhitespace_tile, 0xff);
         ppu::pal::WriteFromBuffer(13, titleScreenColours, 3);
 

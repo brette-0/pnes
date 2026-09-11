@@ -303,8 +303,10 @@ public:
     static void SetMirroring(bool horizontal);
 
     /**
-     * @brief PRG-RAM enable/write-protect ($A001). Bit 6 = RAM enable, bit 7 =
-     *        write-protect. mmc3.cpp's ::_reset enables RAM, writable, at boot.
+     * @brief PRG-RAM enable/write-protect ($A001). Bit 7 = RAM chip enable
+     *        (1 = enabled), bit 6 = write protection (1 = deny writes, 0 =
+     *        allow). mmc3.cpp's ::_reset writes 0x80 -- enabled, writable --
+     *        at boot.
      */
     static tech::wo_register<0xa001> prgRamProtect;
 
