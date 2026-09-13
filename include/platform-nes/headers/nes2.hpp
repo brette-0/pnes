@@ -76,19 +76,18 @@ namespace nes2 {
      * @brief True if @p bytes is exactly representable as NES2.0's
      *        exponent-multiplier form, 2^E * (2M + 1) with M in 0..3.
      *
-     * Every power-of-two byte count qualifies (odd part 1, M 0) -- which is
-     * every PRG-ROM/CHR-ROM size this project produces. @p bytes == 0 is
-     * also representable (as the plain-notation zero; the exponent form
+     * Every power-of-two byte count qualifies (odd part 1, M 0). @p bytes == 0
+     * is also representable (as the plain-notation zero; the exponent form
      * itself can't spell zero).
      */
-    constexpr bool rom_size_representable(unsigned long long bytes) {
+    constexpr bool exponent_representable(unsigned long long bytes) {
         if (bytes == 0) return true;
         unsigned e;
         return odd_part(bytes, e) <= 7;
     }
 
     /** @brief NES2.0 exponent-multiplier byte for a PRG-ROM/CHR-ROM size (header byte 4 / 5). */
-    constexpr u8 rom_size_byte(unsigned long long bytes) {
+    constexpr u8 exponent_byte(unsigned long long bytes) {
         if (bytes == 0) return 0;
         unsigned e;
         const auto odd = odd_part(bytes, e);
@@ -96,12 +95,57 @@ namespace nes2 {
     }
 
     /**
-     * @brief MSB nibble for header byte 9: 0xF selects the exponent-multiplier
-     *        form (byte 4/5 holds E/M instead of a size nibble); 0x0 is the
-     *        plain-notation zero used when the ROM is absent.
+     * @brief True if @p bytes is exactly representable in NES2.0's plain
+     *        (linear) notation: a multiple of @p unit whose quotient fits in
+     *        the 12-bit ($000-$EFF) size field -- $F is reserved to select
+     *        the exponent-multiplier form, so $EFF is the largest linear
+     *        quotient.
+     * @param unit 16384 for PRG-ROM, 8192 for CHR-ROM.
      */
-    constexpr u8 rom_msb_nibble(unsigned long long bytes) {
-        return bytes == 0 ? 0x0 : 0xF;
+    constexpr bool linear_representable(unsigned long long bytes, unsigned long long unit) {
+        return bytes % unit == 0 && (bytes / unit) <= 0xEFF;
+    }
+
+    /**
+     * @brief True if @p bytes (a PRG-ROM/CHR-ROM size) can be represented at
+     *        all -- via the linear notation or, failing that, the
+     *        exponent-multiplier form. The spec permits the exponent form
+     *        only when the linear one can't express the size, so callers
+     *        should prefer linear whenever both apply (see ::rom_size_byte /
+     *        ::rom_msb_nibble).
+     * @param unit 16384 for PRG-ROM, 8192 for CHR-ROM.
+     */
+    constexpr bool rom_size_representable(unsigned long long bytes, unsigned long long unit) {
+        return linear_representable(bytes, unit) || exponent_representable(bytes);
+    }
+
+    /**
+     * @brief Header byte 4 / 5 for a PRG-ROM/CHR-ROM size: the low 8 bits of
+     *        the linear unit count when the linear notation applies (see
+     *        ::linear_representable), otherwise the exponent-multiplier byte.
+     * @param unit 16384 for PRG-ROM, 8192 for CHR-ROM.
+     */
+    constexpr u8 rom_size_byte(unsigned long long bytes, unsigned long long unit) {
+        if (bytes == 0) return 0;
+        if (linear_representable(bytes, unit)) {
+            return static_cast<u8>((bytes / unit) & 0xFF);
+        }
+        return exponent_byte(bytes);
+    }
+
+    /**
+     * @brief MSB nibble for header byte 9: the high 4 bits of the linear unit
+     *        count ($0-$E) when the linear notation applies; 0xF selects the
+     *        exponent-multiplier form (byte 4/5 holds E/M instead); 0x0 is
+     *        the plain-notation zero used when the ROM is absent.
+     * @param unit 16384 for PRG-ROM, 8192 for CHR-ROM.
+     */
+    constexpr u8 rom_msb_nibble(unsigned long long bytes, unsigned long long unit) {
+        if (bytes == 0) return 0x0;
+        if (linear_representable(bytes, unit)) {
+            return static_cast<u8>((bytes / unit >> 8) & 0xF);
+        }
+        return 0xF;
     }
 
     /**
@@ -156,11 +200,12 @@ namespace nes2 {
                prg_ram_bytes, prg_nvram_bytes,                                                   \
                chr_ram_bytes, chr_nvram_bytes,                                                   \
                timing)                                                                           \
-    static_assert(::nes2::rom_size_representable(prg_rom_bytes),                                 \
-        "PRG-ROM size is not representable in NES2.0 exponent-multiplier form "                  \
-        "(must be (2^E)*(1,3,5 or 7) bytes -- any power-of-two size qualifies)");                 \
-    static_assert(::nes2::rom_size_representable(chr_rom_bytes),                                 \
-        "CHR-ROM size is not representable in NES2.0 exponent-multiplier form");                 \
+    static_assert(::nes2::rom_size_representable(prg_rom_bytes, 16384),                          \
+        "PRG-ROM size is not representable in NES2.0's header: it must be a "                    \
+        "multiple of 16 KiB no larger than 0xEFF units, or (2^E)*(1,3,5 or 7) bytes");            \
+    static_assert(::nes2::rom_size_representable(chr_rom_bytes, 8192),                           \
+        "CHR-ROM size is not representable in NES2.0's header: it must be a "                    \
+        "multiple of 8 KiB no larger than 0xEFF units, or (2^E)*(1,3,5 or 7) bytes");             \
     static_assert(::nes2::ram_size_representable(prg_ram_bytes),                                 \
         "PRG-RAM size must be 0 (absent) or 64 << n bytes, n in 1..15 (128 B .. 2 MiB)");         \
     static_assert(::nes2::ram_size_representable(prg_nvram_bytes),                                \
@@ -173,13 +218,14 @@ namespace nes2 {
     static_assert(SUBMAPPER <= 0xF, "SUBMAPPER exceeds NES2.0's 4-bit submapper field");          \
     NES2_HEADER(                                                                                 \
         'N', 'E', 'S', 0x1a,                                                                     \
-        ::nes2::rom_size_byte(prg_rom_bytes),                                                     \
-        ::nes2::rom_size_byte(chr_rom_bytes),                                                     \
+        ::nes2::rom_size_byte(prg_rom_bytes, 16384),                                              \
+        ::nes2::rom_size_byte(chr_rom_bytes, 8192),                                                \
         (static_cast<u8>(mirroring) | (static_cast<u8>(battery) << 1) |                          \
             (static_cast<u8>((ALTERNATIVE_NAMETABLE) != 0) << 3) | ((MAPPER & 0xF) << 4)),       \
         (0b1000 | (((MAPPER >> 4) & 0xF) << 4)),                                                 \
         (((MAPPER >> 8) & 0xF) | (SUBMAPPER << 4)),                                               \
-        ((::nes2::rom_msb_nibble(chr_rom_bytes) << 4) | ::nes2::rom_msb_nibble(prg_rom_bytes)),   \
+        ((::nes2::rom_msb_nibble(chr_rom_bytes, 8192) << 4) |                                     \
+            ::nes2::rom_msb_nibble(prg_rom_bytes, 16384)),                                        \
         ((::nes2::ram_shift(prg_nvram_bytes) << 4) | ::nes2::ram_shift(prg_ram_bytes)),           \
         ((::nes2::ram_shift(chr_nvram_bytes) << 4) | ::nes2::ram_shift(chr_ram_bytes)),           \
         static_cast<u8>(timing),                                                                 \
