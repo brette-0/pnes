@@ -12,7 +12,7 @@
 #include "platform-nes/logger.hpp"
 
 
-u8 scratchpad[2];
+u8 scratchpad[5];
 
 // ReSharper disable once CppUseAuto
 atomic eGameModes gameMode = eGameModes::Title;

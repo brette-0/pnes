@@ -31,9 +31,9 @@ namespace ui::choice {
     }
 
     UI_BANK SingleChoice::SingleChoice(
-            const VisualFn clear, const VisualFn draw, const u8 nOptions
-        ) : option(0), optionAddr(new u16[nOptions]),
-            clear(clear), draw(draw), nOptions(nOptions) {
+            const u8 nOptions, const u8 defaultOption
+        ) : option(defaultOption), optionAddr(new u16[nOptions]),
+            nOptions(nOptions) {
     }
 
     UI_BANK buffer<u8*>* SingleChoice::Make(
@@ -99,25 +99,5 @@ namespace ui::choice {
             const u8 wordSplitter, const u8 optionSplitter
         ) {
         return Make(buff, sBuff, pos, box, wordSplitter, optionSplitter, optionAddr, nOptions);
-    }
-
-    UI_BANK auto SingleChoice::Pass(const u8 inputs, u8*& buf) -> void {
-        // UP moves the cursor up the list (decrements option), DOWN moves it
-        // down (increments) -- matches ui::Canvas's clamp convention and the
-        // hand-rolled title-menu logic this replaced.
-        if      (inputs & input::UP)   Step(false, buf);
-        else if (inputs & input::DOWN) Step(true, buf);
-    }
-
-    UI_BANK auto SingleChoice::Step(const bool forward, u8*& buf) -> void {
-        if (forward ? option == nOptions - 1 : option == 0) return;
-
-        // optionAddr[]: precomputed by Make(), see its own comment --
-        // no (x,y)->address divide+modulo here, just handing off the
-        // address for clear/draw to queue whatever they want into buf.
-        clear(optionAddr[option], buf);
-        // ++/-- on a volatile member is deprecated (C++20)
-        option = static_cast<u8>(forward ? option + 1 : option - 1);
-        draw(optionAddr[option], buf);
     }
 }

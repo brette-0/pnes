@@ -32,14 +32,15 @@ namespace title {
     static u16 playModeAddr;
     static u16 menuClearAddr;
     static u16 playModeClearAddr;
-    static u8 writeBuf[6];
-    static atomic u8 writeBufLen = 0;
 
-    static void DrainWriteBuf(const u8* start, const u8* end) {
-        for (const u8* p = start; p < end; p += 3) {
-            const int addr = (static_cast<int>(p[0]) << 8) | p[1];
-            ppu::WriteSingleToNameTable(addr, p[2]);
-        }
+    // Queues addr as both the clear and write address for the next
+    // SelectorUpdate() -- clear-then-arrow onto the same tile nets out to
+    // just drawing the arrow, so this is how a caller reuses SelectorUpdate
+    // for a first-draw indicator instead of poking the PPU itself.
+    static void QueueSelectorDraw(const u16 addr) {
+        scratchpad[1] = scratchpad[3] = static_cast<u8>(addr & 0xff);
+        scratchpad[2] = scratchpad[4] = static_cast<u8>(addr >> 8);
+        scratchpad[0] = 1;
     }
 
     static oam::oam_t Clear(u16 _);
@@ -90,8 +91,7 @@ namespace title {
         InitTitleScreen();
 
         const u16 menuCol = kMenuNT + (viewport_mx() << 1) - 1 - kMenuBoxWidth;
-        u8* initCursor = writeBuf;
-        ui::choice::SingleChoice menu(TitleUnselect, TitleSelect, kMenuOptions);
+        ui::choice::SingleChoice menu(kMenuOptions, 0);
         const auto menuChunks = menu.Make(
             SIZED_OBJ(msg_menu),
             {menuCol, static_cast<u16>(kBottomRightNT + 1)},
@@ -101,9 +101,9 @@ namespace title {
         menu.Draw(
             menuChunks,
             {menuCol, static_cast<u16>(kBottomRightNT + 1)},
-            kMenuOptions,
-            initCursor
+            kMenuOptions
         );
+        QueueSelectorDraw(menu.SelectedAddr());
 
         // Free whatever a PREVIOUS visit to the title screen left behind --
         // Make()'s result is heap-allocated and caller-owned (see
@@ -116,10 +116,9 @@ namespace title {
         pMenuChunks = menuChunks;
         menuClearAddr = ppu::CartesianToAddress({static_cast<u16>(menuCol - 2), static_cast<u16>(kBottomRightNT + 1)});
         menuAddr = ppu::CartesianToAddress({menuCol, static_cast<u16>(kBottomRightNT + 1)});
-        DrainWriteBuf(writeBuf, initCursor);
 
         const u16 playModeCol = kMenuNT + (viewport_mx() << 1) - 1 - kPlayModeBoxWidth;
-        ui::choice::SingleChoice playMode(TitleUnselect, TitleSelect, kPlayModeOptions);
+        ui::choice::SingleChoice playMode(kPlayModeOptions, 0);
         playModePos = {playModeCol, static_cast<u16>(kBottomRightNT + 1)};
         // Same leak, same fix -- see pMenuChunks's own comment above.
         delete[] pPlayModeChunks;
@@ -148,9 +147,20 @@ namespace title {
             prevInputs = inputs;
 
             if (pMenu) {
-                u8* cursor = writeBuf;
-                pMenu->Pass(pressed, cursor);
-                writeBufLen = static_cast<u8>(cursor - writeBuf);
+                const u8 lastOption = pMenu->option;
+                pMenu->Pass<true>(pressed);
+
+                if (const u8 newOption  = pMenu->option; newOption != lastOption) {
+                    // 3, 4 hold the new arrow of last write (ie, current)
+                    // making that addr the upcoming clear is the goal
+                    scratchpad[1] = scratchpad[3];
+                    scratchpad[2] = scratchpad[4];
+                    // write ppu addr of new arrow location for NMI into scratchpad
+                    const u16 newOptionAddr = pMenu->SelectedAddr();
+                    scratchpad[3] = newOptionAddr &  0xff;
+                    scratchpad[4] = newOptionAddr >> 8;
+                    scratchpad[0] = 1;  // enable 'do update'
+                }
             }
 
             if (pressed & input::A) {
@@ -204,11 +214,7 @@ namespace title {
 
     void nmi_handler() {
         oam::RefreshSprites(OAMBuffer);
-
-        if (writeBufLen) {
-            DrainWriteBuf(writeBuf, writeBuf + writeBufLen);
-            writeBufLen = 0;
-        }
+        SelectorUpdate();
 
         ppu::SetScroll({0, PreviewScrollY()});
 
@@ -222,10 +228,9 @@ namespace title {
             clearAddr = static_cast<u16>(clearAddr + 32);
         }
 
-        u8 indicatorBuf[3];
-        u8* cursor = indicatorBuf;
-        pPlayMode->Draw(pPlayModeChunks, playModeAddr, kPlayModeOptions, cursor);
-        DrainWriteBuf(indicatorBuf, cursor);
+        pPlayMode->Draw(pPlayModeChunks, playModeAddr, kPlayModeOptions);
+        QueueSelectorDraw(pPlayMode->SelectedAddr());
+        SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
         ArmSplitIRQ();
 
@@ -239,10 +244,9 @@ namespace title {
             clearAddr = static_cast<u16>(clearAddr + 32);
         }
 
-        u8 indicatorBuf[3];
-        u8* cursor = indicatorBuf;
-        pMainMenu->Draw(pMenuChunks, menuAddr, kMenuOptions, cursor);
-        DrainWriteBuf(indicatorBuf, cursor);
+        pMainMenu->Draw(pMenuChunks, menuAddr, kMenuOptions);
+        QueueSelectorDraw(pMainMenu->SelectedAddr());
+        SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
         ArmSplitIRQ();
 
@@ -316,15 +320,13 @@ namespace title {
         OAMBuffer[0].x = 32;    OAMBuffer[1].x = 40;
     }
 
-    auto TitleUnselect(const u16 addr, u8*& buf) -> void {
-        *buf++ = static_cast<u8>(addr >> 8);
-        *buf++ = static_cast<u8>(addr & 0xFF);
-        *buf++ = chrHUDWhitespace_tile;
-    }
+    AI auto SelectorUpdate() -> void {
+        if (const u8 updateFlag = scratchpad[0]; !updateFlag) return;
 
-    auto TitleSelect(const u16 addr, u8*& buf) -> void {
-        *buf++ = static_cast<u8>(addr >> 8);
-        *buf++ = static_cast<u8>(addr & 0xFF);
-        *buf++ = chrArrow_tile;
+        const u16 clearAddr  = scratchpad[1] | (scratchpad[2] << 8);
+        const u16 arrowAddr  = scratchpad[3] | (scratchpad[4] << 8);
+        ppu::WriteSingleToNameTable(clearAddr, chrHUDWhitespace_tile);
+        ppu::WriteSingleToNameTable(arrowAddr, chrArrow_tile);
+        scratchpad[0] = 0;  // clear update flag, update is done
     }
 }
