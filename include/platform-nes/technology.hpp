@@ -17,6 +17,8 @@
  *   `std::array`s in `.rodata`.
  * - ::PopulateFromBuffer / ::PopulateFromProvider — generic strided
  *   byte copies used by the video and audio subsystems.
+ * - ::CAT, ::STR, ::STRCAT — expand-then-paste and expand-then-stringize
+ *   helpers, including for computed `#include` paths.
  */
 #pragma once
 
@@ -25,6 +27,65 @@ using namespace br0::intsh;
 #include <type_traits>
 #include <array>
 #include <cstddef>
+
+/**
+ * @brief Token-pastes @p a and @p b into one token, macro-expanding both first.
+ *
+ * Plain `a##b` pastes the raw spelling of its operands without expanding
+ * them -- the classic gotcha: with `TARGET` defined to `nes`, `CAT_(TARGET, _data)`
+ * gives `TARGETdata`, not `nesdata`. ::CAT forwards through ::CAT_ so both
+ * operands are macro-expanded as ordinary arguments before the paste (an
+ * argument directly touching `##` in the SAME macro is exempt from
+ * expansion; routing it through an outer macro first is the standard fix).
+ *
+ * @note The paste result must itself be a single valid preprocessing token --
+ *       identifier/number fragments combine safely; pasting across a `/`,
+ *       `.`, or other punctuator is undefined behaviour (GCC/Clang reject
+ *       it). Use ::STRCAT for building a path instead.
+ *
+ * @param a First token.
+ * @param b Second token.
+ */
+#define CAT_(a, b) a##b
+#define CAT(a, b)  CAT_(a, b)
+
+/**
+ * @brief Stringizes @p x into a string literal, macro-expanding @p x first.
+ *
+ * Plain `#x` stringizes @p x's literal spelling without expanding it, so
+ * with `TARGET` defined to `nes`, `#TARGET` yields `"TARGET"`, not `"nes"`.
+ * ::STR forwards through ::STR_ so @p x is expanded as an ordinary argument
+ * before the `#` sees it (same fix as ::CAT, for stringizing instead of
+ * pasting).
+ *
+ * @param x Token sequence to expand and stringize.
+ */
+#define STR_(x) #x
+#define STR(x)  STR_(x)
+
+/**
+ * @brief Builds a computed `#include` argument from an unquoted, macro-
+ *        expandable path, in one step.
+ *
+ * A computed include must collapse to exactly ONE string-literal token after
+ * macro expansion:
+ *
+ *     #include STRCAT(gen/TARGET/some_file.hpp)
+ *
+ * Write the path bareword (no quotes, no internal spaces) with any macro
+ * pieces -- like a `TARGET` the build defines to `nes`, `gba`, ... -- embedded
+ * directly; ::STRCAT expands them and stringizes the whole path in one go,
+ * same as ::STR.
+ *
+ * @warning This is NOT string concatenation of separately-quoted pieces:
+ *          `#include` requires one string-literal token, and pasting quoted
+ *          string literals together with `##` is undefined behaviour. Do not
+ *          try to build a path from `"gen/"`, ::STR(TARGET), `"file.hpp"`
+ *          separately -- write it as one unquoted argument instead, as above.
+ *
+ * @param path Bareword, macro-expandable path.
+ */
+#define STRCAT(path) STR(path)
 
 /**
  * @brief Force a function to be copied into every caller.
@@ -501,9 +562,6 @@ shadow_scope_dynamic(Ts&...) -> shadow_scope_dynamic<Ts...>;
 
 } // namespace tech
 
-#define SH_CAT_(a, b) a##b
-#define SH_CAT(a, b)  SH_CAT_(a, b)
-
 /**
  * @brief Open a SHADOW scope over the listed registers.
  *
@@ -517,7 +575,7 @@ shadow_scope_dynamic(Ts&...) -> shadow_scope_dynamic<Ts...>;
  * this library does.
  */
 #define SHADOW(...)                                                    \
-    if (::tech::shadow_scope<__VA_ARGS__> SH_CAT(_shadow_, __LINE__){}; true)
+    if (::tech::shadow_scope<__VA_ARGS__> CAT(_shadow_, __LINE__){}; true)
 #endif // __cplusplus
 
 #if !defined(__cplusplus) && __STDC_VERSION__ < 202311L

@@ -39,6 +39,8 @@
 #include <QKeySequence>
 #include <QShortcut>
 #include <QFileDialog>
+#include <QInputDialog>
+#include <QDir>
 #include <QMessageBox>
 #include <QCloseEvent>
 #include <QJsonDocument>
@@ -778,6 +780,162 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
     return true;
 }
 
+// --- Code export -----------------------------------------------------------
+//
+// Turns a resolved scene into a target-specific .hpp/.cpp pair. Two kinds of
+// generated function, one per component kind, never mixed:
+//
+//   - ctTextBox: the text is known at design time, so wrapping/alignment is
+//     baked entirely here (same math TileGridWidget::paintEvent uses to
+//     preview it) into a self-contained placement function -- one
+//     ppu::WriteFromBufferToNameTable call per row, each row's characters
+//     kept as a string literal local to that function (never a shared/global
+//     buffer -- nothing outside the function needs it). Tagged with the
+//     scene's linker_prefix (a placement attribute, e.g. a bank/section) since
+//     it's real emitted code+data that has to land wherever the linker
+//     expects it, exactly like src/all/extras/ui/text.cpp's own UI_BANK.
+//
+//   - rtTextBox: the text is only known at runtime, so there's nothing to
+//     bake but the box/splitter -- the generated function is a thin AI
+//     (always-inline) wrapper around ui::text::Make, defined inline in the
+//     header for the same reason ui::text::Draw's overloads are (an
+//     always_inline free function needs vague/COMDAT linkage to be safe
+//     across translation units, see text.hpp). No linker_prefix: an
+//     always-inline wrapper has no meaningful placement of its own.
+//
+// SingleChoice and negative-space nodes emit nothing themselves -- a
+// SingleChoice is purely an editor-side grouping (ui::choice::SingleChoice
+// only ever owns an option index; drawing the chosen option is "entirely the
+// caller's job, via plain ui::text::Make/Draw", per its own header comment),
+// and negative space is an editor-only exclusion zone with no runtime
+// counterpart at all. We never bundle a component's make/draw together, or
+// decide call order for the caller -- codegen only emits the wrappers; when
+// and in what order a scene's components actually get placed/drawn is up to
+// the game code that calls them.
+
+// Fixed nametable quadrant size, mirroring src/nes/video.cpp's xy_to_nt_addr
+// (32 tiles wide, 30 tall per quadrant) -- the addressing scheme every
+// backend's CartesianToAddress/WriteFromBufferToNameTable shares, independent
+// of that target's own visible viewport tile count.
+constexpr int kNametableQuadW = 32;
+constexpr int kNametableQuadH = 30;
+
+QString bareName(const QTreeWidgetItem* item) {
+    return item->text(0).mid(requiredPrefixFor(item).length());
+}
+
+// Escapes `s` for use inside a double-quoted C string literal.
+QString cStringEscape(const QString& s) {
+    QString out;
+    out.reserve(s.size());
+    for (const QChar ch : s) {
+        if (ch == QLatin1Char('\\') || ch == QLatin1Char('"')) out += QLatin1Char('\\');
+        out += ch;
+    }
+    return out;
+}
+
+// Escapes `ch` for use inside a single-quoted C char literal.
+QString cCharEscape(QChar ch) {
+    if (ch == QLatin1Char('\\') || ch == QLatin1Char('\'')) return QString("\\") + ch;
+    return QString(ch);
+}
+
+struct GeneratedFiles {
+    QString hpp;
+    QString cpp;
+};
+
+// Emits one ctTextBox's placement function body: a ppu::WriteFromBufferToNameTable
+// call per wrapped row, each row's text a local string literal -- same
+// wrap/align math as TileGridWidget::paintEvent, so what's exported always
+// matches what the canvas previewed.
+QString genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY) {
+    const int x = item->data(0, kPosXRole).toInt() + ntOffX;
+    const int y = item->data(0, kPosYRole).toInt() + ntOffY;
+    const int w = std::max(1, item->data(0, kSizeWRole).toInt());
+    const int h = std::max(1, item->data(0, kSizeHRole).toInt());
+    const auto align = static_cast<TextAlign>(item->data(0, kAlignRole).toInt());
+    const QString splitterStr = item->data(0, kSplitterRole).toString();
+    const QChar splitter = splitterStr.isEmpty() ? QLatin1Char(' ') : splitterStr.at(0);
+    const QString text = item->data(0, kTextContentRole).toString();
+
+    QStringList lines;
+    if (!text.isEmpty()) {
+        const QStringList rows = wrapTextIntoRows(text, splitter, w);
+        for (int row = 0; row < h && row < rows.size(); ++row) {
+            const QString& rowText = rows.at(row);
+            if (rowText.isEmpty()) break;
+            const int slack = w - rowText.length();
+            const int startCol = (align == TextAlign::Left)    ? 0
+                                  : (align == TextAlign::Right) ? slack
+                                                                 : slack / 2;
+            const QString rowVar = QString("row%1").arg(row);
+            lines << QString("    static const char %1[] = \"%2\";")
+                         .arg(rowVar, cStringEscape(rowText));
+            lines << QString("    ppu::WriteFromBufferToNameTable(vec2<u16>{%1, %2}, "
+                              "reinterpret_cast<const u8*>(%3), sizeof(%3) - 1, 0);")
+                         .arg(x + startCol)
+                         .arg(y + row)
+                         .arg(rowVar);
+        }
+    }
+    return lines.join('\n');
+}
+
+// Builds the target-specific .hpp/.cpp pair for `rootItem`'s whole scene.
+// Components hidden on `target`/`region` (or under a hidden ancestor -- see
+// isEffectivelyHidden) are skipped entirely, so an export never emits a
+// function for something the scene itself says shouldn't exist there.
+GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, const QString& region, int nametable,
+                             const QString& linkerPrefix, const QString& sceneName) {
+    const int ntOffX = (nametable & 1) * kNametableQuadW;
+    const int ntOffY = ((nametable >> 1) & 1) * kNametableQuadH;
+    const QString linkerPrefixTok = linkerPrefix.trimmed().isEmpty() ? QString() : (linkerPrefix.trimmed() + " ");
+
+    QStringList hppDecls;
+    QStringList cppDefs;
+
+    for (QTreeWidgetItem* item : collectComponentItems(rootItem)) {
+        if (!isComponentItem(item)) continue;  // negative-space carries no code
+        if (isEffectivelyHidden(item, target, region)) continue;
+
+        const QString name = bareName(item);
+
+        if (isCtTextBoxItem(item)) {
+            hppDecls << QString("%1void %2(void);").arg(linkerPrefixTok, name);
+            cppDefs << QString("%1void %2(void) {\n%3\n}\n")
+                           .arg(linkerPrefixTok, name, genCtTextBoxBody(item, ntOffX, ntOffY));
+        } else {  // rtTextBox
+            const int w = std::max(1, item->data(0, kSizeWRole).toInt());
+            const int h = std::max(1, item->data(0, kSizeHRole).toInt());
+            const QString splitterStr = item->data(0, kSplitterRole).toString();
+            const QChar splitter = splitterStr.isEmpty() ? QLatin1Char(' ') : splitterStr.at(0);
+            hppDecls << QString("inline AI buffer<u8*>* %1(const u8* buff, const u8 sBuff) {\n"
+                                 "    return ui::text::Make(buff, sBuff, vec2<u8>{%2, %3}, '%4');\n"
+                                 "}\n")
+                             .arg(name)
+                             .arg(w)
+                             .arg(h)
+                             .arg(cCharEscape(splitter));
+        }
+    }
+
+    GeneratedFiles out;
+    out.hpp = QString("#pragma once\n\n"
+                       "// Generated by uitk from \"%1\" -- do not edit by hand.\n\n"
+                       "#include <platform-nes/types.hpp>\n"
+                       "#include <platform-nes/video.hpp>\n"
+                       "#include <platform-nes/extras/ui/text.hpp>\n\n"
+                       "%2")
+                   .arg(sceneName, hppDecls.join("\n"));
+    out.cpp = QString("// Generated by uitk from \"%1\" -- do not edit by hand.\n\n"
+                       "#include \"%2.hpp\"\n\n"
+                       "%3")
+                  .arg(sceneName, sceneName, cppDefs.join("\n"));
+    return out;
+}
+
 // A viewport preview: fills the space it's given with the tile grid (its
 // size is driven externally by the sidebar's tile counts, not by its own
 // size hint), then draws every component node found in `tree` as a
@@ -1335,6 +1493,84 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     fileMenu->addSeparator();
     addFileAction("Save", QKeySequence::Save, doSave);
     addFileAction("Save As...", QKeySequence::SaveAs, doSaveAs);
+
+    // Scene name generated files (and the .cpp's #include of its own .hpp)
+    // are keyed by -- the saved file's basename, or "scene" before a scene's
+    // ever been saved once.
+    auto sceneName = [currentPath] {
+        return currentPath->isEmpty() ? QStringLiteral("scene") : QFileInfo(*currentPath).completeBaseName();
+    };
+
+    // Refuses to export while any component can't currently be resolved --
+    // exporting a scene with an unresolved position/size would just bake in
+    // whatever stale/default value happened to be sitting in kPosXRole etc.,
+    // silently wrong rather than loudly refused.
+    auto hasUnresolvedErrors = [rootItem]() {
+        for (const QTreeWidgetItem* item : collectComponentItems(rootItem)) {
+            if (item->data(0, kErrorRole).toBool()) return true;
+        }
+        return false;
+    };
+
+    // Writes one target's generated .hpp/.cpp pair into `dir`/<target-lower>/,
+    // matching the gen/<target>/... layout the #include STRCAT(...) convention
+    // (technology.hpp) expects on the consuming side.
+    auto exportOneTarget = [window, rootItem, regionCombo, nametableCombo, linkerPrefixEdit, sceneName](
+                                const QString& dir, const QString& target) -> bool {
+        const QString targetDir = dir + "/" + target.toLower();
+        if (!QDir().mkpath(targetDir)) return false;
+        const GeneratedFiles files = generateCode(rootItem, target, regionCombo->currentText(),
+                                                    nametableCombo->currentIndex(), linkerPrefixEdit->text(),
+                                                    sceneName());
+        QFile hppFile(targetDir + "/" + sceneName() + ".hpp");
+        QFile cppFile(targetDir + "/" + sceneName() + ".cpp");
+        if (!hppFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+        if (!cppFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+        hppFile.write(files.hpp.toUtf8());
+        cppFile.write(files.cpp.toUtf8());
+        return true;
+    };
+
+    auto doExportTarget = [window, hasUnresolvedErrors, exportOneTarget]() {
+        if (hasUnresolvedErrors()) {
+            QMessageBox::warning(window, "Export Failed",
+                                  "Cannot export: one or more components have unresolved properties. "
+                                  "Fix the errors flagged in the sidebar first.");
+            return;
+        }
+        bool ok = false;
+        const QString target =
+            QInputDialog::getItem(window, "Export Target", "Target:", kTargetNames, 0, false, &ok);
+        if (!ok) return;
+        const QString dir = QFileDialog::getExistingDirectory(window, "Export Target To (gen/ root)");
+        if (dir.isEmpty()) return;
+        if (!exportOneTarget(dir, target)) {
+            QMessageBox::warning(window, "Export Failed", "Could not write generated files to:\n" + dir);
+        }
+    };
+
+    auto doExportAll = [window, hasUnresolvedErrors, exportOneTarget]() {
+        if (hasUnresolvedErrors()) {
+            QMessageBox::warning(window, "Export Failed",
+                                  "Cannot export: one or more components have unresolved properties. "
+                                  "Fix the errors flagged in the sidebar first.");
+            return;
+        }
+        const QString dir = QFileDialog::getExistingDirectory(window, "Export All To (gen/ root)");
+        if (dir.isEmpty()) return;
+        QStringList failed;
+        for (const QString& target : kTargetNames) {
+            if (!exportOneTarget(dir, target)) failed << target;
+        }
+        if (!failed.isEmpty()) {
+            QMessageBox::warning(window, "Export Failed",
+                                  "Could not write generated files for:\n" + failed.join(", "));
+        }
+    };
+
+    fileMenu->addSeparator();
+    QObject::connect(fileMenu->addAction("Export Target..."), &QAction::triggered, doExportTarget);
+    QObject::connect(fileMenu->addAction("Export All..."), &QAction::triggered, doExportAll);
 
     // Persisted scene state, same as any tree edit -- but neither combo is a
     // tree item, so each needs its own dirty-marking hookup. Guarded by
