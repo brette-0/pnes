@@ -207,9 +207,15 @@ constexpr int kSplitterRole = Qt::UserRole + 15;
 // in a raw tile coordinate, since a design's own tile space isn't required
 // to line up with the PPU's 32x30 quadrant boundaries.
 constexpr int kNametableRole = Qt::UserRole + 16;
-constexpr char kComponentKind[] = "component";
+// Compile-time and runtime textboxes are separate kinds -- currently
+// identical in behavior, but distinguished now because they'll diverge in
+// meaning later (e.g. how their text is ultimately resolved by generated
+// code).
+constexpr char kCtTextBoxKind[] = "ctTextBox";
+constexpr char kRtTextBoxKind[] = "rtTextBox";
 constexpr char kNegSpaceKind[] = "negspace";
-constexpr char kTextboxPrefix[] = "[T] ";
+constexpr char kCtTextBoxPrefix[] = "[CT] ";
+constexpr char kRtTextBoxPrefix[] = "[RT] ";
 constexpr char kNegSpacePrefix[] = "[N] ";
 
 enum class TextAlign { Left = 0, Center = 1, Right = 2 };
@@ -241,8 +247,19 @@ QStringList wrapTextIntoRows(const QString& text, QChar splitter, int w) {
     return rows;
 }
 
+bool isCtTextBoxItem(const QTreeWidgetItem* item) {
+    return item && item->data(0, kKindRole).toString() == QLatin1String(kCtTextBoxKind);
+}
+
+bool isRtTextBoxItem(const QTreeWidgetItem* item) {
+    return item && item->data(0, kKindRole).toString() == QLatin1String(kRtTextBoxKind);
+}
+
+// Either flavor of textbox -- compile-time and runtime textboxes behave
+// identically everywhere except kind string, name prefix, and which add-node
+// action creates them, so most code just wants "is this a textbox at all."
 bool isComponentItem(const QTreeWidgetItem* item) {
-    return item && item->data(0, kKindRole).toString() == QLatin1String(kComponentKind);
+    return isCtTextBoxItem(item) || isRtTextBoxItem(item);
 }
 
 bool isNegSpaceItem(const QTreeWidgetItem* item) {
@@ -254,10 +271,11 @@ bool isNegSpaceItem(const QTreeWidgetItem* item) {
 // thing it visually is.
 bool isGeometryItem(const QTreeWidgetItem* item) { return isComponentItem(item) || isNegSpaceItem(item); }
 
-// The "[T] "/"[N] " prefix a node's kind requires, or empty for kinds (root,
-// plain branch nodes) that don't have one.
+// The "[CT] "/"[RT] "/"[N] " prefix a node's kind requires, or empty for
+// kinds (root, plain branch nodes) that don't have one.
 QString requiredPrefixFor(const QTreeWidgetItem* item) {
-    if (isComponentItem(item)) return QString(kTextboxPrefix);
+    if (isCtTextBoxItem(item)) return QString(kCtTextBoxPrefix);
+    if (isRtTextBoxItem(item)) return QString(kRtTextBoxPrefix);
     if (isNegSpaceItem(item)) return QString(kNegSpacePrefix);
     return QString();
 }
@@ -285,7 +303,8 @@ QVector<QTreeWidgetItem*> collectComponentItems(QTreeWidgetItem* node) {
 // A property's stored text is a small arithmetic expression over integer
 // literals, +/-/*//, parentheses, and identifiers of the form
 // `NodeName.pos.x`, `NodeName.pos.y`, `NodeName.size.x`, `NodeName.size.y`
-// (referencing another component by its bare name, sans the "[T] " prefix --
+// (referencing another component by its bare name, sans the "[CT] "/"[RT] "
+// prefix --
 // the same name that will identify it in generated C++), plus the two bare
 // globals VIEWPORT_TX/VIEWPORT_TY (the viewport's configured size in tiles)
 // and VIEWPORT_PX/VIEWPORT_PY (the same, in pixels, at the current display's
@@ -517,7 +536,7 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
     QJsonObject obj;
     obj["name"] = item->text(0);
     if (isGeometryItem(item)) {
-        obj["kind"] = isComponentItem(item) ? QStringLiteral("component") : QStringLiteral("negspace");
+        obj["kind"] = item->data(0, kKindRole).toString();
         obj["posXExpr"] = item->data(0, kPosXExprRole).toString();
         obj["posYExpr"] = item->data(0, kPosYExprRole).toString();
         obj["sizeWExpr"] = item->data(0, kSizeWExprRole).toString();
@@ -542,11 +561,14 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
 void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
     auto* item = new QTreeWidgetItem(parent, QStringList{obj["name"].toString()});
     const QString kind = obj["kind"].toString();
-    const bool isComponent = (kind == QLatin1String("component"));
+    const bool isCtTextBox = (kind == QLatin1String("ctTextBox"));
+    const bool isRtTextBox = (kind == QLatin1String("rtTextBox"));
+    const bool isComponent = isCtTextBox || isRtTextBox;
     const bool isNegSpace = (kind == QLatin1String("negspace"));
     if (isComponent || isNegSpace) {
         item->setFlags(item->flags() | Qt::ItemIsEditable);
-        item->setData(0, kKindRole, QString(isComponent ? kComponentKind : kNegSpaceKind));
+        item->setData(0, kKindRole,
+                       QString(isCtTextBox ? kCtTextBoxKind : isRtTextBox ? kRtTextBoxKind : kNegSpaceKind));
         const QString posXExpr = obj["posXExpr"].toString(QStringLiteral("0"));
         const QString posYExpr = obj["posYExpr"].toString(QStringLiteral("0"));
         const QString sizeWExpr = obj["sizeWExpr"].toString(QStringLiteral("1"));
@@ -896,7 +918,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     tree->addTopLevelItem(rootItem);
     tree->expandItem(rootItem);
 
-    // Renaming a geometry node must never lose the "[T]"/"[N] " prefix that
+    // Renaming a geometry node must never lose the "[CT] "/"[RT] "/"[N] " prefix that
     // marks its kind -- if an edit strips it, put it back rather than reject
     // the whole edit, so the rest of the typed name survives. The name after
     // the prefix also has to be a valid, unique C++ identifier: it's both
@@ -1251,21 +1273,26 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         }
     });
 
-    // addComponentNode()/addNegativeSpaceNode() take an explicit parent so
+    // addCtTextBoxNode()/addRtTextBoxNode()/addNegativeSpaceNode() take an explicit parent so
     // nesting under other nodes (not just root) already works -- there's
     // just no UI for it yet, since every add here always targets root,
     // keeping newly added nodes as root's siblings-of-each-other for now.
     // New nodes start at the origin (0,0) with a 1x1 footprint; drag them on
     // the canvas or use the properties panel to place/resize them.
-    auto componentCounter = std::make_shared<int>(1);
-    auto addComponentNode = [componentCounter](QTreeWidgetItem* parent) {
+    // Shared by both textbox flavors -- they differ only in kind string and
+    // name prefix, so one counter (shared across both) numbers default names
+    // for either, keeping "TextboxN" identifiers unique across the pair
+    // rather than each flavor restarting at 1 and colliding once the prefix
+    // is stripped off for name resolution.
+    auto textBoxCounter = std::make_shared<int>(1);
+    auto addTextBoxNode = [textBoxCounter](QTreeWidgetItem* parent, const char* kind, const QString& prefix) {
         // No space in the default name -- it has to already be a valid C++
         // identifier, since it's usable immediately in another node's
         // expression.
-        const QString name = QString(kTextboxPrefix) + "Textbox" + QString::number((*componentCounter)++);
+        const QString name = prefix + "Textbox" + QString::number((*textBoxCounter)++);
         auto* child = new QTreeWidgetItem(parent, QStringList{name});
         child->setFlags(child->flags() | Qt::ItemIsEditable);
-        child->setData(0, kKindRole, QString(kComponentKind));
+        child->setData(0, kKindRole, QString(kind));
         child->setData(0, kTextContentRole, QString());
         child->setData(0, kPosXExprRole, QStringLiteral("0"));
         child->setData(0, kPosYExprRole, QStringLiteral("0"));
@@ -1281,6 +1308,12 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         child->setData(0, kLastValidNameRole, name);
         parent->setExpanded(true);
         return child;
+    };
+    auto addCtTextBoxNode = [addTextBoxNode](QTreeWidgetItem* parent) {
+        return addTextBoxNode(parent, kCtTextBoxKind, QString(kCtTextBoxPrefix));
+    };
+    auto addRtTextBoxNode = [addTextBoxNode](QTreeWidgetItem* parent) {
+        return addTextBoxNode(parent, kRtTextBoxKind, QString(kRtTextBoxPrefix));
     };
 
     auto negSpaceCounter = std::make_shared<int>(1);
@@ -1331,10 +1364,12 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     tree->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(
         tree, &QTreeWidget::customContextMenuRequested,
-        [tree, rootItem, addComponentNode, addNegativeSpaceNode, deleteNode](const QPoint& pos) {
+        [tree, rootItem, addCtTextBoxNode, addRtTextBoxNode, addNegativeSpaceNode,
+         deleteNode](const QPoint& pos) {
             QTreeWidgetItem* clicked = tree->itemAt(pos);
             QMenu menu;
-            QAction* addTextboxAction = menu.addAction("Add Textbox Component");
+            QAction* addCtTextboxAction = menu.addAction("Add Compile-Time Textbox");
+            QAction* addRtTextboxAction = menu.addAction("Add Runtime Textbox");
             QAction* addNegSpaceAction = menu.addAction("Add Negative Space");
             QAction* deleteAction = nullptr;
             if (clicked && clicked != rootItem) {
@@ -1342,8 +1377,10 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
                 deleteAction = menu.addAction("Delete");
             }
             QAction* chosen = menu.exec(tree->viewport()->mapToGlobal(pos));
-            if (chosen == addTextboxAction) {
-                tree->setCurrentItem(addComponentNode(rootItem));
+            if (chosen == addCtTextboxAction) {
+                tree->setCurrentItem(addCtTextBoxNode(rootItem));
+            } else if (chosen == addRtTextboxAction) {
+                tree->setCurrentItem(addRtTextBoxNode(rootItem));
             } else if (chosen == addNegSpaceAction) {
                 tree->setCurrentItem(addNegativeSpaceNode(rootItem));
             } else if (chosen && chosen == deleteAction) {

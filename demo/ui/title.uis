@@ -1,18 +1,74 @@
 {
     "nodes": [
         {
+            "align": 1,
+            "children": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] GameTitle",
+            "nametable": 0,
+            "posXExpr": "0",
+            "posYExpr": "25",
+            "sizeHExpr": "2",
+            "sizeWExpr": "10",
+            "splitter": " ",
+            "text": "Super Mary Sisters"
+        },
+        {
             "align": 0,
             "children": [
             ],
-            "kind": "component",
-            "name": "[T] tbTitle",
-            "nametable": 3,
-            "posXExpr": "1",
-            "posYExpr": "1",
-            "sizeHExpr": "3",
-            "sizeWExpr": "( VIEWPORT_TX >> 2 ) - 1",
+            "kind": "ctTextBox",
+            "name": "[CT] NewGame",
+            "nametable": 0,
+            "posXExpr": "21",
+            "posYExpr": "24",
+            "sizeHExpr": "1",
+            "sizeWExpr": "8",
             "splitter": " ",
-            "text": "SUPER MARY SISTERS"
+            "text": "New Game"
+        },
+        {
+            "align": 0,
+            "children": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] Continue",
+            "nametable": 0,
+            "posXExpr": "21",
+            "posYExpr": "25",
+            "sizeHExpr": "1",
+            "sizeWExpr": "8",
+            "splitter": " ",
+            "text": "Continue"
+        },
+        {
+            "align": 0,
+            "children": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] Options",
+            "nametable": 0,
+            "posXExpr": "21",
+            "posYExpr": "26",
+            "sizeHExpr": "1",
+            "sizeWExpr": "7",
+            "splitter": " ",
+            "text": "Options"
+        },
+        {
+            "align": 0,
+            "children": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] Quit",
+            "nametable": 3,
+            "posXExpr": "21",
+            "posYExpr": "27",
+            "sizeHExpr": "1",
+            "sizeWExpr": "4",
+            "splitter": " ",
+            "text": "Quit"
         }
     ],
     "version": 1
