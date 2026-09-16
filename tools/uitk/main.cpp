@@ -214,9 +214,11 @@ constexpr int kNametableRole = Qt::UserRole + 16;
 constexpr char kCtTextBoxKind[] = "ctTextBox";
 constexpr char kRtTextBoxKind[] = "rtTextBox";
 constexpr char kNegSpaceKind[] = "negspace";
+constexpr char kSingleChoiceKind[] = "singlechoice";
 constexpr char kCtTextBoxPrefix[] = "[CT] ";
 constexpr char kRtTextBoxPrefix[] = "[RT] ";
 constexpr char kNegSpacePrefix[] = "[N] ";
+constexpr char kSingleChoicePrefix[] = "[SC] ";
 
 enum class TextAlign { Left = 0, Center = 1, Right = 2 };
 
@@ -266,17 +268,30 @@ bool isNegSpaceItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kNegSpaceKind);
 }
 
+// A pure grouping node -- no geometry of its own, just a parent for the
+// ctTextBox/rtTextBox nodes representing its options. Not a geometry item:
+// it's never drawn, dragged, or resolved, same as root/plain branch nodes.
+bool isSingleChoiceItem(const QTreeWidgetItem* item) {
+    return item && item->data(0, kKindRole).toString() == QLatin1String(kSingleChoiceKind);
+}
+
 // Anything with a position/size -- placeable on the canvas, draggable,
 // referenceable in another node's expressions -- regardless of what kind of
 // thing it visually is.
 bool isGeometryItem(const QTreeWidgetItem* item) { return isComponentItem(item) || isNegSpaceItem(item); }
 
-// The "[CT] "/"[RT] "/"[N] " prefix a node's kind requires, or empty for
-// kinds (root, plain branch nodes) that don't have one.
+// Anything that carries a kind-specific name prefix -- every geometry item,
+// plus SingleChoice, which has no geometry of its own but is still a genuine
+// node (as opposed to root/plain branch nodes, which have no prefix at all).
+bool isPrefixedItem(const QTreeWidgetItem* item) { return isGeometryItem(item) || isSingleChoiceItem(item); }
+
+// The "[CT] "/"[RT] "/"[N] "/"[SC] " prefix a node's kind requires, or empty
+// for kinds (root, plain branch nodes) that don't have one.
 QString requiredPrefixFor(const QTreeWidgetItem* item) {
     if (isCtTextBoxItem(item)) return QString(kCtTextBoxPrefix);
     if (isRtTextBoxItem(item)) return QString(kRtTextBoxPrefix);
     if (isNegSpaceItem(item)) return QString(kNegSpacePrefix);
+    if (isSingleChoiceItem(item)) return QString(kSingleChoicePrefix);
     return QString();
 }
 
@@ -289,6 +304,25 @@ QVector<QTreeWidgetItem*> collectComponentItems(QTreeWidgetItem* node) {
         for (int i = 0; i < n->childCount(); ++i) {
             QTreeWidgetItem* child = n->child(i);
             if (isGeometryItem(child)) {
+                result.push_back(child);
+            }
+            visit(child);
+        }
+    };
+    visit(node);
+    return result;
+}
+
+// Same walk as collectComponentItems, but over every prefixed node (geometry
+// items plus SingleChoice) -- used for name-uniqueness checks, since a
+// SingleChoice's name has to be unique against everything else that carries
+// a prefix, not just against other geometry.
+QVector<QTreeWidgetItem*> collectPrefixedItems(QTreeWidgetItem* node) {
+    QVector<QTreeWidgetItem*> result;
+    std::function<void(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* n) {
+        for (int i = 0; i < n->childCount(); ++i) {
+            QTreeWidgetItem* child = n->child(i);
+            if (isPrefixedItem(child)) {
                 result.push_back(child);
             }
             visit(child);
@@ -547,6 +581,8 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
             obj["text"] = item->data(0, kTextContentRole).toString();
             obj["splitter"] = item->data(0, kSplitterRole).toString();
         }
+    } else if (isSingleChoiceItem(item)) {
+        obj["kind"] = QStringLiteral("singlechoice");
     } else {
         obj["kind"] = QStringLiteral("branch");
     }
@@ -598,6 +634,10 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
             item->setData(0, kTextContentRole, obj["text"].toString());
             item->setData(0, kSplitterRole, obj["splitter"].toString(QStringLiteral(" ")));
         }
+        item->setData(0, kLastValidNameRole, item->text(0));
+    } else if (kind == QLatin1String("singlechoice")) {
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
+        item->setData(0, kKindRole, QString(kSingleChoiceKind));
         item->setData(0, kLastValidNameRole, item->text(0));
     }
     for (const QJsonValue& child : obj["children"].toArray()) {
@@ -918,15 +958,16 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     tree->addTopLevelItem(rootItem);
     tree->expandItem(rootItem);
 
-    // Renaming a geometry node must never lose the "[CT] "/"[RT] "/"[N] " prefix that
-    // marks its kind -- if an edit strips it, put it back rather than reject
-    // the whole edit, so the rest of the typed name survives. The name after
-    // the prefix also has to be a valid, unique C++ identifier: it's both
-    // the namespace expressions reference other nodes through, and the
-    // symbol that later code generation will emit, so anything else is
-    // reverted outright to the last name that was valid.
+    // Renaming a prefixed node (geometry, or SingleChoice) must never lose the
+    // "[CT] "/"[RT] "/"[N] "/"[SC] " prefix that marks its kind -- if an edit
+    // strips it, put it back rather than reject the whole edit, so the rest
+    // of the typed name survives. The name after the prefix also has to be a
+    // valid, unique C++ identifier: it's both the namespace expressions
+    // reference other nodes through, and the symbol that later code
+    // generation will emit, so anything else is reverted outright to the
+    // last name that was valid.
     QObject::connect(tree, &QTreeWidget::itemChanged, [](QTreeWidgetItem* item, int column) {
-        if (column != 0 || !isGeometryItem(item)) {
+        if (column != 0 || !isPrefixedItem(item)) {
             return;
         }
         const QString prefix = requiredPrefixFor(item);
@@ -938,7 +979,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         static const QRegularExpression kIdentRe(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
         bool valid = kIdentRe.match(base).hasMatch();
         if (valid) {
-            for (QTreeWidgetItem* other : collectComponentItems(item->treeWidget()->invisibleRootItem())) {
+            for (QTreeWidgetItem* other : collectPrefixedItems(item->treeWidget()->invisibleRootItem())) {
                 if (other != item && other->text(0) == text) {
                     valid = false;
                     break;
@@ -1336,6 +1377,23 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         return child;
     };
 
+    // A single choice is nothing but a parent node at this stage -- no
+    // geometry, no properties -- so it just needs a name and its kind; its
+    // ctTextBox/rtTextBox option children are added onto it the same way as
+    // onto root, via the context menu below. It's still a genuine node
+    // though, not a plain branch, so it carries the "[SC] " prefix and
+    // participates in the same name validation as every other prefixed node.
+    auto singleChoiceCounter = std::make_shared<int>(1);
+    auto addSingleChoiceNode = [singleChoiceCounter](QTreeWidgetItem* parent) {
+        const QString name = QString(kSingleChoicePrefix) + "SingleChoice" + QString::number((*singleChoiceCounter)++);
+        auto* child = new QTreeWidgetItem(parent, QStringList{name});
+        child->setFlags(child->flags() | Qt::ItemIsEditable);
+        child->setData(0, kKindRole, QString(kSingleChoiceKind));
+        child->setData(0, kLastValidNameRole, name);
+        parent->setExpanded(true);
+        return child;
+    };
+
     // Deleting a node is structural (unlike every other edit here, which
     // goes through setData()/itemChanged), so it has to explicitly do what
     // itemChanged would otherwise trigger automatically: mark the scene
@@ -1364,13 +1422,20 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     tree->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(
         tree, &QTreeWidget::customContextMenuRequested,
-        [tree, rootItem, addCtTextBoxNode, addRtTextBoxNode, addNegativeSpaceNode,
+        [tree, rootItem, addCtTextBoxNode, addRtTextBoxNode, addNegativeSpaceNode, addSingleChoiceNode,
          deleteNode](const QPoint& pos) {
             QTreeWidgetItem* clicked = tree->itemAt(pos);
+            // A single choice's own children are its ctTextBox/rtTextBox
+            // options, so right-clicking one targets textbox adds at it
+            // rather than at root -- same as every other add here, which
+            // still always targets root until there's UI for nesting more
+            // generally.
+            QTreeWidgetItem* textBoxParent = isSingleChoiceItem(clicked) ? clicked : rootItem;
             QMenu menu;
             QAction* addCtTextboxAction = menu.addAction("Add Compile-Time Textbox");
             QAction* addRtTextboxAction = menu.addAction("Add Runtime Textbox");
             QAction* addNegSpaceAction = menu.addAction("Add Negative Space");
+            QAction* addSingleChoiceAction = menu.addAction("Add Single Choice");
             QAction* deleteAction = nullptr;
             if (clicked && clicked != rootItem) {
                 menu.addSeparator();
@@ -1378,11 +1443,13 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             }
             QAction* chosen = menu.exec(tree->viewport()->mapToGlobal(pos));
             if (chosen == addCtTextboxAction) {
-                tree->setCurrentItem(addCtTextBoxNode(rootItem));
+                tree->setCurrentItem(addCtTextBoxNode(textBoxParent));
             } else if (chosen == addRtTextboxAction) {
-                tree->setCurrentItem(addRtTextBoxNode(rootItem));
+                tree->setCurrentItem(addRtTextBoxNode(textBoxParent));
             } else if (chosen == addNegSpaceAction) {
                 tree->setCurrentItem(addNegativeSpaceNode(rootItem));
+            } else if (chosen == addSingleChoiceAction) {
+                tree->setCurrentItem(addSingleChoiceNode(rootItem));
             } else if (chosen && chosen == deleteAction) {
                 deleteNode(clicked);
             }

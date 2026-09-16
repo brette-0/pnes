@@ -8,6 +8,9 @@
 
 using namespace br0::intsh;
 
+// while this may look pointless, its for canvas compatability I thin
+// and maybe like a local code-gen thing?
+
 namespace ui::choice {
     // Owns nothing but a clamped option index -- no layout, no PPU
     // addresses, no draw calls. Where (or whether) to draw anything for
