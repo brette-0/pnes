@@ -14,6 +14,7 @@
 #include <QFontMetrics>
 #include <QtGlobal>
 #include <QPainter>
+#include <QImage>
 #include <QFont>
 #include <QObject>
 #include <QEvent>
@@ -232,6 +233,36 @@ const QStringList kTargetNames = {"NES", "GBA", "GCN", "DS",     "DSI", "Wii",
 // kTargetNames -- scene-wide, matched by name rather than index.
 const QStringList kRegionNames = {"NTSC", "PAL"};
 
+// Fixed viewport tile counts for each target, mirroring the
+// video::viewport_tx()/viewport_ty() constants each backend actually compiles
+// against (include/platform-nes/video.hpp) -- picking a Target sets the
+// sidebar's Viewport X/Y to whatever that backend's panel really shows, so a
+// scene isn't authored against the wrong resolution by accident. Two targets
+// have no fixed panel size and are deliberately left out: GC/Wii
+// (video.hpp's TARGET_OGC branch) sizes to whatever TV VIDEO_GetPreferredMode
+// reports at runtime -- src/ogc/video.cpp's ogc_world_tx computation, fed a
+// standard 640x480 NTSC mode, resolves to 40, the closest thing to a
+// canonical default, so GCN/Wii use that; PC (the SDL LANDSCAPE/PORTRAIT
+// branches) sizes to whatever the host desktop's own display mode is, which
+// has no "the" resolution to pick, so selecting it leaves Viewport X/Y alone.
+std::optional<std::pair<int, int>> viewportTilesForTarget(const QString& target) {
+    static const QHash<QString, std::pair<int, int>> kSizes{
+        {"NES", {32, 30}},    // hardware PPU, fixed 256x240
+        {"GBA", {30, 20}},    // 240x160 panel
+        {"GCN", {40, 30}},    // runtime TV width; 40 = a standard 640x480 NTSC mode
+        {"DS", {32, 24}},     // 256x192 panel
+        {"DSI", {32, 24}},    // same main-engine panel as DS
+        {"Wii", {40, 30}},    // same runtime-TV path as GCN
+        {"Wii U", {52, 30}},  // widescreen, scaled to fill the panel
+        {"3DS", {50, 30}},    // 400x240 top screen
+        {"Switch", {52, 30}}, // widescreen, scaled to fill the panel
+        {"PSP", {60, 30}},    // 480x272 panel, letterboxed to 480x240
+    };
+    const auto it = kSizes.constFind(target);
+    if (it == kSizes.constEnd()) return std::nullopt;
+    return *it;
+}
+
 enum class TextAlign { Left = 0, Center = 1, Right = 2 };
 
 // Splits `text` into rows of at most `w` characters, breaking only at
@@ -361,21 +392,31 @@ bool isEffectivelyHidden(const QTreeWidgetItem* item, const QString& target, con
 //
 // A property's stored text is a small arithmetic expression over integer
 // literals, +/-/*//, parentheses, and identifiers of the form
-// `NodeName.pos.x`, `NodeName.pos.y`, `NodeName.size.x`, `NodeName.size.y`
-// (referencing another component by its bare name, sans the "[CT] "/"[RT] "
-// prefix --
-// the same name that will identify it in generated C++), plus the two bare
-// globals VIEWPORT_TX/VIEWPORT_TY (the viewport's configured size in tiles)
-// and VIEWPORT_PX/VIEWPORT_PY (the same, in pixels, at the current display's
-// tile scale). Node names are therefore constrained to be valid C++
+// `NodeName.pos.x`, `NodeName.pos.y`, `NodeName.size.x`, `NodeName.size.y`,
+// `NodeName.textSize` (referencing another component by its bare name, sans
+// the "[CT] "/"[RT] " prefix -- the same name that will identify it in
+// generated C++), plus the two bare globals VIEWPORT_TX/VIEWPORT_TY (the
+// viewport's configured size in tiles) and VIEWPORT_PX/VIEWPORT_PY (the same,
+// in pixels, at the current display's tile scale). `this` is accepted in
+// place of a name anywhere one of the above is legal (e.g. `this.textSize`,
+// `this.pos.x`) as a self-reference to whichever node the expression being
+// evaluated belongs to -- handled by substitution in resolveAllPtr's
+// resolveIdent, not here, since the parser has no notion of which node's
+// property it's parsing for. `.textSize` is the referenced textbox's text
+// length in characters (its *unwrapped* single-line width) -- e.g.
+// `sizeWExpr: "this.textSize"` auto-fits a box to its own label, or
+// `posXExpr: "(VIEWPORT_TX - this.textSize) / 2"` centers one. It resolves
+// only against ctTextBox/rtTextBox nodes, same as pos/size, since only they
+// carry text. Node names are therefore constrained to be valid C++
 // identifiers and unique, since they're both the expression namespace here
 // and the symbol that later code generation will emit.
 struct ExprNode {
     enum class Kind { Number, Ident, Add, Sub, Mul, Div, Shl, Shr, Neg };
     Kind kind = Kind::Number;
     long long number = 0;
-    QString identName;  // component base name, or "VIEWPORT_{T,P}{X,Y}"
-    int identProp = -1;  // 0=pos.x, 1=pos.y, 2=size.x, 3=size.y; -1 for the bare globals
+    QString identName;  // component base name, "this", or "VIEWPORT_{T,P}{X,Y}"
+    // 0=pos.x, 1=pos.y, 2=size.x, 3=size.y, 4=textSize; -1 for the bare globals
+    int identProp = -1;
     std::shared_ptr<ExprNode> a;
     std::shared_ptr<ExprNode> b;
 };
@@ -533,6 +574,11 @@ private:
                 }
                 node->identName = parts.at(0);
                 node->identProp = kPropMap.value(propKey);
+                return node;
+            }
+            if (parts.size() == 2 && parts.at(1) == QLatin1String("textSize")) {
+                node->identName = parts.at(0);
+                node->identProp = 4;
                 return node;
             }
             ok = false;
@@ -751,6 +797,7 @@ public:
         glyphFont_ = QFontDatabase::systemFont(QFontDatabase::FixedFont);
         glyphFont_.setPixelSize(std::max(1, qRound(tilePx_ * 0.75)));
         naturalGlyphWidthPx_ = std::max(1, QFontMetrics(glyphFont_).horizontalAdvance(QLatin1Char('M')));
+        naturalGlyphHeightPx_ = std::max(1, QFontMetrics(glyphFont_).height());
     }
 
 protected:
@@ -859,22 +906,42 @@ protected:
 
 
 private:
-    // Draws one glyph filling `cell` edge-to-edge. glyphFont_ is already
-    // sized to fill the cell's height; monospace glyphs are narrower than
-    // tall, though, so a per-cell horizontal-only scale stretches the
-    // glyph's natural width out to the cell's actual width. Scaling is
-    // applied via the painter's transform (translate to the cell's center,
-    // scale X only, draw in the now-stretched local coordinate system)
-    // rather than distorting the font itself, which Qt can't stretch
-    // independently of its point size.
+    // Renders `ch` once at its natural (unstretched) size into a cached
+    // image, rather than drawing it fresh into every cell. drawCellGlyph()
+    // used to stretch glyphs by scaling the *painter* (translate + scale +
+    // drawText) -- but a non-uniform painter scale forces Qt's FreeType
+    // backend to rasterize a correspondingly distorted glyph outline, which
+    // it can fail to do for some glyphs at some squish ratios (logged as
+    // "render glyph failed" and silently skipped) -- something this project
+    // hit in practice once a wider target (e.g. GCN's 40-tile viewport,
+    // narrower per-tile cells than NES's 32) pushed scaleX far enough from
+    // 1.0. Caching an unscaled render here and stretching the resulting
+    // *bitmap* in drawCellGlyph instead sidesteps FreeType entirely for the
+    // stretch step -- image scaling can't fail the way glyph rasterization
+    // can.
+    const QImage& glyphImage(QChar ch) const {
+        auto it = glyphCache_.find(ch);
+        if (it != glyphCache_.end()) {
+            return it.value();
+        }
+        QImage image(naturalGlyphWidthPx_, naturalGlyphHeightPx_, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::transparent);
+        QPainter p(&image);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setFont(glyphFont_);
+        p.setPen(Qt::white);
+        p.drawText(image.rect(), Qt::AlignCenter, QString(ch));
+        p.end();
+        return glyphCache_.insert(ch, image).value();
+    }
+
+    // Draws one glyph filling `cell` edge-to-edge -- monospace glyphs are
+    // narrower than they are tall, so the cached natural-size image (see
+    // glyphImage()) is stretched horizontally (and, incidentally, by
+    // whatever small vertical amount separates its natural height from the
+    // cell's) to fill the cell.
     void drawCellGlyph(QPainter& painter, const QRect& cell, QChar ch) const {
-        const double scaleX = static_cast<double>(cell.width()) / naturalGlyphWidthPx_;
-        painter.save();
-        painter.translate(cell.center());
-        painter.scale(scaleX, 1.0);
-        const QRect local(-naturalGlyphWidthPx_ / 2, -cell.height() / 2, naturalGlyphWidthPx_, cell.height());
-        painter.drawText(local, Qt::AlignCenter, QString(ch));
-        painter.restore();
+        painter.drawImage(cell, glyphImage(ch));
     }
 
     // tilePx_ is typically fractional (e.g. ~5.93px), so tile boundaries are
@@ -958,6 +1025,8 @@ private:
     QComboBox* regionCombo_;
     QFont glyphFont_;
     int naturalGlyphWidthPx_ = 1;
+    int naturalGlyphHeightPx_ = 1;
+    mutable QHash<QChar, QImage> glyphCache_;
     QTreeWidgetItem* dragItem_ = nullptr;
     QPoint dragAnchorCell_;
     int dragOriginX_ = 0;
@@ -1350,7 +1419,9 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
 
     const QString exprHint = "A number, or a formula like Other.pos.x + 1.\n"
                               "Operators: + - * / << >> and parentheses.\n"
-                              "VIEWPORT_TX/TY = viewport size in tiles, VIEWPORT_PX/PY = in pixels.";
+                              "VIEWPORT_TX/TY = viewport size in tiles, VIEWPORT_PX/PY = in pixels.\n"
+                              "Other.textSize / this.textSize = that textbox's text length in tiles.\n"
+                              "'this' refers to the node the formula is on, e.g. this.textSize.";
     posXEdit->setToolTip(exprHint);
     posYEdit->setToolTip(exprHint);
     sizeWEdit->setToolTip(exprHint);
@@ -1753,6 +1824,27 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     xEdit->setText(QString::number(std::min(32, maxTilesX)));
     yEdit->setText(QString::number(std::min(30, maxTilesY)));
 
+    // Picking a Target sets Viewport X/Y to that backend's real panel size
+    // (see viewportTilesForTarget()) -- xEdit/yEdit's own textChanged handler
+    // above still clamps the result against the monitor's maxTiles, same as
+    // any other edit to these fields. Fires unconditionally, including while
+    // New/Open are programmatically driving the combo (`loading`) and not
+    // just on a user-picked change: viewport tile counts are never persisted
+    // in the .uis file (see writeUisFile/parseUisFile) since they're a
+    // property of the *target*, not the scene, so re-deriving them from
+    // whatever target a freshly-opened or -reset scene ends up on is exactly
+    // what should happen rather than leaving stale tiles from whatever scene
+    // was open before. Targets with no fixed panel (see
+    // viewportTilesForTarget()) leave Viewport X/Y untouched.
+    QObject::connect(targetCombo, &QComboBox::currentTextChanged, [xEdit, yEdit, maxTilesX, maxTilesY](const QString& target) {
+        const auto tiles = viewportTilesForTarget(target);
+        if (!tiles) {
+            return;
+        }
+        xEdit->setText(QString::number(std::min(tiles->first, maxTilesX)));
+        yEdit->setText(QString::number(std::min(tiles->second, maxTilesY)));
+    });
+
     // --- Expression resolution: turns every component's stored pos/size
     // expression text into the resolved int the canvas reads, by repeatedly
     // attempting whatever hasn't resolved yet until a full pass makes no new
@@ -1840,15 +1932,38 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             if (it == byName.end()) {
                 return std::nullopt;
             }
+            // .textSize (prop 4) is the node's text length -- known up front
+            // from its stored text content, unlike pos/size (0-3) which are
+            // themselves still-resolving expressions -- so it's answered
+            // directly rather than via the `resolved` fixed-point map, and
+            // only for textboxes (a negspace zone, the only other geometry
+            // kind sharing `byName`, carries no text).
+            if (prop == 4) {
+                return isComponentItem(it.value())
+                           ? std::optional<long long>(it.value()->data(0, kTextContentRole).toString().length())
+                           : std::nullopt;
+            }
             const auto found = resolved.find({it.value(), prop});
             return found != resolved.end() ? std::optional<long long>(found->second) : std::nullopt;
+        };
+
+        // `this` is a self-reference to whichever node's own property is
+        // currently being evaluated -- the parser has no notion of that (see
+        // the ExprNode comment above), so it's resolved here by substituting
+        // in that node's real name before delegating to resolveIdent, per
+        // pending entry (each may belong to a different node).
+        auto resolveIdentFor = [&resolveIdent](QTreeWidgetItem* self) {
+            const QString selfName = self->text(0).mid(requiredPrefixFor(self).length());
+            return [&resolveIdent, selfName](const QString& name, int prop) {
+                return resolveIdent(name == QLatin1String("this") ? selfName : name, prop);
+            };
         };
 
         bool progress = true;
         while (progress && !pending.isEmpty()) {
             progress = false;
             for (int i = pending.size() - 1; i >= 0; --i) {
-                const auto v = evalExpr(pending[i].ast, resolveIdent);
+                const auto v = evalExpr(pending[i].ast, resolveIdentFor(pending[i].item));
                 if (v) {
                     resolved[{pending[i].item, pending[i].prop}] = *v;
                     pending.removeAt(i);
