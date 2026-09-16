@@ -9,6 +9,7 @@
 #include "level/levels.hpp"
 #include "platform-nes/mappers/mmc3.hpp"
 #include "platform-nes/extras/ui/singlechoice.hpp"
+#include "platform-nes/extras/ui/text.hpp"
 
 namespace title {
     constexpr u8 kMenuOptions   = static_cast<u8>(End + 1);
@@ -25,13 +26,61 @@ namespace title {
     static ui::choice::SingleChoice* pMainMenu = nullptr;
     static buffer<u8*>* pMenuChunks = nullptr;
     static u16 menuAddr;
+    // Arrow-slot address per menu option -- SingleChoice no longer knows
+    // where (or whether) its options are drawn, so title.cpp is the one
+    // that lays the text boxes out and remembers where the arrow for each
+    // option goes. Indexed the same way optionAddr used to be, by option.
+    static u16 menuOptionAddr[kMenuOptions];
 
     static ui::choice::SingleChoice* pPlayMode = nullptr;
     static buffer<u8*>* pPlayModeChunks = nullptr;
     static vec2<u16> playModePos;
     static u16 playModeAddr;
+    static u16 playModeOptionAddr[kPlayModeOptions];
     static u16 menuClearAddr;
     static u16 playModeClearAddr;
+
+    // Arrow-slot addresses for whichever SingleChoice pMenu currently
+    // points at -- tracked alongside pMenu itself, swapped in lockstep
+    // whenever pMenu switches between the main menu and the play-mode
+    // submenu.
+    static const u16* pOptionAddr = nullptr;
+
+    // Splits buff into nOptions single-row text boxes on optionSplitter,
+    // stacking them downward from pos, and draws each one -- genuinely
+    // separate text boxes, same word-wrap rule as ui::text::Make (a word
+    // that doesn't fit box width is simply dropped, as every option here
+    // is sized to fit its box in one line). Also fills optionAddr[opt]
+    // (caller-owned, >= nOptions entries) with the nametable address one
+    // tile left of that option's text -- where the caller draws its own
+    // selection arrow, since this makes no draw call for it.
+    //
+    // Returns a heap-allocated array of nOptions buffer<u8*> entries --
+    // same row-per-entry shape ui::text::Make returns -- caller owns it
+    // (delete[] once done) and can hand it straight to ui::text::Draw.
+    static buffer<u8*>* MakeOptionBoxes(
+        const u8* buff, const u8 sBuff, const vec2<u16> pos, const u8 boxWidth,
+        const u8 wordSplitter, const u8 optionSplitter,
+        u16* const optionAddr, const u8 nOptions
+    ) {
+        const auto rows = new buffer<u8*>[nOptions];
+        const u16 arrowCol = pos.x - 2;
+        u8 cursor = 0;
+
+        for (u8 opt = 0; opt < nOptions && cursor <= sBuff; opt++) {
+            u8 end = cursor;
+            while (end < sBuff && *(buff + end) != optionSplitter) end++;
+
+            const auto row = ui::text::Make(buff + cursor, end - cursor, {boxWidth, 1}, wordSplitter);
+            rows[opt] = row[0];
+            delete[] row;
+
+            optionAddr[opt] = ppu::CartesianToAddress({arrowCol, static_cast<u16>(pos.y + opt)});
+            cursor = (end < sBuff) ? end + 1 : end;
+        }
+
+        return rows;
+    }
 
     // Queues addr as both the clear and write address for the next
     // SelectorUpdate() -- clear-then-arrow onto the same tile nets out to
@@ -92,18 +141,13 @@ namespace title {
 
         const u16 menuCol = kMenuNT + (viewport_mx() << 1) - 1 - kMenuBoxWidth;
         ui::choice::SingleChoice menu(kMenuOptions, 0);
-        const auto menuChunks = menu.Make(
-            SIZED_OBJ(msg_menu),
-            {menuCol, static_cast<u16>(kBottomRightNT + 1)},
-            {kMenuBoxWidth, kMenuOptions},
-            chrHUDWhitespace_tile, 0
+        const vec2<u16> menuPos{menuCol, static_cast<u16>(kBottomRightNT + 1)};
+        const auto menuChunks = MakeOptionBoxes(
+            SIZED_OBJ(msg_menu), menuPos, kMenuBoxWidth,
+            chrHUDWhitespace_tile, 0, menuOptionAddr, kMenuOptions
         );
-        menu.Draw(
-            menuChunks,
-            {menuCol, static_cast<u16>(kBottomRightNT + 1)},
-            kMenuOptions
-        );
-        QueueSelectorDraw(menu.SelectedAddr());
+        ui::text::Draw(menuChunks, menuPos, kMenuOptions);
+        QueueSelectorDraw(menuOptionAddr[menu.option]);
 
         // Free whatever a PREVIOUS visit to the title screen left behind --
         // Make()'s result is heap-allocated and caller-owned (see
@@ -122,17 +166,16 @@ namespace title {
         playModePos = {playModeCol, static_cast<u16>(kBottomRightNT + 1)};
         // Same leak, same fix -- see pMenuChunks's own comment above.
         delete[] pPlayModeChunks;
-        pPlayModeChunks = playMode.Make(
-            SIZED_OBJ(msg_playMode),
-            playModePos,
-            {kPlayModeBoxWidth, kPlayModeOptions},
-            chrHUDWhitespace_tile, 0
+        pPlayModeChunks = MakeOptionBoxes(
+            SIZED_OBJ(msg_playMode), playModePos, kPlayModeBoxWidth,
+            chrHUDWhitespace_tile, 0, playModeOptionAddr, kPlayModeOptions
         );
 
         playModeClearAddr = ppu::CartesianToAddress({static_cast<u16>(playModeCol - 2), static_cast<u16>(kBottomRightNT + 1)});
         pPlayMode = &playMode;
         pMenu = &menu;
         pMainMenu = &menu;
+        pOptionAddr = menuOptionAddr;
 
         ppu::SetScroll({0, 0xff});
         ppu::EnableRendering(ppu::ctrl::SPRITE_ADDR | ppu::ctrl::SPRITE_SIZE | ppu::ctrl::GEN_NMI, ppu::mask::BG_L | ppu::mask::SPRITE_L);
@@ -156,7 +199,7 @@ namespace title {
                     scratchpad[1] = scratchpad[3];
                     scratchpad[2] = scratchpad[4];
                     // write ppu addr of new arrow location for NMI into scratchpad
-                    const u16 newOptionAddr = pMenu->SelectedAddr();
+                    const u16 newOptionAddr = pOptionAddr[newOption];
                     scratchpad[3] = newOptionAddr &  0xff;
                     scratchpad[4] = newOptionAddr >> 8;
                     scratchpad[0] = 1;  // enable 'do update'
@@ -179,6 +222,7 @@ namespace title {
                         playModeAddr = ppu::CartesianToAddress(playModePos);
                         pNMI  = nmi_handler_drawPlayMode;
                         pMenu = pPlayMode;
+                        pOptionAddr = playModeOptionAddr;
                         break;
 
                     case Options:
@@ -197,6 +241,7 @@ namespace title {
             if (pressed & input::B && pMenu == pPlayMode) {
                 pNMI = nmi_handler_drawMenu;
                 pMenu = pMainMenu;
+                pOptionAddr = menuOptionAddr;
             }
 
             video::WaitForPresent();
@@ -228,8 +273,8 @@ namespace title {
             clearAddr = static_cast<u16>(clearAddr + 32);
         }
 
-        pPlayMode->Draw(pPlayModeChunks, playModeAddr, kPlayModeOptions);
-        QueueSelectorDraw(pPlayMode->SelectedAddr());
+        ui::text::Draw(pPlayModeChunks, playModeAddr, kPlayModeOptions);
+        QueueSelectorDraw(playModeOptionAddr[pPlayMode->option]);
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
         ArmSplitIRQ();
@@ -244,8 +289,8 @@ namespace title {
             clearAddr = static_cast<u16>(clearAddr + 32);
         }
 
-        pMainMenu->Draw(pMenuChunks, menuAddr, kMenuOptions);
-        QueueSelectorDraw(pMainMenu->SelectedAddr());
+        ui::text::Draw(pMenuChunks, menuAddr, kMenuOptions);
+        QueueSelectorDraw(menuOptionAddr[pMainMenu->option]);
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
         ArmSplitIRQ();
