@@ -23,7 +23,7 @@
 #include <QTreeWidget>
 #include <QAbstractItemModel>
 #include <QMenu>
-#include <QInputDialog>
+#include <QPushButton>
 #include <QMouseEvent>
 #include <QColor>
 #include <QVector>
@@ -198,15 +198,15 @@ constexpr int kNegSpaceViolationRole = Qt::UserRole + 14;
 // single character is allowed since it's just the character that marks
 // where a line break is permitted.
 constexpr int kSplitterRole = Qt::UserRole + 15;
-// Which physical NES nametable (0-3, i.e. $2000/$2400/$2800/$2C00) this
-// node's position resolves into in-game. The PPU only ever fetches a tile
-// from one of four 32x30 quadrants, selected by the horizontal/vertical bits
-// of the tile coordinate (see ppu::CartesianToAddress / xy_to_nt_addr,
-// src/nes/video.cpp: nt_h from x>>5, nt_v from y/30) -- this is that same
-// quadrant selection, made an explicit per-node property instead of implicit
-// in a raw tile coordinate, since a design's own tile space isn't required
-// to line up with the PPU's 32x30 quadrant boundaries.
-constexpr int kNametableRole = Qt::UserRole + 16;
+// Which Target/Region names (see kTargetNames/kRegionNames) this node should
+// disappear on -- a node is hidden if the scene's *current* target/region
+// (picked in the sidebar) is in either list. Unlike the scene-wide
+// target/region themselves, this is genuinely per-node: each node picks its
+// own set independently, and a node's effective visibility also factors in
+// every ancestor's own hide lists (see isEffectivelyHidden()) even though
+// that inherited part is never itself stored on the child.
+constexpr int kHideTargetsRole = Qt::UserRole + 16;
+constexpr int kHideRegionsRole = Qt::UserRole + 17;
 // Compile-time and runtime textboxes are separate kinds -- currently
 // identical in behavior, but distinguished now because they'll diverge in
 // meaning later (e.g. how their text is ultimately resolved by generated
@@ -219,6 +219,17 @@ constexpr char kCtTextBoxPrefix[] = "[CT] ";
 constexpr char kRtTextBoxPrefix[] = "[RT] ";
 constexpr char kNegSpacePrefix[] = "[N] ";
 constexpr char kSingleChoicePrefix[] = "[SC] ";
+
+// Every backend platform-nes currently supports, in the order they appear in
+// the Target dropdown. Scene-wide, same as the nametable -- one scene targets
+// one platform at a time. Kept as display names (matched by text, not index)
+// so the .uis format doesn't depend on this list's order.
+const QStringList kTargetNames = {"NES", "GBA", "GCN", "DS",     "DSI", "Wii",
+                                   "Wii U", "3DS", "Switch", "PSP",  "PC"};
+
+// TV broadcast standard the scene is authored/timed against. Same idea as
+// kTargetNames -- scene-wide, matched by name rather than index.
+const QStringList kRegionNames = {"NTSC", "PAL"};
 
 enum class TextAlign { Left = 0, Center = 1, Right = 2 };
 
@@ -330,6 +341,19 @@ QVector<QTreeWidgetItem*> collectPrefixedItems(QTreeWidgetItem* node) {
     };
     visit(node);
     return result;
+}
+
+// A node is hidden for the current target/region if *it* was set to hide on
+// either one, or if any ancestor was -- children never store this
+// themselves (their own kHideTargetsRole/kHideRegionsRole entries, if any,
+// are independent of a parent's), but they still visually disappear along
+// with a hidden parent, so the check walks all the way up to root.
+bool isEffectivelyHidden(const QTreeWidgetItem* item, const QString& target, const QString& region) {
+    for (const QTreeWidgetItem* n = item; n && isPrefixedItem(n); n = n->parent()) {
+        if (n->data(0, kHideTargetsRole).toStringList().contains(target)) return true;
+        if (n->data(0, kHideRegionsRole).toStringList().contains(region)) return true;
+    }
+    return false;
 }
 
 // --- Property expressions -----------------------------------------------
@@ -575,7 +599,6 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
         obj["posYExpr"] = item->data(0, kPosYExprRole).toString();
         obj["sizeWExpr"] = item->data(0, kSizeWExprRole).toString();
         obj["sizeHExpr"] = item->data(0, kSizeHExprRole).toString();
-        obj["nametable"] = item->data(0, kNametableRole).toInt();
         if (isComponentItem(item)) {
             obj["align"] = item->data(0, kAlignRole).toInt();
             obj["text"] = item->data(0, kTextContentRole).toString();
@@ -585,6 +608,10 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
         obj["kind"] = QStringLiteral("singlechoice");
     } else {
         obj["kind"] = QStringLiteral("branch");
+    }
+    if (isPrefixedItem(item)) {
+        obj["hideTargets"] = QJsonArray::fromStringList(item->data(0, kHideTargetsRole).toStringList());
+        obj["hideRegions"] = QJsonArray::fromStringList(item->data(0, kHideRegionsRole).toStringList());
     }
     QJsonArray children;
     for (int i = 0; i < item->childCount(); ++i) {
@@ -628,7 +655,6 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
         ok = false;
         item->setData(0, kSizeHRole, sizeHExpr.toInt(&ok));
         if (!ok) item->setData(0, kSizeHRole, 1);
-        item->setData(0, kNametableRole, std::clamp(obj["nametable"].toInt(0), 0, 3));
         if (isComponent) {
             item->setData(0, kAlignRole, obj["align"].toInt());
             item->setData(0, kTextContentRole, obj["text"].toString());
@@ -640,18 +666,31 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
         item->setData(0, kKindRole, QString(kSingleChoiceKind));
         item->setData(0, kLastValidNameRole, item->text(0));
     }
+    if (isPrefixedItem(item)) {
+        item->setData(0, kHideTargetsRole, obj["hideTargets"].toArray().toVariantList());
+        item->setData(0, kHideRegionsRole, obj["hideRegions"].toArray().toVariantList());
+    }
     for (const QJsonValue& child : obj["children"].toArray()) {
         deserializeNode(item, child.toObject());
     }
 }
 
-bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem) {
+// `nametable`, `target`, and `region` are all scene-wide (which physical NES
+// nametable the whole UI's tile positions resolve into, which platform-nes
+// backend the scene targets, and which TV broadcast standard it's timed
+// against), not per-node properties, so each is stored once at the
+// document's top level alongside "version" rather than on every node.
+bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int nametable, const QString& target,
+                   const QString& region) {
     QJsonArray nodes;
     for (int i = 0; i < rootItem->childCount(); ++i) {
         nodes.append(serializeNode(rootItem->child(i)));
     }
     QJsonObject doc;
     doc["version"] = 1;
+    doc["nametable"] = nametable;
+    doc["target"] = target;
+    doc["region"] = region;
     doc["nodes"] = nodes;
 
     QFile file(path);
@@ -662,10 +701,14 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem) {
     return true;
 }
 
-// Parses a .uis file's node list without touching any tree -- callers apply
-// it (or don't, on failure) themselves, so a corrupt/unreadable file never
-// wipes out whatever scene was already open.
-bool parseUisFile(const QString& path, QJsonArray& outNodes) {
+// Parses a .uis file's node list and scene-wide nametable/target/region
+// without touching any tree -- callers apply it (or don't, on failure)
+// themselves, so a corrupt/unreadable file never wipes out whatever scene
+// was already open. `target`/`region` are matched by name rather than
+// trusted as-is, since the caller (whose combo defines the valid set) is the
+// one who knows what a missing or unrecognized value should fall back to.
+bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, QString& outTarget,
+                   QString& outRegion) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
@@ -676,6 +719,9 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes) {
         return false;
     }
     outNodes = doc.object()["nodes"].toArray();
+    outNametable = std::clamp(doc.object()["nametable"].toInt(0), 0, 3);
+    outTarget = doc.object()["target"].toString();
+    outRegion = doc.object()["region"].toString();
     return true;
 }
 
@@ -688,8 +734,9 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes) {
 // the sidebar's properties panel and the canvas always agree.
 class TileGridWidget : public QWidget {
 public:
-    TileGridWidget(double tilePx, QTreeWidget* tree, QWidget* parent = nullptr)
-        : QWidget(parent), tilePx_(tilePx), tree_(tree) {
+    TileGridWidget(double tilePx, QTreeWidget* tree, QComboBox* targetCombo, QComboBox* regionCombo,
+                   QWidget* parent = nullptr)
+        : QWidget(parent), tilePx_(tilePx), tree_(tree), targetCombo_(targetCombo), regionCombo_(regionCombo) {
         // A monospace font from the OS, sized to fill most of a cell's
         // height -- its glyphs are narrower than they are tall, though, so
         // drawCellGlyph() additionally stretches each one horizontally to
@@ -803,19 +850,6 @@ protected:
         QWidget::mouseReleaseEvent(event);
     }
 
-    void mouseDoubleClickEvent(QMouseEvent* event) override {
-        QTreeWidgetItem* hit = hitTest(event->pos());
-        if (!hit || !isComponentItem(hit)) {
-            // Negative-space zones have no text to edit.
-            return;
-        }
-        bool ok = false;
-        const QString text = QInputDialog::getText(this, "Textbox content", "Text:", QLineEdit::Normal,
-                                                     hit->data(0, kTextContentRole).toString(), &ok);
-        if (ok) {
-            hit->setData(0, kTextContentRole, text);
-        }
-    }
 
 private:
     // Draws one glyph filling `cell` edge-to-edge. glyphFont_ is already
@@ -864,8 +898,22 @@ private:
 
     // Walks the whole tree (not just root's direct children) so components
     // nested deeper -- not reachable from the UI yet, but already valid
-    // structurally -- are rendered and hit-testable too.
-    QVector<QTreeWidgetItem*> collectComponents() const { return collectComponentItems(tree_->invisibleRootItem()); }
+    // structurally -- are rendered and hit-testable too. Anything hidden for
+    // the scene's current Target/Region (or nested under something that is)
+    // is filtered out here rather than in the caller, so paintEvent() and
+    // hitTest() -- the only two places this is used -- automatically agree
+    // that a hidden node is neither seen nor clickable.
+    QVector<QTreeWidgetItem*> collectComponents() const {
+        const QString target = targetCombo_->currentText();
+        const QString region = regionCombo_->currentText();
+        QVector<QTreeWidgetItem*> result;
+        for (QTreeWidgetItem* item : collectComponentItems(tree_->invisibleRootItem())) {
+            if (!isEffectivelyHidden(item, target, region)) {
+                result.push_back(item);
+            }
+        }
+        return result;
+    }
 
     // Later-added components are drawn on top, so hit-testing prefers the
     // last match for overlapping regions to stay consistent with what's
@@ -899,6 +947,8 @@ private:
 
     double tilePx_;
     QTreeWidget* tree_;
+    QComboBox* targetCombo_;
+    QComboBox* regionCombo_;
     QFont glyphFont_;
     int naturalGlyphWidthPx_ = 1;
     QTreeWidgetItem* dragItem_ = nullptr;
@@ -912,6 +962,8 @@ struct Sidebar {
     QTreeWidget* tree;
     QLineEdit* xEdit;
     QLineEdit* yEdit;
+    QComboBox* targetCombo;
+    QComboBox* regionCombo;
 };
 
 // `maxTilesX`/`maxTilesY` bound the fields to whatever will actually fit on
@@ -1002,6 +1054,33 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         item->setData(0, kLastValidNameRole, text);
     });
 
+    // Which physical NES nametable ($2000/$2400/$2800/$2C00) the whole
+    // scene's tile positions resolve into in-game -- a scene-wide setting,
+    // not a per-node one, since the PPU only ever fetches a tile from one of
+    // four 32x30 quadrants at a time (see ppu::CartesianToAddress /
+    // xy_to_nt_addr, src/nes/video.cpp: nt_h from x>>5, nt_v from y/30) and
+    // this whole UI lives in one such quadrant. Created here, ahead of the
+    // File menu below, so Save/Open can already capture it; it's laid out
+    // alongside the viewport size fields further down.
+    auto* nametableCombo = new QComboBox(content);
+    nametableCombo->addItems({"0 ($2000)", "1 ($2400)", "2 ($2800)", "3 ($2C00)"});
+    nametableCombo->setToolTip("Which physical NES nametable the whole scene's tile positions "
+                                "resolve into in-game -- the same $2000/$2400/$2800/$2C00 quadrant "
+                                "ppu::CartesianToAddress selects from a tile coordinate.");
+
+    // Which platform-nes backend the whole scene targets -- also scene-wide,
+    // for the same reason: a scene isn't a mix of platforms, it's authored
+    // against one.
+    auto* targetCombo = new QComboBox(content);
+    targetCombo->addItems(kTargetNames);
+    targetCombo->setToolTip("Which platform-nes backend this scene targets.");
+
+    // Which TV broadcast standard the scene is timed against -- also
+    // scene-wide, for the same reason as target: one scene, one region.
+    auto* regionCombo = new QComboBox(content);
+    regionCombo->addItems(kRegionNames);
+    regionCombo->setToolTip("Which TV broadcast standard this scene is authored/timed against.");
+
     // --- File menu: New / Open / Save / Save As, plus unsaved-changes
     // tracking so those and closing the window never silently discard work.
     // An empty currentPath means "no file yet" -- a new scene doesn't ask
@@ -1045,7 +1124,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         }
     });
 
-    auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle]() {
+    auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, nametableCombo, targetCombo,
+                     regionCombo]() {
         QString path = QFileDialog::getSaveFileName(window, "Save Scene", QString(), "UI Scene (*.uis)");
         if (path.isEmpty()) {
             return false;
@@ -1053,7 +1133,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         if (!path.endsWith(".uis", Qt::CaseInsensitive)) {
             path += ".uis";
         }
-        if (!writeUisFile(path, rootItem)) {
+        if (!writeUisFile(path, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
+                           regionCombo->currentText())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + path);
             return false;
         }
@@ -1063,11 +1144,13 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         return true;
     };
 
-    auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window]() {
+    auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window, nametableCombo, targetCombo,
+                   regionCombo]() {
         if (currentPath->isEmpty()) {
             return doSaveAs();
         }
-        if (!writeUisFile(*currentPath, rootItem)) {
+        if (!writeUisFile(*currentPath, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
+                           regionCombo->currentText())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + *currentPath);
             return false;
         }
@@ -1095,12 +1178,16 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     };
     window->confirmClose = confirmDiscard;
 
-    auto doNew = [rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard, resolveAllPtr] {
+    auto doNew = [rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard, resolveAllPtr,
+                  nametableCombo, targetCombo, regionCombo] {
         if (!confirmDiscard()) {
             return;
         }
         *loading = true;
         qDeleteAll(rootItem->takeChildren());
+        nametableCombo->setCurrentIndex(0);
+        targetCombo->setCurrentIndex(0);
+        regionCombo->setCurrentIndex(0);
         *loading = false;
         (*resolveAllPtr)();
         currentPath->clear();
@@ -1109,7 +1196,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     };
 
     auto doOpen = [window, tree, rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard,
-                   resolveAllPtr] {
+                   resolveAllPtr, nametableCombo, targetCombo, regionCombo] {
         if (!confirmDiscard()) {
             return;
         }
@@ -1120,15 +1207,26 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         // Parse before touching the tree, so a corrupt/unreadable file never
         // wipes out whatever scene was already open.
         QJsonArray nodes;
-        if (!parseUisFile(path, nodes)) {
+        int nametable = 0;
+        QString target;
+        QString region;
+        if (!parseUisFile(path, nodes, nametable, target, region)) {
             QMessageBox::warning(window, "Open Failed", "Could not read file:\n" + path);
             return;
         }
+        // An unrecognized or missing target/region (an older file, or a
+        // hand-edited one) falls back to the first entry rather than leaving
+        // the combo on whatever it happened to already be showing.
+        const int targetIndex = std::max(0, static_cast<int>(kTargetNames.indexOf(target)));
+        const int regionIndex = std::max(0, static_cast<int>(kRegionNames.indexOf(region)));
         *loading = true;
         qDeleteAll(rootItem->takeChildren());
         for (const QJsonValue& node : nodes) {
             deserializeNode(rootItem, node.toObject());
         }
+        nametableCombo->setCurrentIndex(nametable);
+        targetCombo->setCurrentIndex(targetIndex);
+        regionCombo->setCurrentIndex(regionIndex);
         *loading = false;
         (*resolveAllPtr)();
         tree->expandItem(rootItem);
@@ -1149,23 +1247,85 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     addFileAction("Save", QKeySequence::Save, doSave);
     addFileAction("Save As...", QKeySequence::SaveAs, doSaveAs);
 
-    // --- Properties panel: shows/edits the selected component's geometry
-    // and alignment. Hidden entirely (not just grayed out) whenever the
-    // selection isn't a component (e.g. root, or nothing selected) -- a
-    // root/branch node has no such properties at all, so there's nothing
-    // here for it to show. Position/size fields accept either a plain
-    // literal ("5") or a formula referencing other nodes by name
-    // ("Other.pos.x + 1") -- the resolver (assigned to *resolveAllPtr below,
-    // once xEdit/yEdit exist) turns whichever was typed into the resolved
-    // int the canvas actually uses.
+    // Persisted scene state, same as any tree edit -- but neither combo is a
+    // tree item, so each needs its own dirty-marking hookup. Guarded by
+    // `loading` for the same reason the tree's is: New/Open set it while
+    // rebuilding the scene wholesale, which isn't itself an unsaved change.
+    auto markDirtyFromCombo = [dirty, loading, updateTitle] {
+        if (!*loading) {
+            *dirty = true;
+            updateTitle();
+        }
+    };
+    QObject::connect(nametableCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                      [markDirtyFromCombo](int) { markDirtyFromCombo(); });
+    QObject::connect(targetCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                      [markDirtyFromCombo](int) { markDirtyFromCombo(); });
+    QObject::connect(regionCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                      [markDirtyFromCombo](int) { markDirtyFromCombo(); });
+
+    // --- Properties panel: shows/edits the selected node's geometry,
+    // alignment, and hide-on-Target/Region lists. Hidden entirely (not just
+    // grayed out) whenever the selection isn't a prefixed node (e.g. root, or
+    // nothing selected) -- a root/branch node has no such properties at all,
+    // so there's nothing here for it to show; individual rows within it are
+    // further hidden per-kind (e.g. SingleChoice has no geometry). Position/
+    // size fields accept either a plain literal ("5") or a formula
+    // referencing other nodes by name ("Other.pos.x + 1") -- the resolver
+    // (assigned to *resolveAllPtr below, once xEdit/yEdit exist) turns
+    // whichever was typed into the resolved int the canvas actually uses.
     auto* properties = new QWidget(content);
     auto* posXEdit = new QLineEdit(properties);
     auto* posYEdit = new QLineEdit(properties);
     auto* sizeWEdit = new QLineEdit(properties);
     auto* sizeHEdit = new QLineEdit(properties);
     auto* alignCombo = new QComboBox(properties);
+    auto* textEdit = new QLineEdit(properties);
     auto* splitterEdit = new QLineEdit(properties);
-    auto* nametableCombo = new QComboBox(properties);
+
+    // Hide-on-Target/Region: a checkable-menu button rather than a list
+    // widget, so a multi-select fits the sidebar's width without eating a
+    // block of vertical space the way an always-expanded checklist would.
+    auto* hideTargetsButton = new QPushButton(properties);
+    auto* hideTargetsMenu = new QMenu(hideTargetsButton);
+    QVector<QAction*> hideTargetActions;
+    for (const QString& name : kTargetNames) {
+        QAction* action = hideTargetsMenu->addAction(name);
+        action->setCheckable(true);
+        hideTargetActions.push_back(action);
+    }
+    hideTargetsButton->setMenu(hideTargetsMenu);
+    hideTargetsButton->setToolTip("Hide this node (and its children) whenever the scene's current "
+                                   "Target is one of the checked platforms.");
+
+    auto* hideRegionsButton = new QPushButton(properties);
+    auto* hideRegionsMenu = new QMenu(hideRegionsButton);
+    QVector<QAction*> hideRegionActions;
+    for (const QString& name : kRegionNames) {
+        QAction* action = hideRegionsMenu->addAction(name);
+        action->setCheckable(true);
+        hideRegionActions.push_back(action);
+    }
+    hideRegionsButton->setMenu(hideRegionsMenu);
+    hideRegionsButton->setToolTip("Hide this node (and its children) whenever the scene's current "
+                                   "Region is one of the checked broadcast standards.");
+
+    // Summarizes which of `actions` are currently checked onto `button`'s own
+    // label (e.g. "GBA, PSP", or "(none)") so the selection is visible
+    // without opening the menu.
+    auto updateHideButtonSummary = [](QPushButton* button, const QVector<QAction*>& actions) {
+        QStringList checked;
+        for (QAction* action : actions) {
+            if (action->isChecked()) checked << action->text();
+        }
+        button->setText(checked.isEmpty() ? QStringLiteral("(none)") : checked.join(QStringLiteral(", ")));
+    };
+    // Suppresses the hide actions' write-back (below) while populateFrom is
+    // driving their checked state from the selected item -- same purpose as
+    // the QSignalBlockers on the other fields, but QAction::toggled needs an
+    // explicit guard since a QSignalBlocker would have to be built per-action.
+    auto suppressHideWrite = std::make_shared<bool>(false);
+
     const QString exprHint = "A number, or a formula like Other.pos.x + 1.\n"
                               "Operators: + - * / << >> and parentheses.\n"
                               "VIEWPORT_TX/TY = viewport size in tiles, VIEWPORT_PX/PY = in pixels.";
@@ -1177,10 +1337,6 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     splitterEdit->setMaxLength(1);
     splitterEdit->setToolTip("The single character that marks a word boundary when wrapping text "
                               "onto the next row (default: space).");
-    nametableCombo->addItems({"0 ($2000)", "1 ($2400)", "2 ($2800)", "3 ($2C00)"});
-    nametableCombo->setToolTip("Which physical NES nametable this node's tile position resolves "
-                                "into in-game -- the same $2000/$2400/$2800/$2C00 quadrant "
-                                "ppu::CartesianToAddress selects from a tile coordinate.");
 
     auto* propertiesForm = new QFormLayout(properties);
     // The sidebar is only ~100-200px wide -- a label sharing a row with its
@@ -1193,22 +1349,25 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     propertiesForm->addRow("Size X", sizeWEdit);
     propertiesForm->addRow("Size Y", sizeHEdit);
     propertiesForm->addRow("Alignment", alignCombo);
+    propertiesForm->addRow("Text", textEdit);
     propertiesForm->addRow("Splitter", splitterEdit);
-    propertiesForm->addRow("Nametable", nametableCombo);
+    propertiesForm->addRow("Hide on Target", hideTargetsButton);
+    propertiesForm->addRow("Hide on Region", hideRegionsButton);
     properties->setVisible(false);
 
     // Populates the panel's fields from `item` without re-triggering the
     // edit handlers below (which would otherwise write the same values
     // straight back -- harmless, but pointless).
-    auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, splitterEdit,
-                         nametableCombo](QTreeWidgetItem* item) {
+    auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, textEdit, splitterEdit,
+                         hideTargetsButton, hideTargetActions, hideRegionsButton, hideRegionActions,
+                         updateHideButtonSummary, suppressHideWrite](QTreeWidgetItem* item) {
         const QSignalBlocker bx(posXEdit);
         const QSignalBlocker by(posYEdit);
         const QSignalBlocker bw(sizeWEdit);
         const QSignalBlocker bh(sizeHEdit);
         const QSignalBlocker ba(alignCombo);
+        const QSignalBlocker bt(textEdit);
         const QSignalBlocker bs(splitterEdit);
-        const QSignalBlocker bn(nametableCombo);
         auto exprOr = [item](int exprRole, int fallback) {
             const QString s = item->data(0, exprRole).toString();
             return s.isEmpty() ? QString::number(fallback) : s;
@@ -1218,9 +1377,22 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         sizeWEdit->setText(exprOr(kSizeWExprRole, 1));
         sizeHEdit->setText(exprOr(kSizeHExprRole, 1));
         alignCombo->setCurrentIndex(item->data(0, kAlignRole).toInt());
+        textEdit->setText(item->data(0, kTextContentRole).toString());
         const QString splitter = item->data(0, kSplitterRole).toString();
         splitterEdit->setText(splitter.isEmpty() ? QStringLiteral(" ") : splitter);
-        nametableCombo->setCurrentIndex(std::clamp(item->data(0, kNametableRole).toInt(), 0, 3));
+
+        *suppressHideWrite = true;
+        const QStringList hideTargets = item->data(0, kHideTargetsRole).toStringList();
+        for (QAction* action : hideTargetActions) {
+            action->setChecked(hideTargets.contains(action->text()));
+        }
+        const QStringList hideRegions = item->data(0, kHideRegionsRole).toStringList();
+        for (QAction* action : hideRegionActions) {
+            action->setChecked(hideRegions.contains(action->text()));
+        }
+        *suppressHideWrite = false;
+        updateHideButtonSummary(hideTargetsButton, hideTargetActions);
+        updateHideButtonSummary(hideRegionsButton, hideRegionActions);
     };
 
     // Flags the exact field(s) the resolver couldn't work out for the
@@ -1239,15 +1411,22 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
 
     QObject::connect(
         tree, &QTreeWidget::currentItemChanged,
-        [properties, propertiesForm, alignCombo, splitterEdit, populateFrom,
-         updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
-            const bool selected = isGeometryItem(current);
+        [properties, propertiesForm, posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, textEdit, splitterEdit,
+         populateFrom, updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
+            const bool selected = isPrefixedItem(current);
             properties->setVisible(selected);
-            // Alignment and the word-wrap splitter only mean something for a
-            // textbox's text -- a negative-space zone has none. Nametable
-            // applies to any geometry node's position, so it stays visible
-            // for both kinds (no setRowVisible call needed for it).
+            // Position/size mean nothing for SingleChoice -- it's a pure
+            // grouping node, no geometry of its own. Alignment, text, and the
+            // word-wrap splitter only mean something for a textbox's text --
+            // neither SingleChoice nor a negative-space zone has any text.
+            // Hide-on-Target/Region (added below the splitter row) applies to
+            // every prefixed kind, so it's never toggled off here.
+            propertiesForm->setRowVisible(posXEdit, isGeometryItem(current));
+            propertiesForm->setRowVisible(posYEdit, isGeometryItem(current));
+            propertiesForm->setRowVisible(sizeWEdit, isGeometryItem(current));
+            propertiesForm->setRowVisible(sizeHEdit, isGeometryItem(current));
             propertiesForm->setRowVisible(alignCombo, isComponentItem(current));
+            propertiesForm->setRowVisible(textEdit, isComponentItem(current));
             propertiesForm->setRowVisible(splitterEdit, isComponentItem(current));
             if (selected) {
                 populateFrom(current);
@@ -1255,21 +1434,21 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             }
         });
 
-    // The selected item's geometry can also change from outside the panel
-    // -- dragging it on the canvas, or the resolver recomputing a formula --
-    // so keep the panel's fields from
-    // going stale whenever that happens. Skipped while a field has focus so
-    // an unrelated change elsewhere doesn't clobber an in-progress edit.
+    // The selected item's geometry/hide lists can also change from outside
+    // the panel -- dragging it on the canvas, or the resolver recomputing a
+    // formula -- so keep the panel's fields from going stale whenever that
+    // happens. Skipped while a field has focus so an unrelated change
+    // elsewhere doesn't clobber an in-progress edit.
     QObject::connect(
         tree, &QTreeWidget::itemChanged,
-        [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit, sizeHEdit,
+        [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit, sizeHEdit, textEdit,
          splitterEdit](QTreeWidgetItem* item, int column) {
-            if (column != 0 || item != tree->currentItem() || !isGeometryItem(item)) {
+            if (column != 0 || item != tree->currentItem() || !isPrefixedItem(item)) {
                 return;
             }
             updateErrorHighlight(item);
             if (posXEdit->hasFocus() || posYEdit->hasFocus() || sizeWEdit->hasFocus() || sizeHEdit->hasFocus() ||
-                splitterEdit->hasFocus()) {
+                textEdit->hasFocus() || splitterEdit->hasFocus()) {
                 return;
             }
             populateFrom(item);
@@ -1300,6 +1479,12 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             item->setData(0, kAlignRole, v);
         }
     });
+    QObject::connect(textEdit, &QLineEdit::editingFinished, [tree, textEdit] {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isComponentItem(item)) {
+            item->setData(0, kTextContentRole, textEdit->text());
+        }
+    });
     QObject::connect(splitterEdit, &QLineEdit::editingFinished, [tree, splitterEdit] {
         QTreeWidgetItem* item = tree->currentItem();
         if (isComponentItem(item)) {
@@ -1307,13 +1492,39 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             item->setData(0, kSplitterRole, text.isEmpty() ? QStringLiteral(" ") : text);
         }
     });
-    QObject::connect(nametableCombo, qOverload<int>(&QComboBox::currentIndexChanged), [tree](int v) {
-        QTreeWidgetItem* item = tree->currentItem();
-        if (isGeometryItem(item)) {
-            item->setData(0, kNametableRole, v);
+    // Applies to every prefixed kind (geometry or SingleChoice) -- unlike the
+    // other fields above, checking/unchecking one entry writes the whole
+    // list back immediately rather than waiting on editingFinished, matching
+    // how the other combos here commit on selection rather than on blur.
+    auto writeHideSelection = [tree, suppressHideWrite](int role, QPushButton* button,
+                                                          const QVector<QAction*>& actions,
+                                                          const std::function<void(QPushButton*, const QVector<QAction*>&)>& updateSummary) {
+        if (*suppressHideWrite) {
+            return;
         }
-    });
-
+        QTreeWidgetItem* item = tree->currentItem();
+        if (!isPrefixedItem(item)) {
+            return;
+        }
+        QStringList checked;
+        for (QAction* action : actions) {
+            if (action->isChecked()) checked << action->text();
+        }
+        item->setData(0, role, checked);
+        updateSummary(button, actions);
+    };
+    for (QAction* action : hideTargetActions) {
+        QObject::connect(action, &QAction::toggled, [writeHideSelection, hideTargetsButton, hideTargetActions,
+                                                       updateHideButtonSummary](bool) {
+            writeHideSelection(kHideTargetsRole, hideTargetsButton, hideTargetActions, updateHideButtonSummary);
+        });
+    }
+    for (QAction* action : hideRegionActions) {
+        QObject::connect(action, &QAction::toggled, [writeHideSelection, hideRegionsButton, hideRegionActions,
+                                                       updateHideButtonSummary](bool) {
+            writeHideSelection(kHideRegionsRole, hideRegionsButton, hideRegionActions, updateHideButtonSummary);
+        });
+    }
     // addCtTextBoxNode()/addRtTextBoxNode()/addNegativeSpaceNode() take an explicit parent so
     // nesting under other nodes (not just root) already works -- there's
     // just no UI for it yet, since every add here always targets root,
@@ -1345,7 +1556,6 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         child->setData(0, kSizeHRole, 1);
         child->setData(0, kAlignRole, static_cast<int>(TextAlign::Left));
         child->setData(0, kSplitterRole, QStringLiteral(" "));
-        child->setData(0, kNametableRole, 0);
         child->setData(0, kLastValidNameRole, name);
         parent->setExpanded(true);
         return child;
@@ -1371,7 +1581,6 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         child->setData(0, kPosYRole, 0);
         child->setData(0, kSizeWRole, 1);
         child->setData(0, kSizeHRole, 1);
-        child->setData(0, kNametableRole, 0);
         child->setData(0, kLastValidNameRole, name);
         parent->setExpanded(true);
         return child;
@@ -1425,17 +1634,19 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         [tree, rootItem, addCtTextBoxNode, addRtTextBoxNode, addNegativeSpaceNode, addSingleChoiceNode,
          deleteNode](const QPoint& pos) {
             QTreeWidgetItem* clicked = tree->itemAt(pos);
+            const bool onSingleChoice = isSingleChoiceItem(clicked);
             // A single choice's own children are its ctTextBox/rtTextBox
             // options, so right-clicking one targets textbox adds at it
             // rather than at root -- same as every other add here, which
             // still always targets root until there's UI for nesting more
-            // generally.
-            QTreeWidgetItem* textBoxParent = isSingleChoiceItem(clicked) ? clicked : rootItem;
+            // generally. It houses only textboxes, so Negative Space and
+            // nested Single Choice aren't offered there at all.
+            QTreeWidgetItem* textBoxParent = onSingleChoice ? clicked : rootItem;
             QMenu menu;
             QAction* addCtTextboxAction = menu.addAction("Add Compile-Time Textbox");
             QAction* addRtTextboxAction = menu.addAction("Add Runtime Textbox");
-            QAction* addNegSpaceAction = menu.addAction("Add Negative Space");
-            QAction* addSingleChoiceAction = menu.addAction("Add Single Choice");
+            QAction* addNegSpaceAction = onSingleChoice ? nullptr : menu.addAction("Add Negative Space");
+            QAction* addSingleChoiceAction = onSingleChoice ? nullptr : menu.addAction("Add Single Choice");
             QAction* deleteAction = nullptr;
             if (clicked && clicked != rootItem) {
                 menu.addSeparator();
@@ -1446,9 +1657,9 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
                 tree->setCurrentItem(addCtTextBoxNode(textBoxParent));
             } else if (chosen == addRtTextboxAction) {
                 tree->setCurrentItem(addRtTextBoxNode(textBoxParent));
-            } else if (chosen == addNegSpaceAction) {
+            } else if (chosen && chosen == addNegSpaceAction) {
                 tree->setCurrentItem(addNegativeSpaceNode(rootItem));
-            } else if (chosen == addSingleChoiceAction) {
+            } else if (chosen && chosen == addSingleChoiceAction) {
                 tree->setCurrentItem(addSingleChoiceNode(rootItem));
             } else if (chosen && chosen == deleteAction) {
                 deleteNode(clicked);
@@ -1732,10 +1943,13 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     auto* form = new QFormLayout();
     form->addRow("X:", xEdit);
     form->addRow("Y:", yEdit);
+    form->addRow("Nametable:", nametableCombo);
+    form->addRow("Target:", targetCombo);
+    form->addRow("Region:", regionCombo);
     layout->addLayout(form);
 
     dock->setWidget(content);
-    return {dock, tree, xEdit, yEdit};
+    return {dock, tree, xEdit, yEdit, targetCombo, regionCombo};
 }
 
 // Creates the viewport panel widget (not yet parented), sized to
@@ -1751,8 +1965,8 @@ struct ViewportPanel {
 };
 
 ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidget* tree, QLineEdit* xEdit,
-                                   QLineEdit* yEdit) {
-    auto* grid = new TileGridWidget(tilePx, tree);
+                                   QLineEdit* yEdit, QComboBox* targetCombo, QComboBox* regionCombo) {
+    auto* grid = new TileGridWidget(tilePx, tree, targetCombo, regionCombo);
 
     // Any change to a component's data (position, size, alignment, text,
     // name) goes through the tree item's setData(), which Qt reports via
@@ -1761,6 +1975,12 @@ ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidge
     // dragging on the canvas itself, without each of those needing to know
     // about the grid directly.
     QObject::connect(tree, &QTreeWidget::itemChanged, grid, [grid](QTreeWidgetItem*, int) { grid->update(); });
+
+    // Hide-on-Target/Region is evaluated against whichever Target/Region is
+    // *currently* selected, so a node can appear or disappear the moment
+    // either combo changes, without anything on the tree itself changing.
+    QObject::connect(targetCombo, qOverload<int>(&QComboBox::currentIndexChanged), grid, [grid](int) { grid->update(); });
+    QObject::connect(regionCombo, qOverload<int>(&QComboBox::currentIndexChanged), grid, [grid](int) { grid->update(); });
 
     // Deleting (or otherwise structurally adding/removing) a node doesn't
     // go through setData() at all, so itemChanged alone never fires for it
@@ -1831,7 +2051,8 @@ int main(int argc, char** argv) {
 
     const Sidebar sidebar = createSidebar(&window, sidebarWidthPx, maxTilesX, maxTilesY, tilePx);
     const ViewportPanel viewport =
-        createViewportPanel(&window, tilePx, sidebar.tree, sidebar.xEdit, sidebar.yEdit);
+        createViewportPanel(&window, tilePx, sidebar.tree, sidebar.xEdit, sidebar.yEdit, sidebar.targetCombo,
+                             sidebar.regionCombo);
     window.setCentralWidget(viewport.grid);
     window.addDockWidget(Qt::RightDockWidgetArea, sidebar.dock);
     viewport.sync();
