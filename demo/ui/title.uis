@@ -1,4 +1,5 @@
 {
+    "linker_prefix": "TITLE",
     "nametable": 3,
     "nodes": [
         {
@@ -10,13 +11,101 @@
             "hideTargets": [
             ],
             "kind": "ctTextBox",
-            "name": "[CT] Textbox1",
-            "posXExpr": "0",
-            "posYExpr": "27",
+            "name": "[CT] GameTitle",
+            "posXExpr": "1",
+            "posYExpr": "1",
             "sizeHExpr": "2",
             "sizeWExpr": "10",
             "splitter": " ",
             "text": "Super Mary Sisters"
+        },
+        {
+            "children": [
+                {
+                    "align": 0,
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] NewGame",
+                    "posXExpr": "( ( VIEWPORT_TX >> 1 ) << 1 ) - 1 - 8",
+                    "posYExpr": "1",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "8",
+                    "splitter": " ",
+                    "text": "New Game"
+                },
+                {
+                    "align": 0,
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] Continue",
+                    "posXExpr": "NewGame.pos.x",
+                    "posYExpr": "NewGame.pos.y + 1",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "8",
+                    "splitter": " ",
+                    "text": "Continue"
+                },
+                {
+                    "align": 0,
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] Options",
+                    "posXExpr": "NewGame.pos.x",
+                    "posYExpr": "NewGame.pos.y + 2",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "7",
+                    "splitter": " ",
+                    "text": "Options"
+                },
+                {
+                    "align": 0,
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                        "NES",
+                        "GBA",
+                        "GCN",
+                        "DS",
+                        "DSI",
+                        "Wii",
+                        "Wii U",
+                        "3DS",
+                        "Switch",
+                        "PSP"
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] Textbox5",
+                    "posXExpr": "NewGame.pos.x",
+                    "posYExpr": "NewGame.pos.y + 3",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "4",
+                    "splitter": " ",
+                    "text": "Quit"
+                }
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "singlechoice",
+            "name": "[SC] TitleOptions"
         }
     ],
     "region": "NTSC",

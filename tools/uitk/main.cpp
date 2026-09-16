@@ -24,6 +24,7 @@
 #include <QAbstractItemModel>
 #include <QMenu>
 #include <QPushButton>
+#include <QGroupBox>
 #include <QMouseEvent>
 #include <QColor>
 #include <QVector>
@@ -675,13 +676,15 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
     }
 }
 
-// `nametable`, `target`, and `region` are all scene-wide (which physical NES
-// nametable the whole UI's tile positions resolve into, which platform-nes
-// backend the scene targets, and which TV broadcast standard it's timed
-// against), not per-node properties, so each is stored once at the
-// document's top level alongside "version" rather than on every node.
+// `nametable`, `target`, `region`, and `linker_prefix` are all scene-wide
+// (which physical NES nametable the whole UI's tile positions resolve into,
+// which platform-nes backend the scene targets, which TV broadcast standard
+// it's timed against, and what codegen should emit ahead of every generated,
+// non-AI-marked function definition), not per-node properties, so each is
+// stored once at the document's top level alongside "version" rather than on
+// every node.
 bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int nametable, const QString& target,
-                   const QString& region) {
+                   const QString& region, const QString& linkerPrefix) {
     QJsonArray nodes;
     for (int i = 0; i < rootItem->childCount(); ++i) {
         nodes.append(serializeNode(rootItem->child(i)));
@@ -691,6 +694,7 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
     doc["nametable"] = nametable;
     doc["target"] = target;
     doc["region"] = region;
+    doc["linker_prefix"] = linkerPrefix;
     doc["nodes"] = nodes;
 
     QFile file(path);
@@ -701,14 +705,16 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
     return true;
 }
 
-// Parses a .uis file's node list and scene-wide nametable/target/region
-// without touching any tree -- callers apply it (or don't, on failure)
-// themselves, so a corrupt/unreadable file never wipes out whatever scene
-// was already open. `target`/`region` are matched by name rather than
+// Parses a .uis file's node list and scene-wide nametable/target/region/
+// linker_prefix without touching any tree -- callers apply it (or don't, on
+// failure) themselves, so a corrupt/unreadable file never wipes out whatever
+// scene was already open. `target`/`region` are matched by name rather than
 // trusted as-is, since the caller (whose combo defines the valid set) is the
 // one who knows what a missing or unrecognized value should fall back to.
+// `linker_prefix` has no such validation -- it's free-form text -- and simply
+// defaults to empty when absent (e.g. an older file).
 bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, QString& outTarget,
-                   QString& outRegion) {
+                   QString& outRegion, QString& outLinkerPrefix) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
@@ -722,6 +728,7 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
     outNametable = std::clamp(doc.object()["nametable"].toInt(0), 0, 3);
     outTarget = doc.object()["target"].toString();
     outRegion = doc.object()["region"].toString();
+    outLinkerPrefix = doc.object()["linker_prefix"].toString();
     return true;
 }
 
@@ -1081,6 +1088,16 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     regionCombo->addItems(kRegionNames);
     regionCombo->setToolTip("Which TV broadcast standard this scene is authored/timed against.");
 
+    // A free-form string, scene-wide like nametable/target/region, emitted by
+    // codegen ahead of every generated function definition that isn't itself
+    // tagged as AI-authored -- e.g. a section/placement attribute -- so those
+    // definitions land wherever the linker is meant to put them rather than
+    // codegen's default placement. Empty by default: most scenes don't need one.
+    auto* linkerPrefixEdit = new QLineEdit(content);
+    linkerPrefixEdit->setToolTip("Emitted immediately before every generated function definition that "
+                                  "isn't marked AI -- e.g. a linker-section attribute -- so codegen places "
+                                  "it wherever the linker expects it. Left empty, nothing is emitted.");
+
     // --- File menu: New / Open / Save / Save As, plus unsaved-changes
     // tracking so those and closing the window never silently discard work.
     // An empty currentPath means "no file yet" -- a new scene doesn't ask
@@ -1125,7 +1142,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     });
 
     auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, nametableCombo, targetCombo,
-                     regionCombo]() {
+                     regionCombo, linkerPrefixEdit]() {
         QString path = QFileDialog::getSaveFileName(window, "Save Scene", QString(), "UI Scene (*.uis)");
         if (path.isEmpty()) {
             return false;
@@ -1134,7 +1151,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             path += ".uis";
         }
         if (!writeUisFile(path, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
-                           regionCombo->currentText())) {
+                           regionCombo->currentText(), linkerPrefixEdit->text())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + path);
             return false;
         }
@@ -1145,12 +1162,12 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     };
 
     auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window, nametableCombo, targetCombo,
-                   regionCombo]() {
+                   regionCombo, linkerPrefixEdit]() {
         if (currentPath->isEmpty()) {
             return doSaveAs();
         }
         if (!writeUisFile(*currentPath, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
-                           regionCombo->currentText())) {
+                           regionCombo->currentText(), linkerPrefixEdit->text())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + *currentPath);
             return false;
         }
@@ -1179,7 +1196,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     window->confirmClose = confirmDiscard;
 
     auto doNew = [rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard, resolveAllPtr,
-                  nametableCombo, targetCombo, regionCombo] {
+                  nametableCombo, targetCombo, regionCombo, linkerPrefixEdit] {
         if (!confirmDiscard()) {
             return;
         }
@@ -1188,6 +1205,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         nametableCombo->setCurrentIndex(0);
         targetCombo->setCurrentIndex(0);
         regionCombo->setCurrentIndex(0);
+        linkerPrefixEdit->clear();
         *loading = false;
         (*resolveAllPtr)();
         currentPath->clear();
@@ -1196,7 +1214,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     };
 
     auto doOpen = [window, tree, rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard,
-                   resolveAllPtr, nametableCombo, targetCombo, regionCombo] {
+                   resolveAllPtr, nametableCombo, targetCombo, regionCombo, linkerPrefixEdit] {
         if (!confirmDiscard()) {
             return;
         }
@@ -1210,7 +1228,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         int nametable = 0;
         QString target;
         QString region;
-        if (!parseUisFile(path, nodes, nametable, target, region)) {
+        QString linkerPrefix;
+        if (!parseUisFile(path, nodes, nametable, target, region, linkerPrefix)) {
             QMessageBox::warning(window, "Open Failed", "Could not read file:\n" + path);
             return;
         }
@@ -1227,6 +1246,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         nametableCombo->setCurrentIndex(nametable);
         targetCombo->setCurrentIndex(targetIndex);
         regionCombo->setCurrentIndex(regionIndex);
+        linkerPrefixEdit->setText(linkerPrefix);
         *loading = false;
         (*resolveAllPtr)();
         tree->expandItem(rootItem);
@@ -1263,6 +1283,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
                       [markDirtyFromCombo](int) { markDirtyFromCombo(); });
     QObject::connect(regionCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                       [markDirtyFromCombo](int) { markDirtyFromCombo(); });
+    QObject::connect(linkerPrefixEdit, &QLineEdit::textChanged,
+                      [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
 
     // --- Properties panel: shows/edits the selected node's geometry,
     // alignment, and hide-on-Target/Region lists. Hidden entirely (not just
@@ -1338,21 +1360,43 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     splitterEdit->setToolTip("The single character that marks a word boundary when wrapping text "
                               "onto the next row (default: space).");
 
-    auto* propertiesForm = new QFormLayout(properties);
+    // Grouped into "Geometry" (any geometry node's position/size),
+    // "Properties" (textbox-only: alignment/text/splitter), and "Visibility"
+    // (every prefixed kind's hide-on-Target/Region) -- whole groups are
+    // shown/hidden together per the selected node's kind (see the
+    // currentItemChanged handler below), rather than toggling individual
+    // rows within a single shared form.
+    auto* propertiesLayout = new QVBoxLayout(properties);
+    propertiesLayout->setContentsMargins(0, 0, 0, 0);
+
+    auto* geometryGroup = new QGroupBox("Geometry", properties);
+    auto* geometryForm = new QFormLayout(geometryGroup);
     // The sidebar is only ~100-200px wide -- a label sharing a row with its
     // field gets squeezed down to nothing legible. Wrapping long rows puts
     // the label on its own row above the field instead, so it's always
     // fully readable.
-    propertiesForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
-    propertiesForm->addRow("Position X", posXEdit);
-    propertiesForm->addRow("Position Y", posYEdit);
-    propertiesForm->addRow("Size X", sizeWEdit);
-    propertiesForm->addRow("Size Y", sizeHEdit);
-    propertiesForm->addRow("Alignment", alignCombo);
-    propertiesForm->addRow("Text", textEdit);
-    propertiesForm->addRow("Splitter", splitterEdit);
-    propertiesForm->addRow("Hide on Target", hideTargetsButton);
-    propertiesForm->addRow("Hide on Region", hideRegionsButton);
+    geometryForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    geometryForm->addRow("Position X", posXEdit);
+    geometryForm->addRow("Position Y", posYEdit);
+    geometryForm->addRow("Size X", sizeWEdit);
+    geometryForm->addRow("Size Y", sizeHEdit);
+
+    auto* componentGroup = new QGroupBox("Properties", properties);
+    auto* componentForm = new QFormLayout(componentGroup);
+    componentForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    componentForm->addRow("Alignment", alignCombo);
+    componentForm->addRow("Text", textEdit);
+    componentForm->addRow("Splitter", splitterEdit);
+
+    auto* visibilityGroup = new QGroupBox("Visibility", properties);
+    auto* visibilityForm = new QFormLayout(visibilityGroup);
+    visibilityForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    visibilityForm->addRow("Hide on Target", hideTargetsButton);
+    visibilityForm->addRow("Hide on Region", hideRegionsButton);
+
+    propertiesLayout->addWidget(geometryGroup);
+    propertiesLayout->addWidget(componentGroup);
+    propertiesLayout->addWidget(visibilityGroup);
     properties->setVisible(false);
 
     // Populates the panel's fields from `item` without re-triggering the
@@ -1411,23 +1455,19 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
 
     QObject::connect(
         tree, &QTreeWidget::currentItemChanged,
-        [properties, propertiesForm, posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, textEdit, splitterEdit,
-         populateFrom, updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
+        [properties, geometryGroup, componentGroup, visibilityGroup, populateFrom,
+         updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
             const bool selected = isPrefixedItem(current);
             properties->setVisible(selected);
-            // Position/size mean nothing for SingleChoice -- it's a pure
-            // grouping node, no geometry of its own. Alignment, text, and the
-            // word-wrap splitter only mean something for a textbox's text --
-            // neither SingleChoice nor a negative-space zone has any text.
-            // Hide-on-Target/Region (added below the splitter row) applies to
-            // every prefixed kind, so it's never toggled off here.
-            propertiesForm->setRowVisible(posXEdit, isGeometryItem(current));
-            propertiesForm->setRowVisible(posYEdit, isGeometryItem(current));
-            propertiesForm->setRowVisible(sizeWEdit, isGeometryItem(current));
-            propertiesForm->setRowVisible(sizeHEdit, isGeometryItem(current));
-            propertiesForm->setRowVisible(alignCombo, isComponentItem(current));
-            propertiesForm->setRowVisible(textEdit, isComponentItem(current));
-            propertiesForm->setRowVisible(splitterEdit, isComponentItem(current));
+            // Geometry means nothing for SingleChoice -- it's a pure grouping
+            // node, no position/size of its own. Alignment/text/splitter only
+            // mean something for a textbox's text -- neither SingleChoice nor
+            // a negative-space zone has any text. Visibility (hide-on-
+            // Target/Region) applies to every prefixed kind, so that group is
+            // never toggled off here.
+            geometryGroup->setVisible(isGeometryItem(current));
+            componentGroup->setVisible(isComponentItem(current));
+            visibilityGroup->setVisible(selected);
             if (selected) {
                 populateFrom(current);
                 updateErrorHighlight(current);
@@ -1939,14 +1979,15 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     QObject::connect(xEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
     QObject::connect(yEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
 
-    layout->addWidget(new QLabel("Viewport (tx)", content));
-    auto* form = new QFormLayout();
-    form->addRow("X:", xEdit);
-    form->addRow("Y:", yEdit);
-    form->addRow("Nametable:", nametableCombo);
-    form->addRow("Target:", targetCombo);
-    form->addRow("Region:", regionCombo);
-    layout->addLayout(form);
+    auto* globalGroup = new QGroupBox("Global", content);
+    auto* globalForm = new QFormLayout(globalGroup);
+    globalForm->addRow("Viewport X (tx):", xEdit);
+    globalForm->addRow("Viewport Y (tx):", yEdit);
+    globalForm->addRow("Nametable:", nametableCombo);
+    globalForm->addRow("Target:", targetCombo);
+    globalForm->addRow("Region:", regionCombo);
+    globalForm->addRow("Linker Prefix:", linkerPrefixEdit);
+    layout->addWidget(globalGroup);
 
     dock->setWidget(content);
     return {dock, tree, xEdit, yEdit, targetCombo, regionCombo};

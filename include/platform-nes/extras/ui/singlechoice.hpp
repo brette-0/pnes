@@ -8,8 +8,8 @@
 
 using namespace br0::intsh;
 
-// while this may look pointless, its for canvas compatability I thin
-// and maybe like a local code-gen thing?
+// while this may look pointless, its for canvas compatability!
+// so do not erase, very important
 
 namespace ui::choice {
     // Owns nothing but a clamped option index -- no layout, no PPU
