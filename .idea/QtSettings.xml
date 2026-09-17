@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="QtSettings">
+    <option name="myCurrentProfile" value="nes-release" />
+    <option name="mySettingsPerProfile">
+      <map>
+        <entry key="ctr-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="ctr-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="dsi-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="dsi-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="gc-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="gc-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="linux-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="linux-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="linux-x86-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="linux-x86-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="nds-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="nds-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="nes-pal-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="nes-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="switch-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="switch-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="wii-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="wii-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="wiiu-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="wiiu-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>

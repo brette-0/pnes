@@ -13,12 +13,24 @@ TITLE NI void Draw_NewGame() {
     ppu::WriteFromBufferToNameTable(0x2c37, SIZED_OBJ(NewGame_row0), 0);
 }
 
+TITLE NI void Erase_NewGame() {
+    ppu::WriteRepeatedToNameTable(0x2c37, charmap_generic(' '), 8, 0);
+}
+
 TITLE NI void Draw_Continue() {
     ppu::WriteFromBufferToNameTable(0x2c57, SIZED_OBJ(Continue_row0), 0);
 }
 
+TITLE NI void Erase_Continue() {
+    ppu::WriteRepeatedToNameTable(0x2c57, charmap_generic(' '), 8, 0);
+}
+
 TITLE NI void Draw_Options() {
     ppu::WriteFromBufferToNameTable(0x2c77, SIZED_OBJ(Options_row0), 0);
+}
+
+TITLE NI void Erase_Options() {
+    ppu::WriteRepeatedToNameTable(0x2c77, charmap_generic(' '), 7, 0);
 }
 
 }  // namespace gen::title

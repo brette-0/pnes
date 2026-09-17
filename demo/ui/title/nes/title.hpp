@@ -34,18 +34,24 @@ TITLE_DATA inline constexpr auto NewGame_row0 = ::tech::nes_str::encode<charmap_
 
 TITLE NI void Draw_NewGame();
 
+TITLE NI void Erase_NewGame();
+
 TITLE_DATA inline constexpr auto Continue_row0 = ::tech::nes_str::encode<charmap_generic>("CONTINUE");
 
 TITLE NI void Draw_Continue();
+
+TITLE NI void Erase_Continue();
 
 TITLE_DATA inline constexpr auto Options_row0 = ::tech::nes_str::encode<charmap_generic>("OPTIONS");
 
 TITLE NI void Draw_Options();
 
+TITLE NI void Erase_Options();
+
 // SingleChoice: TitleOptions
 alignas(ui::choice::SingleChoice) SYSMEM inline u8 TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
 inline ui::choice::SingleChoice& TitleOptions = reinterpret_cast<ui::choice::SingleChoice&>(TitleOptions_storage);
-inline AI void Make_TitleOptions() {
+AI void Make_TitleOptions() {
     new (&TitleOptions) ui::choice::SingleChoice(3, 0);
 }
 

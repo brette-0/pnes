@@ -24,7 +24,7 @@ namespace ui::slider {
         // Encodes one pending write as 3 bytes (addr-hi, addr-lo, val) at
         // *buf, then advances buf past them. Caller guarantees room is left
         // in the buffer buf points into.
-        inline AI void WriteOpTo(u8*& buf, const int addr, const u8 val) {
+        AI void WriteOpTo(u8*& buf, const int addr, const u8 val) {
             *buf++ = static_cast<u8>(addr >> 8);
             *buf++ = static_cast<u8>(addr & 0xFF);
             *buf++ = val;

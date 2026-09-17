@@ -24,18 +24,24 @@ inline constexpr auto NewGame_row0 = ::tech::nes_str::encode<charmap_generic>("N
 
 NI void Draw_NewGame();
 
+NI void Erase_NewGame();
+
 inline constexpr auto Continue_row0 = ::tech::nes_str::encode<charmap_generic>("CONTINUE");
 
 NI void Draw_Continue();
+
+NI void Erase_Continue();
 
 inline constexpr auto Options_row0 = ::tech::nes_str::encode<charmap_generic>("OPTIONS");
 
 NI void Draw_Options();
 
+NI void Erase_Options();
+
 // SingleChoice: TitleOptions
 alignas(ui::choice::SingleChoice) inline u8 TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
 inline ui::choice::SingleChoice& TitleOptions = reinterpret_cast<ui::choice::SingleChoice&>(TitleOptions_storage);
-inline AI void Make_TitleOptions() {
+AI void Make_TitleOptions() {
     new (&TitleOptions) ui::choice::SingleChoice(3, 0);
 }
 

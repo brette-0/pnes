@@ -24,23 +24,31 @@ inline constexpr auto NewGame_row0 = ::tech::nes_str::encode<charmap_generic>("N
 
 NI void Draw_NewGame();
 
+NI void Erase_NewGame();
+
 inline constexpr auto Continue_row0 = ::tech::nes_str::encode<charmap_generic>("CONTINUE");
 
 NI void Draw_Continue();
+
+NI void Erase_Continue();
 
 inline constexpr auto Options_row0 = ::tech::nes_str::encode<charmap_generic>("OPTIONS");
 
 NI void Draw_Options();
 
+NI void Erase_Options();
+
 inline constexpr auto Quit_row0 = ::tech::nes_str::encode<charmap_generic>("QUIT");
 
 NI void Draw_Quit();
+
+NI void Erase_Quit();
 
 // SingleChoice: TitleOptions
 inline atomic vec2<u16> TitleOptions_options[4];
 alignas(ui::choice::SingleChoice) inline u8 TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
 inline ui::choice::SingleChoice& TitleOptions = reinterpret_cast<ui::choice::SingleChoice&>(TitleOptions_storage);
-inline AI void Make_TitleOptions() {
+AI void Make_TitleOptions() {
     TitleOptions_options[0] = vec2<u16>{static_cast<u16>((((((video::viewport_tx() >> 1) << 1) - 1) - 8) + 32)), static_cast<u16>((1 + 30))};
     TitleOptions_options[1] = vec2<u16>{static_cast<u16>((23 + 32)), static_cast<u16>(((1 + 1) + 30))};
     TitleOptions_options[2] = vec2<u16>{static_cast<u16>((23 + 32)), static_cast<u16>(((1 + 2) + 30))};

@@ -20,7 +20,7 @@ local.cmake.example has a worked example."
 
 namespace ui::text {
     UI_BANK buffer<u8*>* Make(const u8* buff, const u8 sBuff, const vec2<u8> box, const u8 splitter) {
-        const auto chunks = new buffer<u8 *>[box.y]();
+        const auto rows = new buffer<u8 *>[box.y]();
 
         u8 cursor = 0;
         u8 last   = 0;
@@ -39,14 +39,14 @@ namespace ui::text {
 
             const u8 end = (cursor == sBuff) ? cursor : (foundWhite ? lastWhite : cursor);
 
-            chunks[row].addr = const_cast<u8*>(buff + last);
-            chunks[row].size = end - last;
+            rows[row].addr = const_cast<u8*>(buff + last);
+            rows[row].size = end - last;
             row++;
 
             last   = (end < sBuff) ? end + 1 : end;
             cursor = last;
         }
 
-        return chunks;
+        return rows;
     }
 }

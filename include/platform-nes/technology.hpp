@@ -95,12 +95,23 @@ using namespace br0::intsh;
  * handler's budget is one vblank or one scanline, and the cost model can start
  * declining a function on its own as call sites multiply.
  *
+ * Carries `inline` itself, not just `always_inline`: a free function (as
+ * opposed to a class member, which is implicitly inline when defined
+ * in-class) tagged AI and defined directly in a header -- as several here
+ * are, so their body is visible at every call site -- would otherwise get
+ * external linkage in every including TU, an ODR violation the moment more
+ * than one .cpp includes that header. `inline` gives it vague (COMDAT)
+ * linkage instead, which is also what GCC's always_inline needs to accept a
+ * body under LTO. Harmless on a declaration paired with an out-of-line
+ * definition, and redundant (but legal) on an in-class member definition,
+ * which is already implicitly inline.
+ *
  * @warning Does not compose with `noinline`, which wins with no diagnostic --
  *          so a function taking this must NOT also take ::MODULE_PLACEMENT.
  *          The two are mutually exclusive: one copy in a named bank, or a copy
  *          in every caller.
  */
-#define AI __attribute__((always_inline))
+#define AI __attribute__((always_inline)) inline
 
 /**
  * @brief Force a function to NEVER be inlined into its caller(s).
@@ -178,7 +189,7 @@ namespace tech {
  * @param addr Hardware address to read.
  * @return The byte currently stored at @p addr.
  */
-inline AI
+AI
 u8 peek(const u16 addr) {
     return *reinterpret_cast<volatile const u8 *>(addr);
 }
@@ -192,7 +203,7 @@ u8 peek(const u16 addr) {
  * @param addr Hardware address to write.
  * @param data Byte to store.
  */
-inline AI
+AI
 void poke(const u16 addr, const u8 data) {
     *reinterpret_cast<volatile u8 *>(addr) = data;
 }
@@ -216,7 +227,7 @@ void poke(const u16 addr, const u8 data) {
  *
  * @param c Delay selector; total wait is `c + 15` CPU cycles.
  */
-inline AI
+AI
 void SpinWait(const u8 c) {
     __asm__ volatile (
         "sec\n"

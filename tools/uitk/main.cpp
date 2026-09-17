@@ -31,6 +31,7 @@
 #include <QVector>
 #include <QSplitter>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QSpinBox>
 #include <QSignalBlocker>
 #include <QFontDatabase>
@@ -223,6 +224,15 @@ constexpr int kDefaultOptionRole = Qt::UserRole + 18;
 // CHARMAP mapname (see technology.hpp's CHARMAP macro) for this node's row
 // text/splitter to be encoded through instead.
 constexpr int kCharmapOverrideRole = Qt::UserRole + 19;
+// ctTextBox-only: when checked, codegen also emits an Erase_<Name> function
+// that blanks the box's whole w x h footprint (not just whatever rows its
+// current text wraps to) via ppu::WriteRepeatedToNameTable, one row at a
+// time -- using the same tile ' ' would encode to via charmapFn (or the raw
+// ' ' character when no charmap is set) if it appeared in the box's own
+// text, so a Draw_ then Erase_ round-trips exactly. Meaningless for
+// rtTextBox, whose text (and therefore its erase tile) isn't known until
+// runtime.
+constexpr int kProvideErasingRole = Qt::UserRole + 20;
 // Compile-time and runtime textboxes are separate kinds -- currently
 // identical in behavior, but distinguished now because they'll diverge in
 // meaning later (e.g. how their text is ultimately resolved by generated
@@ -743,6 +753,9 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
             obj["text"] = item->data(0, kTextContentRole).toString();
             obj["splitter"] = item->data(0, kSplitterRole).toString();
             obj["charmapOverride"] = item->data(0, kCharmapOverrideRole).toString();
+            if (isCtTextBoxItem(item)) {
+                obj["provideErasing"] = item->data(0, kProvideErasingRole).toBool();
+            }
         }
     } else if (isSingleChoiceItem(item)) {
         obj["kind"] = QStringLiteral("singlechoice");
@@ -801,6 +814,9 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
             item->setData(0, kTextContentRole, obj["text"].toString());
             item->setData(0, kSplitterRole, obj["splitter"].toString(QStringLiteral(" ")));
             item->setData(0, kCharmapOverrideRole, obj["charmapOverride"].toString());
+            if (isCtTextBox) {
+                item->setData(0, kProvideErasingRole, obj["provideErasing"].toBool(false));
+            }
         }
         item->setData(0, kLastValidNameRole, item->text(0));
     } else if (kind == QLatin1String("singlechoice")) {
@@ -970,6 +986,15 @@ QString cCharEscape(QChar ch) {
 struct GeneratedFiles {
     QString hpp;
     QString cpp;
+    // Whether `cpp` actually carries any generated definitions, as opposed
+    // to just the do-not-edit banner/include/namespace-open-close wrapper
+    // every export still formats it with regardless. Every AI-tagged
+    // wrapper this tool emits (ctTextBox included, as of Erase_/Draw_
+    // becoming AI) defines its body in the .hpp instead, so `cpp` is
+    // routinely all-wrapper-no-content -- callers use this instead of
+    // string-sniffing `cpp` to decide whether that empty file is even worth
+    // writing (see exportOneTarget).
+    bool cppHasContent = false;
 };
 
 // Mirrors src/nes/video.cpp's xy_to_nt_addr exactly -- the PPU-address math
@@ -1079,6 +1104,42 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, 
         }
     }
     return {rootLines.join("\n"), bodyLines.join("\n")};
+}
+
+// Emits an Erase_<Name> function body for a ctTextBox that opted into
+// Provide Erasing: one ppu::WriteRepeatedToNameTable call per row of the
+// box's whole w x h footprint, each filling that row with the tile ' '
+// would encode to through `charmapFn` -- the same character genCtTextBoxBody
+// would emit if the box's text were a run of spaces -- or the raw ' ' byte
+// itself when no charmap is set (charmapFn empty), matching that function's
+// own plain-string fallback. Unlike genCtTextBoxBody's rows, this always
+// covers the full box, not just whatever rows the current text wraps to, so
+// switching to shorter text later doesn't leave stale tiles behind.
+QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes,
+                               const QString& charmapFn) {
+    const int x = item->data(0, kPosXRole).toInt() + ntOffX;
+    const int y = item->data(0, kPosYRole).toInt() + ntOffY;
+    const int w = std::max(1, item->data(0, kSizeWRole).toInt());
+    const int h = std::max(1, item->data(0, kSizeHRole).toInt());
+    const QString tileExpr =
+        charmapFn.isEmpty() ? QStringLiteral("' '") : QString("%1(' ')").arg(charmapFn);
+
+    QStringList bodyLines;
+    for (int row = 0; row < h; ++row) {
+        if (isNes) {
+            bodyLines << QString("    ppu::WriteRepeatedToNameTable(0x%1, %2, %3, 0);")
+                             .arg(static_cast<uint>(nesNtAddr(x, y + row)), 4, 16, QLatin1Char('0'))
+                             .arg(tileExpr)
+                             .arg(w);
+        } else {
+            bodyLines << QString("    ppu::WriteRepeatedToNameTable(vec2<u16>{%1, %2}, %3, %4, 0);")
+                             .arg(x)
+                             .arg(y + row)
+                             .arg(tileExpr)
+                             .arg(w);
+        }
+    }
+    return bodyLines.join("\n");
 }
 
 // Emits one SingleChoice node's declarations: its options' positions
@@ -1201,7 +1262,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     }
     makeBody << QString("    new (&%1) ui::choice::SingleChoice(%2, %3);").arg(name).arg(nOptions).arg(defaultOption);
 
-    lines << QString("inline AI void Make_%1() {\n%2\n}").arg(name, makeBody.join("\n"));
+    lines << QString("AI void Make_%1() {\n%2\n}").arg(name, makeBody.join("\n"));
 
     return lines.join("\n") + "\n";
 }
@@ -1215,16 +1276,19 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                              const QString& charmap, const QString& sceneName) {
     const int ntOffX = (nametable & 1) * kNametableQuadW;
     const int ntOffY = ((nametable >> 1) & 1) * kNametableQuadH;
-    // linker_prefix/bss_prefix/data_prefix are placement attributes -- a
-    // bank or section a linker script maps to a real region of ROM/RAM. Off
-    // NES that concept doesn't exist (CREATE_SEGMENT_KEYWORD-built macros
-    // already expand to nothing there), and every OTHER target's generated
-    // code has no reason to even reference a macro that's only ever defined
-    // for the NES build -- so all three are only ever emitted when actually
-    // exporting for NES.
+    // bss_prefix/data_prefix are placement attributes -- a bank or section a
+    // linker script maps to a real region of ROM/RAM. Off NES that concept
+    // doesn't exist (CREATE_SEGMENT_KEYWORD-built macros already expand to
+    // nothing there), and every OTHER target's generated code has no reason
+    // to even reference a macro that's only ever defined for the NES build
+    // -- so both are only ever emitted when actually exporting for NES.
+    // linker_prefix has no such token here: every generated function is now
+    // AI (see the ctTextBox branch below), and AI doesn't compose with a
+    // placement attribute -- linker_prefix only still feeds the segment
+    // guard below, so *some* real value is still required wherever it's set
+    // on a scene, even though nothing in this file's output references it
+    // anymore.
     const bool isNes = (target == QLatin1String("NES"));
-    const QString linkerPrefixTok =
-        (isNes && !linkerPrefix.trimmed().isEmpty()) ? (linkerPrefix.trimmed() + " ") : QString();
     const QString bssPrefixTok = (isNes && !bssPrefix.trimmed().isEmpty()) ? (bssPrefix.trimmed() + " ") : QString();
     const QString dataPrefixTok =
         (isNes && !dataPrefix.trimmed().isEmpty()) ? (dataPrefix.trimmed() + " ") : QString();
@@ -1265,16 +1329,27 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             // itself), unlike rtTextBox's wrapper below -- named Draw_<Name>
             // so a scene's generated API reads the same way SingleChoice's
             // own Make_<Name> does: the verb up front says what calling it
-            // does. NI (not AI, unlike every other generated wrapper here):
-            // it's real emitted code, not a thin pass-through, so it gets a
-            // pinned, real JSR target rather than being duplicated into
-            // every caller.
+            // does. AI, like every other generated wrapper here -- body
+            // merged into the .hpp declaration, not split into a .cpp
+            // definition, because AI itself requires that (see ::AI's own
+            // comment in technology.hpp: a force-inlined function's body has
+            // to be visible in every TU that calls it, which a separate .cpp
+            // definition can never guarantee). No linkerPrefixTok (bank
+            // placement) either, for the same reason every other AI-tagged
+            // function here skips it: AI's own doc comment says it doesn't
+            // compose with a placement attribute -- once a body gets
+            // duplicated into every caller, there's no single out-of-line
+            // copy left for a section attribute to pin anywhere.
             const CtTextBoxGen gen = genCtTextBoxBody(item, name, ntOffX, ntOffY, isNes, dataPrefixTok, charmapFn);
             if (!gen.rootDecls.isEmpty()) {
                 hppDecls << gen.rootDecls;
             }
-            hppDecls << QString("%1NI void Draw_%2();").arg(linkerPrefixTok, name);
-            cppDefs << QString("%1NI void Draw_%2() {\n%3\n}\n").arg(linkerPrefixTok, name, gen.body);
+            hppDecls << QString("AI void Draw_%1() {\n%2\n}\n").arg(name, gen.body);
+
+            if (item->data(0, kProvideErasingRole).toBool()) {
+                const QString eraseBody = genCtTextBoxEraseBody(item, ntOffX, ntOffY, isNes, charmapFn);
+                hppDecls << QString("AI void Erase_%1() {\n%2\n}\n").arg(name, eraseBody);
+            }
         } else {  // rtTextBox
             const int w = std::max(1, item->data(0, kSizeWRole).toInt());
             const int h = std::max(1, item->data(0, kSizeHRole).toInt());
@@ -1291,7 +1366,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             const QString splitterArg = charmapFn.isEmpty()
                                              ? QString("'%1'").arg(cCharEscape(splitter))
                                              : QString("%1('%2')").arg(charmapFn, cCharEscape(splitter));
-            hppDecls << QString("inline AI buffer<u8*>* %1(const u8* buff, const u8 sBuff) {\n"
+            hppDecls << QString("AI buffer<u8*>* %1(const u8* buff, const u8 sBuff) {\n"
                                  "    return ui::text::Make(buff, sBuff, vec2<u8>{%2, %3}, %4);\n"
                                  "}\n")
                              .arg(name)
@@ -1364,6 +1439,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                        "%3"
                        "\n}  // namespace gen::%1\n")
                   .arg(sceneName, sceneName, cppDefs.join("\n"));
+    out.cppHasContent = !cppDefs.isEmpty();
     return out;
 }
 
@@ -2077,7 +2153,23 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
                                                     bssPrefixEdit->text(), dataPrefixEdit->text(),
                                                     charmapEdit->text(), sceneName());
         const bool hppOk = writeIfChanged(targetDir + "/" + sceneName() + ".hpp", files.hpp);
-        const bool cppOk = writeIfChanged(targetDir + "/" + sceneName() + ".cpp", files.cpp);
+
+        // Only write the .cpp when codegen actually put something in it
+        // (see GeneratedFiles::cppHasContent) -- every wrapper this tool
+        // emits is AI now, body-in-header, so most scenes never need one at
+        // all. If an earlier export (before AI, or before the scene's last
+        // ctTextBox lost its only cpp-side content) left a stale .cpp
+        // behind, remove it rather than leaving dead generated code around;
+        // if there's genuinely nothing to write and nothing on disk either,
+        // leave the directory alone instead of creating an empty file.
+        const QString cppPath = targetDir + "/" + sceneName() + ".cpp";
+        bool cppOk = true;
+        if (files.cppHasContent) {
+            cppOk = writeIfChanged(cppPath, files.cpp);
+        } else if (QFile::exists(cppPath)) {
+            cppOk = QFile::remove(cppPath);
+            std::fprintf(stdout, cppOk ? "  removed    %s\n" : "  FAILED     %s\n", qPrintable(cppPath));
+        }
         return hppOk && cppOk;
     };
 
@@ -2166,6 +2258,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     auto* textEdit = new QLineEdit(properties);
     auto* splitterEdit = new QLineEdit(properties);
     auto* charmapOverrideEdit = new QLineEdit(properties);
+    // ctTextBox-only -- see kProvideErasingRole.
+    auto* provideErasingCheck = new QCheckBox(properties);
     // SingleChoice-only: which option child (0-based, in tree order) Make
     // selects by default -- clamped against the child count at export time,
     // not here, since the count can change (options added/removed) after
@@ -2234,6 +2328,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     charmapOverrideEdit->setToolTip("CHARMAP mapname (technology.hpp) to encode this node's row text/splitter "
                                      "through, in place of the scene's Default Charmap.\n"
                                      "Leave blank to use the scene's Default Charmap.");
+    provideErasingCheck->setToolTip("Also generate an Erase_<Name>() function that blanks this box's whole "
+                                     "footprint with its charmap's ' ' tile, via ppu::WriteRepeatedToNameTable.");
 
     // Grouped into "Geometry" (any geometry node's position/size),
     // "Properties" (textbox-only: alignment/text/splitter), and "Visibility"
@@ -2269,6 +2365,14 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     choiceForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     choiceForm->addRow("Default Option", defaultOptionSpin);
 
+    // ctTextBox-only, unlike componentGroup above (shared with rtTextBox) --
+    // a separate group so its visibility can be toggled independently of
+    // Alignment/Text/Splitter/Charmap Override.
+    auto* erasingGroup = new QGroupBox("Erasing", properties);
+    auto* erasingForm = new QFormLayout(erasingGroup);
+    erasingForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    erasingForm->addRow("Provide Erasing", provideErasingCheck);
+
     auto* visibilityGroup = new QGroupBox("Visibility", properties);
     auto* visibilityForm = new QFormLayout(visibilityGroup);
     visibilityForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
@@ -2277,6 +2381,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
 
     propertiesLayout->addWidget(geometryGroup);
     propertiesLayout->addWidget(componentGroup);
+    propertiesLayout->addWidget(erasingGroup);
     propertiesLayout->addWidget(choiceGroup);
     propertiesLayout->addWidget(visibilityGroup);
     properties->setVisible(false);
@@ -2285,8 +2390,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // edit handlers below (which would otherwise write the same values
     // straight back -- harmless, but pointless).
     auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, textEdit, splitterEdit,
-                         charmapOverrideEdit, defaultOptionSpin, hideTargetsButton, hideTargetActions,
-                         hideRegionsButton, hideRegionActions, updateHideButtonSummary,
+                         charmapOverrideEdit, provideErasingCheck, defaultOptionSpin, hideTargetsButton,
+                         hideTargetActions, hideRegionsButton, hideRegionActions, updateHideButtonSummary,
                          suppressHideWrite](QTreeWidgetItem* item) {
         const QSignalBlocker bx(posXEdit);
         const QSignalBlocker by(posYEdit);
@@ -2296,6 +2401,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         const QSignalBlocker bt(textEdit);
         const QSignalBlocker bs(splitterEdit);
         const QSignalBlocker bc(charmapOverrideEdit);
+        const QSignalBlocker be(provideErasingCheck);
         const QSignalBlocker bd(defaultOptionSpin);
         auto exprOr = [item](int exprRole, int fallback) {
             const QString s = item->data(0, exprRole).toString();
@@ -2310,6 +2416,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         const QString splitter = item->data(0, kSplitterRole).toString();
         splitterEdit->setText(splitter.isEmpty() ? QStringLiteral(" ") : splitter);
         charmapOverrideEdit->setText(item->data(0, kCharmapOverrideRole).toString());
+        provideErasingCheck->setChecked(item->data(0, kProvideErasingRole).toBool());
         defaultOptionSpin->setValue(item->data(0, kDefaultOptionRole).toInt());
 
         *suppressHideWrite = true;
@@ -2342,19 +2449,22 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
 
     QObject::connect(
         tree, &QTreeWidget::currentItemChanged,
-        [properties, geometryGroup, componentGroup, choiceGroup, visibilityGroup, populateFrom,
+        [properties, geometryGroup, componentGroup, erasingGroup, choiceGroup, visibilityGroup, populateFrom,
          updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
             const bool selected = isPrefixedItem(current);
             properties->setVisible(selected);
             // Geometry means nothing for SingleChoice -- it's a pure grouping
             // node, no position/size of its own. Alignment/text/splitter only
             // mean something for a textbox's text -- neither SingleChoice nor
-            // a negative-space zone has any text. Default Option only means
+            // a negative-space zone has any text. Provide Erasing is
+            // ctTextBox-only: rtTextBox's text isn't known until runtime, so
+            // there's no fixed erase tile to bake. Default Option only means
             // something for SingleChoice itself. Visibility (hide-on-
             // Target/Region) applies to every prefixed kind, so that group is
             // never toggled off here.
             geometryGroup->setVisible(isGeometryItem(current));
             componentGroup->setVisible(isComponentItem(current));
+            erasingGroup->setVisible(isCtTextBoxItem(current));
             choiceGroup->setVisible(isSingleChoiceItem(current));
             visibilityGroup->setVisible(selected);
             if (selected) {
@@ -2371,14 +2481,15 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     QObject::connect(
         tree, &QTreeWidget::itemChanged,
         [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit, sizeHEdit, textEdit,
-         splitterEdit, charmapOverrideEdit, defaultOptionSpin](QTreeWidgetItem* item, int column) {
+         splitterEdit, charmapOverrideEdit, provideErasingCheck, defaultOptionSpin](QTreeWidgetItem* item,
+                                                                                     int column) {
             if (column != 0 || item != tree->currentItem() || !isPrefixedItem(item)) {
                 return;
             }
             updateErrorHighlight(item);
             if (posXEdit->hasFocus() || posYEdit->hasFocus() || sizeWEdit->hasFocus() || sizeHEdit->hasFocus() ||
                 textEdit->hasFocus() || splitterEdit->hasFocus() || charmapOverrideEdit->hasFocus() ||
-                defaultOptionSpin->hasFocus()) {
+                provideErasingCheck->hasFocus() || defaultOptionSpin->hasFocus()) {
                 return;
             }
             populateFrom(item);
@@ -2426,6 +2537,12 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         QTreeWidgetItem* item = tree->currentItem();
         if (isComponentItem(item)) {
             item->setData(0, kCharmapOverrideRole, charmapOverrideEdit->text().trimmed());
+        }
+    });
+    QObject::connect(provideErasingCheck, &QCheckBox::toggled, [tree](bool checked) {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isCtTextBoxItem(item)) {
+            item->setData(0, kProvideErasingRole, checked);
         }
     });
     QObject::connect(defaultOptionSpin, qOverload<int>(&QSpinBox::valueChanged), [tree](int v) {
