@@ -665,7 +665,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # target actually builds, or every other platform's title.cpp comes
     # along too and the linker sees duplicate symbols for all of them.
     file(GLOB_RECURSE DEMO_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/*.cpp)
-    list(FILTER DEMO_C_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+    list(FILTER DEMO_C_SOURCES EXCLUDE REGEX "/demo/gen/title/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/ui/title/nes/*.cpp)
     list(APPEND DEMO_C_SOURCES ${DEMO_TITLE_SOURCES})
 
@@ -923,7 +923,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "wii")
                 COMPILE_OPTIONS "--embed-dir=${OGC_ASSET_DIR}")
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
@@ -1011,7 +1011,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
@@ -1102,7 +1102,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
@@ -1268,7 +1268,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                     COMPILE_OPTIONS "--embed-dir=${WIIU_ASSET_DIR}")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
@@ -1506,7 +1506,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                     COMPILE_OPTIONS "--embed-dir=${PSP_ASSET_DIR}")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
@@ -1615,7 +1615,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
@@ -1720,7 +1720,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
@@ -1968,7 +1968,7 @@ else()
     endif()
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
