@@ -65,6 +65,34 @@ set(PLATFORM_NES_AUDIO_SECTION ".prg_rom_audio" CACHE STRING "" FORCE)
 # reachable from wherever UI code is called.
 set(PLATFORM_NES_UI_SECTION ".prg_rom_cold" CACHE STRING "" FORCE)
 
+# ELF sections uitk-generated UI code/data is placed into, plus any other
+# CREATE_SEGMENT_KEYWORD-built placement macro your own banks.hpp hands out.
+# These are DEMO-owned, unlike AUDIO/UI_SECTION above (a library concern) --
+# your own scenes' Linker/BSS/Data Prefix fields in uitk name these macros
+# directly, so they're deliberately bare (TITLE/SYSTEM, no
+# PLATFORM_NES_/_SECTION dressing) rather than namespaced: whatever you type
+# into uitk's prefix fields is exactly the CMake variable you set here.
+#
+# That bareness is a real tradeoff, not a free lunch -- an object-like macro
+# this generic can collide with an unrelated declaration that happens to
+# share the name. In particular, avoid all-lowercase names that shadow a
+# standard library identifier: e.g. "system" collides with the
+# int system(const char*) declared in <stdlib.h>/<cstdlib> (reachable here
+# via mos-platform/common/include/stdlib.h, common to every mos-platform
+# target including NES) -- any TU that includes it after this macro is
+# defined fails to compile. ALL_CAPS, as used throughout this project's own
+# placement macros (COLD, TITLE, ACTORS, AUDIO_BANK, UI_BANK -- see
+# demo/src/banks.hpp), sidesteps this: nothing in the standard library or
+# this SDK is spelled in all caps.
+#
+# Compulsory, same as AUDIO/UI_SECTION above -- CMakeLists.txt FATAL_ERRORs
+# if either is unset rather than guessing a bank. TITLE_DATA is NOT its own
+# variable: it's always TITLE's own value with ".rodata" appended (same
+# relationship demo/src/banks.hpp used to hand-write locally), so there's
+# only ever one placement decision per macro to keep in sync, not two.
+set(TITLE ".prg_rom_cold" CACHE STRING "" FORCE)
+set(SYSTEM ".prg_rom_cold" CACHE STRING "" FORCE)
+
 # ELF section the video module (src/nes/video.cpp) is placed into. OPTIONAL and
 # unset by default, unlike audio's: leave it out and video is inlined into its
 # callers, which is both smaller overall and what LTO does anyway.

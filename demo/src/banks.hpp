@@ -54,15 +54,13 @@ template <> struct mmc3::bank_layout<actor_tag> {
 
 #define COLD CREATE_SEGMENT_KEYWORD(".prg_rom_cold")
 
-#define TITLE CREATE_SEGMENT_KEYWORD(".prg_rom_cold")
-
-// Same physical bank as ::COLD/::TITLE (link.ld's prg_rom_cold output section
-// globs ".prg_rom_cold.*" into that region too), but a distinct section NAME:
-// clang/LLD reject placing code and data under the identical literal section
-// name (a "section type conflict" -- executable vs non-executable content
-// need different section flags), so any data object living in the cold/title
-// bank -- e.g. strings.hpp's msg_title -- needs this instead of plain ::TITLE.
-#define TITLE_DATA CREATE_SEGMENT_KEYWORD(".prg_rom_cold.rodata")
+// TITLE, TITLE_DATA and SYSTEM are NOT defined here -- CMakeLists.txt injects
+// them as whole compile definitions (from local.cmake's TITLE/SYSTEM) onto
+// the `demo` target, so they reach every demo .cpp/generated header without
+// needing this file #included first in the right order. TITLE_DATA is
+// TITLE's own value with ".rodata" appended there, same "distinct section
+// NAME, same physical bank as ::COLD/::TITLE" reasoning as before (clang/LLD
+// reject code and data sharing one section's literal name).
 
 #define LEVEL_CODE CREATE_SEGMENT_KEYWORD(".prg_rom_level_code")
 

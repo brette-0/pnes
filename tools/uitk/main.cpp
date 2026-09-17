@@ -1161,7 +1161,12 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     // reinterpret_cast refuses; only const_cast may do that). The one
     // non-local mutable field this instance actually exposes is already
     // protected at its source.
-    lines << QString("%1inline alignas(ui::choice::SingleChoice) u8 %2_storage[sizeof(ui::choice::SingleChoice)];")
+    // alignas MUST precede inline here -- `inline alignas(...)` is invalid
+    // (clang: "an attribute list cannot appear here"/"'alignas' attribute
+    // cannot be applied to types"), while `alignas(...) inline` and
+    // `<attribute> alignas(...) inline` both parse fine. Confirmed against
+    // both host clang and llvm-mos's mos-nes-clang++.
+    lines << QString("%1alignas(ui::choice::SingleChoice) inline u8 %2_storage[sizeof(ui::choice::SingleChoice)];")
                  .arg(bssPrefixTok, name);
     lines << QString("inline ui::choice::SingleChoice& %1 = reinterpret_cast<ui::choice::SingleChoice&>(%1_storage);")
                  .arg(name);
@@ -1321,9 +1326,11 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     // Same "declared here, provided by the project" contract as charmapNote
     // above, for Linker/BSS/Data Prefix: each names a CREATE_SEGMENT_KEYWORD-
     // built placement macro (see technology.hpp) that only exists once the
-    // exporting project's own banks.hpp (or equivalent) defines it -- this
-    // header references the macro by name but, same as a lib function
-    // declared without a definition, never supplies one itself. Unlike
+    // exporting project feeds it in as a compile definition from its own
+    // local.cmake -- this header references the macro by name but, same as
+    // a lib function declared without a definition, never supplies one
+    // itself, and it's deliberately not something a source file should
+    // #define either (see demo/src/banks.hpp's own comment on this). Unlike
     // charmap functions, these ARE preprocessor macros, so a missing one is
     // actually detectable at preprocessing time -- so instead of only a
     // comment, emit a real #ifndef/#error guard per macro (segmentGuards
@@ -1346,10 +1353,10 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
         for (const QString& macroName : sorted) {
             guardLines << QString("#ifndef %1\n"
                                    "#error \"%1 is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement "
-                                   "macro this generated header references (see technology.hpp) -- define it in "
-                                   "your project (e.g. demo/src/banks.hpp) before including this header, the same "
-                                   "way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION are required from "
-                                   "local.cmake for the audio/UI libraries.\"\n"
+                                   "macro this generated header references (see technology.hpp) -- set it in your "
+                                   "project's local.cmake and feed it in as a compile definition, the same way "
+                                   "PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION already are for the audio/UI "
+                                   "libraries. Not something a source file should #define.\"\n"
                                    "#endif")
                             .arg(macroName);
         }

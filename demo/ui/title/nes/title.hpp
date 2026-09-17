@@ -11,14 +11,14 @@
 #include <new>
 #include <platform-nes/extras/ui/singlechoice.hpp>
 
+#ifndef SYSTEM
+#error "SYSTEM is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement macro this generated header references (see technology.hpp) -- set it in your project's local.cmake and feed it in as a compile definition, the same way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION already are for the audio/UI libraries. Not something a source file should #define."
+#endif
 #ifndef TITLE
-#error "TITLE is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement macro this generated header references (see technology.hpp) -- define it in your project (e.g. demo/src/banks.hpp) before including this header, the same way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION are required from local.cmake for the audio/UI libraries."
+#error "TITLE is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement macro this generated header references (see technology.hpp) -- set it in your project's local.cmake and feed it in as a compile definition, the same way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION already are for the audio/UI libraries. Not something a source file should #define."
 #endif
 #ifndef TITLE_DATA
-#error "TITLE_DATA is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement macro this generated header references (see technology.hpp) -- define it in your project (e.g. demo/src/banks.hpp) before including this header, the same way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION are required from local.cmake for the audio/UI libraries."
-#endif
-#ifndef system
-#error "system is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement macro this generated header references (see technology.hpp) -- define it in your project (e.g. demo/src/banks.hpp) before including this header, the same way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION are required from local.cmake for the audio/UI libraries."
+#error "TITLE_DATA is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement macro this generated header references (see technology.hpp) -- set it in your project's local.cmake and feed it in as a compile definition, the same way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION already are for the audio/UI libraries. Not something a source file should #define."
 #endif
 
 using namespace br0::intsh;
@@ -43,7 +43,7 @@ TITLE_DATA inline constexpr auto Options_row0 = ::tech::nes_str::encode<charmap_
 TITLE NI void Draw_Options();
 
 // SingleChoice: TitleOptions
-system inline alignas(ui::choice::SingleChoice) u8 TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
+SYSTEM alignas(ui::choice::SingleChoice) inline u8 TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
 inline ui::choice::SingleChoice& TitleOptions = reinterpret_cast<ui::choice::SingleChoice&>(TitleOptions_storage);
 inline AI void Make_TitleOptions() {
     new (&TitleOptions) ui::choice::SingleChoice(3, 0);
