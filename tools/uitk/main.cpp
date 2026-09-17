@@ -1262,7 +1262,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     }
     makeBody << QString("    new (&%1) ui::choice::SingleChoice(%2, %3);").arg(name).arg(nOptions).arg(defaultOption);
 
-    lines << QString("AI void Make_%1() {\n%2\n}").arg(name, makeBody.join("\n"));
+    lines << QString("inline AI void Make_%1() {\n%2\n}").arg(name, makeBody.join("\n"));
 
     return lines.join("\n") + "\n";
 }
@@ -1344,11 +1344,11 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             if (!gen.rootDecls.isEmpty()) {
                 hppDecls << gen.rootDecls;
             }
-            hppDecls << QString("AI void Draw_%1() {\n%2\n}\n").arg(name, gen.body);
+            hppDecls << QString("inline AI void Draw_%1() {\n%2\n}\n").arg(name, gen.body);
 
             if (item->data(0, kProvideErasingRole).toBool()) {
                 const QString eraseBody = genCtTextBoxEraseBody(item, ntOffX, ntOffY, isNes, charmapFn);
-                hppDecls << QString("AI void Erase_%1() {\n%2\n}\n").arg(name, eraseBody);
+                hppDecls << QString("inline AI void Erase_%1() {\n%2\n}\n").arg(name, eraseBody);
             }
         } else {  // rtTextBox
             const int w = std::max(1, item->data(0, kSizeWRole).toInt());
@@ -1366,7 +1366,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             const QString splitterArg = charmapFn.isEmpty()
                                              ? QString("'%1'").arg(cCharEscape(splitter))
                                              : QString("%1('%2')").arg(charmapFn, cCharEscape(splitter));
-            hppDecls << QString("AI buffer<u8*>* %1(const u8* buff, const u8 sBuff) {\n"
+            hppDecls << QString("inline AI buffer<u8*>* %1(const u8* buff, const u8 sBuff) {\n"
                                  "    return ui::text::Make(buff, sBuff, vec2<u8>{%2, %3}, %4);\n"
                                  "}\n")
                              .arg(name)

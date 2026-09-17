@@ -114,6 +114,106 @@ FetchContent_Declare(
 )
 
 # ----------------------------------------------------------------------
+# uitk-export -- regenerates every demo/gen/title/<target>/title.hpp|.cpp
+# pair from demo/ui/title.uis by building and running tools/uitk (see
+# tools/uitk/README.md). Runs here, at CONFIGURE time -- deliberately, not
+# as a build-time target `demo` depends on: demo/gen/ is gitignored, never
+# committed, so every TARGET_PLATFORM branch's own
+# `file(GLOB DEMO_TITLE_SOURCES ...)` below has to see the regenerated files
+# BEFORE it globs, not after. A build-time custom target regenerates too
+# late for that -- CMake fixes a GLOB's matched file list into build.ninja
+# at configure time, so a custom target that adds/removes a title.cpp
+# mid-build leaves that already-baked build graph pointing at a file that
+# either isn't there yet or just disappeared. (That's exactly how this broke
+# once NES stopped needing a title.cpp at all -- Draw_/Erase_ moved to AI,
+# body merged into the header, so genCtTextBoxBody's NES output no longer
+# has any .cpp-side content, see tools/uitk/main.cpp. Only a second
+# `cmake --build`, which reconfigures and re-globs against the post-export
+# directory state, would have picked that up.) Running the export before
+# the globs, in the same configure pass, removes the need for that second
+# invocation.
+#
+# uitk is a standalone Qt Widgets app (tools/uitk/CMakeLists.txt), built here
+# via its own nested `cmake` invocation rather than add_subdirectory -- most
+# importantly, that means it's never built through *this* project's own
+# toolchain. That matters concretely for TARGET_PLATFORM=nes/nes_pal, which
+# points CMAKE_TOOLCHAIN_FILE at the llvm-mos cross-compiler above: a nested
+# `cmake -S tools/uitk -B ...` subprocess doesn't inherit that (it's never
+# passed along), so it always configures against the host's own compiler,
+# regardless of which platform this build itself targets. Placed here, ahead
+# of every project() call below, so find_package(Qt...) below also always
+# searches the host -- CMAKE_TOOLCHAIN_FILE's CMAKE_SYSTEM_NAME/sysroot
+# settings (set above, for nes/nes_pal) aren't actually applied by CMake
+# until the first project()/enable_language() call processes them.
+#
+# Requires Qt (Widgets) on the machine doing the build -- demo/gen/ is
+# gitignored (nothing committed to fall back to), so a missing Qt is a hard
+# configure error here, not a soft warning. CI's `codegen-check` job
+# (.github/workflows/ci.yml) always has Qt and publishes the regenerated
+# demo/gen/ tree as a build artifact the platform jobs download, so none of
+# *those* need Qt themselves.
+#
+# Re-runs whenever demo/ui/title.uis or uitk's own sources change (see the
+# CMAKE_CONFIGURE_DEPENDS below) -- CMake already reconfigures automatically
+# on any CONFIGURE_DEPENDS-listed file changing, the same mechanism
+# file(GLOB ... CONFIGURE_DEPENDS) itself relies on, so a plain
+# `cmake --build <builddir>` after editing either picks it up with no
+# separate step to remember.
+#
+# enable_language(CXX) here, ahead of find_package(Qt...): Qt6Config.cmake
+# transitively find_package(Threads)s, and FindThreads asserts a language is
+# already enabled -- normally true by the time this ran (every branch below
+# calls project(platform-nes CXX) itself), but this block now runs before
+# all of them. Redundant, not conflicting, with each branch's own project()
+# call moments later (CMake tolerates re-enabling an already-enabled
+# language); for nes/nes_pal this does bind CXX to the llvm-mos cross
+# compiler already selected above via CMAKE_TOOLCHAIN_FILE, same as that
+# later project() call would anyway -- find_package(Qt...) itself doesn't
+# care which compiler got enabled, only that FindThreads' own assertion is
+# satisfied (CMAKE_SYSTEM_NAME=Generic sets no CMAKE_FIND_ROOT_PATH, so
+# nothing here restricts the search to a cross sysroot either way).
+enable_language(CXX)
+find_package(Qt6 QUIET COMPONENTS Widgets)
+if(NOT Qt6Widgets_FOUND)
+    find_package(Qt5 QUIET COMPONENTS Widgets)
+endif()
+if(NOT (Qt6Widgets_FOUND OR Qt5Widgets_FOUND))
+    message(FATAL_ERROR
+        "Qt Widgets not found, and demo/gen/ (uitk's generated output) is "
+        "gitignored -- there is nothing committed to fall back to. Install "
+        "Qt6 (or Qt5) so this configure step can regenerate it from "
+        "demo/ui/title.uis.")
+endif()
+
+file(GLOB_RECURSE UITK_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tools/uitk/*.cpp)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
+             ${UITK_SOURCES}
+             ${CMAKE_SOURCE_DIR}/tools/uitk/CMakeLists.txt)
+
+execute_process(
+        COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tools/uitk -B ${CMAKE_BINARY_DIR}/uitk-build
+        RESULT_VARIABLE UITK_CONFIGURE_RESULT)
+if(NOT UITK_CONFIGURE_RESULT EQUAL 0)
+    message(FATAL_ERROR "uitk: failed to configure tools/uitk (see output above).")
+endif()
+execute_process(
+        COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/uitk-build
+        RESULT_VARIABLE UITK_BUILD_RESULT)
+if(NOT UITK_BUILD_RESULT EQUAL 0)
+    message(FATAL_ERROR "uitk: failed to build (see output above).")
+endif()
+execute_process(
+        COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
+                --input ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
+                --output ${CMAKE_SOURCE_DIR}/demo/gen/title
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        RESULT_VARIABLE UITK_EXPORT_RESULT)
+if(NOT UITK_EXPORT_RESULT EQUAL 0)
+    message(FATAL_ERROR "uitk: export failed (see output above).")
+endif()
+
+# ----------------------------------------------------------------------
 # NES target
 # ----------------------------------------------------------------------
 if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
@@ -660,13 +760,13 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             "SYSMEM=CREATE_SEGMENT_KEYWORD(\"${SYSMEM}\")")
     list(TRANSFORM DEMO_PLACEMENT_DEFINES PREPEND "-D" OUTPUT_VARIABLE DEMO_PLACEMENT_FLAGS)
 
-    # demo/ui/title/ holds one uitk-generated title.cpp per console, all
+    # demo/gen/title/ holds one uitk-generated title.cpp per console, all
     # sharing the same gen::title:: symbol names -- glob only the one this
     # target actually builds, or every other platform's title.cpp comes
     # along too and the linker sees duplicate symbols for all of them.
     file(GLOB_RECURSE DEMO_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/*.cpp)
     list(FILTER DEMO_C_SOURCES EXCLUDE REGEX "/demo/gen/title/")
-    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/ui/title/nes/*.cpp)
+    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/gen/title/nes/*.cpp)
     list(APPEND DEMO_C_SOURCES ${DEMO_TITLE_SOURCES})
 
     set(PASS1_ELF ${CMAKE_BINARY_DIR}/demo_pass1.elf)
@@ -924,7 +1024,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "wii")
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
     list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
-    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
@@ -1012,7 +1112,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
     list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
-    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
@@ -1103,7 +1203,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
-        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
@@ -1269,7 +1369,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
-        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
@@ -1507,7 +1607,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
-        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
@@ -1616,7 +1716,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
-        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
@@ -1721,7 +1821,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
-        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
@@ -1969,7 +2069,7 @@ else()
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
     list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
-    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
@@ -2158,54 +2258,8 @@ endif()
 # target's default) or 1 for the nes_pal target set above.
 target_compile_definitions(platform-nes PUBLIC REGION=${REGION})
 
-# uitk-generated title.cpp (every target dir under demo/ui/title/) uses
+# uitk-generated title.cpp (every target dir under demo/gen/title/) uses
 # charmap_generic but never includes demo/src/graphics/charmaps.hpp itself --
 # force it in ahead of every demo TU instead. Safe project-wide: it's just a
 # constexpr inline function (see its own header comment -- no ODR/LTO cost).
 target_compile_options(demo PRIVATE -include ${CMAKE_SOURCE_DIR}/demo/src/graphics/charmaps.hpp)
-
-# ----------------------------------------------------------------------
-# uitk-export -- regenerates every demo/ui/title/<target>/title.hpp|.cpp
-# pair from demo/ui/title.uis by building and running tools/uitk (see
-# tools/uitk/README.md). `demo` depends on it below, so a plain build of
-# `demo` always runs it first and always sees its log output -- there's no
-# separate step to remember after editing a .uis file.
-#
-# uitk is a standalone Qt Widgets app (tools/uitk/CMakeLists.txt), built here
-# via its own nested `cmake` invocation rather than add_subdirectory -- most
-# importantly, that means it's never built through *this* project's own
-# toolchain. That matters concretely for TARGET_PLATFORM=nes/nes_pal, which
-# points CMAKE_TOOLCHAIN_FILE at the llvm-mos cross-compiler above: a nested
-# `cmake -S tools/uitk -B ...` subprocess doesn't inherit that (it's never
-# passed along), so it always configures against the host's own compiler,
-# regardless of which platform this build itself targets.
-#
-# Requires Qt (Widgets) on the machine doing the build -- if it's missing,
-# the dependency is skipped and `demo` falls back to whatever's already
-# committed under demo/ui/title/, with a configure-time warning so that's
-# never silent. CI's `codegen-check` job (.github/workflows/ci.yml) runs
-# this same export on a machine that always has Qt and fails the workflow
-# before any platform job starts if the result would differ from what's
-# committed -- so a Qt-less local build can't merge stale codegen unnoticed.
-find_package(Qt6 QUIET COMPONENTS Widgets)
-if(NOT Qt6Widgets_FOUND)
-    find_package(Qt5 QUIET COMPONENTS Widgets)
-endif()
-if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
-    add_custom_target(uitk-export
-            COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tools/uitk -B ${CMAKE_BINARY_DIR}/uitk-build
-            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/uitk-build
-            COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
-                    --input ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
-                    --output ${CMAKE_SOURCE_DIR}/demo/ui/title
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-            COMMENT "Regenerating demo/ui/title/*/title.hpp|.cpp from demo/ui/title.uis via uitk"
-            VERBATIM)
-    add_dependencies(demo uitk-export)
-else()
-    message(WARNING
-            "Qt Widgets not found; 'demo' will build against whatever's already committed "
-            "under demo/ui/title/ instead of regenerating it from demo/ui/title.uis. Install "
-            "Qt6 (or Qt5) to keep that in sync locally after editing a .uis file -- CI's "
-            "codegen-check job verifies it regardless of whether this machine can.")
-endif()

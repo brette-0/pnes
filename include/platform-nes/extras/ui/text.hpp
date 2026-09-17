@@ -52,12 +52,16 @@ namespace ui::text {
      *  callers whose box could cross that boundary need the vec2 overload,
      *  which still gets it right via CartesianToAddress.
      *
-     *  Both overloads are defined here (not in text.cpp) -- see ::AI's own
-     *  comment in technology.hpp for why that's safe despite being included
-     *  by more than one .cpp: AI itself carries `inline`, not just
-     *  `always_inline`.
+     *  Both overloads are defined here (not in text.cpp), and both take an
+     *  explicit `inline` alongside ::AI: as free functions (not class
+     *  members, which are implicitly inline when defined in-class) included
+     *  by more than one .cpp, they'd otherwise be an ODR violation -- each
+     *  including TU would emit its own external-linkage definition. `inline`
+     *  gives them vague (COMDAT) linkage instead, which is also what GCC's
+     *  always_inline needs to accept a body under LTO -- see ::AI's own
+     *  comment in technology.hpp.
      */
-    AI void Draw(const buffer<u8*>* rows, const u16 address, const u8 height) {
+    inline AI void Draw(const buffer<u8*>* rows, const u16 address, const u8 height) {
         ppu::WriteFromBufferToNameTable(address, rows[0].addr, rows[0].size, 0);
         u16 rowAddr = address;
         for (u8 i = 1; i < height; i++) {
@@ -66,7 +70,7 @@ namespace ui::text {
         }
     }
 
-    AI void Draw(const buffer<u8*>* chunks, const vec2<u16> pos, const u8 boxY) {
+    inline AI void Draw(const buffer<u8*>* chunks, const vec2<u16> pos, const u8 boxY) {
         Draw(chunks, ppu::CartesianToAddress(pos), boxY);
     }
 }

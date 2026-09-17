@@ -95,23 +95,32 @@ using namespace br0::intsh;
  * handler's budget is one vblank or one scanline, and the cost model can start
  * declining a function on its own as call sites multiply.
  *
- * Carries `inline` itself, not just `always_inline`: a free function (as
- * opposed to a class member, which is implicitly inline when defined
- * in-class) tagged AI and defined directly in a header -- as several here
- * are, so their body is visible at every call site -- would otherwise get
- * external linkage in every including TU, an ODR violation the moment more
- * than one .cpp includes that header. `inline` gives it vague (COMDAT)
- * linkage instead, which is also what GCC's always_inline needs to accept a
- * body under LTO. Harmless on a declaration paired with an out-of-line
- * definition, and redundant (but legal) on an in-class member definition,
- * which is already implicitly inline.
+ * Deliberately just `always_inline`, not `inline` too: ::AI also tags
+ * definitions that must keep ordinary external linkage -- a plain,
+ * non-inline declaration in a header, with the real definition living in
+ * exactly one .cpp, where AI only forces one same-TU call (one overload
+ * calling another, say) to inline without a wasted jsr/rts (e.g.
+ * ppu::WriteRepeatedToNameTable in src/nes/video.cpp). Baking `inline` into
+ * AI itself would give a definition like that vague (COMDAT) linkage,
+ * which an unused-within-its-own-TU inline function is then free to drop
+ * entirely -- silently deleting the only definition any *other* TU could
+ * link against.
+ *
+ * A free function (as opposed to a class member, which is implicitly
+ * inline when defined in-class) that's meant to be called across multiple
+ * TUs -- so its body has to be merged into the header declaration itself,
+ * not split into a separate .cpp definition (AI requires the body visible
+ * at every call site; see ui::text::Draw in text.hpp for why) -- needs
+ * `inline` added explicitly at that site: `AI inline`. Skipping it there is
+ * an ODR violation the moment more than one .cpp includes that header, and
+ * also what GCC needs to accept the body under LTO once `inline` is added.
  *
  * @warning Does not compose with `noinline`, which wins with no diagnostic --
  *          so a function taking this must NOT also take ::MODULE_PLACEMENT.
  *          The two are mutually exclusive: one copy in a named bank, or a copy
  *          in every caller.
  */
-#define AI __attribute__((always_inline)) inline
+#define AI __attribute__((always_inline))
 
 /**
  * @brief Force a function to NEVER be inlined into its caller(s).
@@ -189,7 +198,7 @@ namespace tech {
  * @param addr Hardware address to read.
  * @return The byte currently stored at @p addr.
  */
-AI
+inline AI
 u8 peek(const u16 addr) {
     return *reinterpret_cast<volatile const u8 *>(addr);
 }
@@ -203,7 +212,7 @@ u8 peek(const u16 addr) {
  * @param addr Hardware address to write.
  * @param data Byte to store.
  */
-AI
+inline AI
 void poke(const u16 addr, const u8 data) {
     *reinterpret_cast<volatile u8 *>(addr) = data;
 }
@@ -227,7 +236,7 @@ void poke(const u16 addr, const u8 data) {
  *
  * @param c Delay selector; total wait is `c + 15` CPU cycles.
  */
-AI
+inline AI
 void SpinWait(const u8 c) {
     __asm__ volatile (
         "sec\n"
