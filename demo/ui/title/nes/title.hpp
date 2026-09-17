@@ -11,6 +11,16 @@
 #include <new>
 #include <platform-nes/extras/ui/singlechoice.hpp>
 
+#ifndef TITLE
+#error "TITLE is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement macro this generated header references (see technology.hpp) -- define it in your project (e.g. demo/src/banks.hpp) before including this header, the same way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION are required from local.cmake for the audio/UI libraries."
+#endif
+#ifndef TITLE_DATA
+#error "TITLE_DATA is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement macro this generated header references (see technology.hpp) -- define it in your project (e.g. demo/src/banks.hpp) before including this header, the same way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION are required from local.cmake for the audio/UI libraries."
+#endif
+#ifndef system
+#error "system is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement macro this generated header references (see technology.hpp) -- define it in your project (e.g. demo/src/banks.hpp) before including this header, the same way PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION are required from local.cmake for the audio/UI libraries."
+#endif
+
 using namespace br0::intsh;
 
 namespace gen::title {
