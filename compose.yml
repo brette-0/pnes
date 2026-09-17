@@ -83,7 +83,7 @@ services:
         # the two are named. UI has no such external contract -- .prg_rom_cold
         # co-locates it with the cold bank, same as local.cmake.example.
         # TITLE/SYSMEM are the same story, one level up: uitk-generated
-        # demo/ui/**/*.cpp references them directly (see CMakeLists.txt's
+        # demo/gen/**/*.hpp references them directly (see CMakeLists.txt's
         # DEMO_PLACEMENT_DEFINES), also gitignored-local.cmake-only and also
         # mandatory (FATAL_ERROR if unset) -- same values as
         # local.cmake.example: TITLE co-locates with the cold bank like UI's

@@ -146,12 +146,16 @@ FetchContent_Declare(
 # settings (set above, for nes/nes_pal) aren't actually applied by CMake
 # until the first project()/enable_language() call processes them.
 #
-# Requires Qt (Widgets) on the machine doing the build -- demo/gen/ is
-# gitignored (nothing committed to fall back to), so a missing Qt is a hard
-# configure error here, not a soft warning. CI's `codegen-check` job
-# (.github/workflows/ci.yml) always has Qt and publishes the regenerated
-# demo/gen/ tree as a build artifact the platform jobs download, so none of
-# *those* need Qt themselves.
+# Qt (Widgets) is only actually required when demo/gen/ doesn't already have
+# something to fall back to. With Qt: always regenerate, so a local build is
+# never stale after editing demo/ui/title.uis. Without Qt: warn and use
+# whatever's already under demo/gen/ instead -- normally populated by CI's
+# `codegen-check` job's demo-gen artifact (.github/workflows/ci.yml; every
+# other platform job downloads it, deliberately so *those* never need Qt
+# themselves, since most of their Docker images/runners don't have it at
+# all), or by an earlier Qt-equipped local export. Only a genuinely empty
+# demo/gen/ with no Qt available is a hard configure error -- nothing to
+# build against at all.
 #
 # Re-runs whenever demo/ui/title.uis or uitk's own sources change (see the
 # CMAKE_CONFIGURE_DEPENDS below) -- CMake already reconfigures automatically
@@ -177,40 +181,49 @@ find_package(Qt6 QUIET COMPONENTS Widgets)
 if(NOT Qt6Widgets_FOUND)
     find_package(Qt5 QUIET COMPONENTS Widgets)
 endif()
-if(NOT (Qt6Widgets_FOUND OR Qt5Widgets_FOUND))
+
+if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
+    file(GLOB_RECURSE UITK_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tools/uitk/*.cpp)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                 ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
+                 ${UITK_SOURCES}
+                 ${CMAKE_SOURCE_DIR}/tools/uitk/CMakeLists.txt)
+
+    execute_process(
+            COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tools/uitk -B ${CMAKE_BINARY_DIR}/uitk-build
+            RESULT_VARIABLE UITK_CONFIGURE_RESULT)
+    if(NOT UITK_CONFIGURE_RESULT EQUAL 0)
+        message(FATAL_ERROR "uitk: failed to configure tools/uitk (see output above).")
+    endif()
+    execute_process(
+            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/uitk-build
+            RESULT_VARIABLE UITK_BUILD_RESULT)
+    if(NOT UITK_BUILD_RESULT EQUAL 0)
+        message(FATAL_ERROR "uitk: failed to build (see output above).")
+    endif()
+    execute_process(
+            COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
+                    --input ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
+                    --output ${CMAKE_SOURCE_DIR}/demo/gen/title
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            RESULT_VARIABLE UITK_EXPORT_RESULT)
+    if(NOT UITK_EXPORT_RESULT EQUAL 0)
+        message(FATAL_ERROR "uitk: export failed (see output above).")
+    endif()
+elseif(EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/title)
+    message(WARNING
+        "Qt Widgets not found; using whatever's already under demo/gen/title/ "
+        "instead of regenerating it from demo/ui/title.uis (e.g. a "
+        "downloaded demo-gen CI artifact, or an earlier Qt-equipped local "
+        "export). Install Qt6 (or Qt5) to keep it in sync here after "
+        "editing demo/ui/title.uis locally.")
+else()
     message(FATAL_ERROR
-        "Qt Widgets not found, and demo/gen/ (uitk's generated output) is "
-        "gitignored -- there is nothing committed to fall back to. Install "
-        "Qt6 (or Qt5) so this configure step can regenerate it from "
-        "demo/ui/title.uis.")
-endif()
-
-file(GLOB_RECURSE UITK_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tools/uitk/*.cpp)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-             ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
-             ${UITK_SOURCES}
-             ${CMAKE_SOURCE_DIR}/tools/uitk/CMakeLists.txt)
-
-execute_process(
-        COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tools/uitk -B ${CMAKE_BINARY_DIR}/uitk-build
-        RESULT_VARIABLE UITK_CONFIGURE_RESULT)
-if(NOT UITK_CONFIGURE_RESULT EQUAL 0)
-    message(FATAL_ERROR "uitk: failed to configure tools/uitk (see output above).")
-endif()
-execute_process(
-        COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/uitk-build
-        RESULT_VARIABLE UITK_BUILD_RESULT)
-if(NOT UITK_BUILD_RESULT EQUAL 0)
-    message(FATAL_ERROR "uitk: failed to build (see output above).")
-endif()
-execute_process(
-        COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
-                --input ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
-                --output ${CMAKE_SOURCE_DIR}/demo/gen/title
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        RESULT_VARIABLE UITK_EXPORT_RESULT)
-if(NOT UITK_EXPORT_RESULT EQUAL 0)
-    message(FATAL_ERROR "uitk: export failed (see output above).")
+        "Qt Widgets not found, and demo/gen/title/ doesn't exist -- nothing "
+        "to fall back to. Install Qt6 (or Qt5) so this configure step can "
+        "generate it from demo/ui/title.uis, or populate demo/gen/title/ "
+        "yourself first (e.g. download codegen-check's demo-gen CI "
+        "artifact).")
 endif()
 
 # ----------------------------------------------------------------------
