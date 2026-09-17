@@ -4,20 +4,20 @@
 
 namespace gen::title {
 
-void Draw_GameTitle(void) {
+NI void Draw_GameTitle() {
     ppu::WriteFromBufferToNameTable(vec2<u16>{33, 31}, SIZED_OBJ(GameTitle_row0), 0);
     ppu::WriteFromBufferToNameTable(vec2<u16>{34, 32}, SIZED_OBJ(GameTitle_row1), 0);
 }
 
-void Draw_NewGame(void) {
+NI void Draw_NewGame() {
     ppu::WriteFromBufferToNameTable(vec2<u16>{55, 31}, SIZED_OBJ(NewGame_row0), 0);
 }
 
-void Draw_Continue(void) {
+NI void Draw_Continue() {
     ppu::WriteFromBufferToNameTable(vec2<u16>{55, 32}, SIZED_OBJ(Continue_row0), 0);
 }
 
-void Draw_Options(void) {
+NI void Draw_Options() {
     ppu::WriteFromBufferToNameTable(vec2<u16>{55, 33}, SIZED_OBJ(Options_row0), 0);
 }
 

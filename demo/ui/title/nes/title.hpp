@@ -4,36 +4,39 @@
 
 // NOTE: charmap_generic must already be in scope wherever this header is included -- same requirement as any other CHARMAP consumer (see technology.hpp's CHARMAP macro).
 
+#include <intsh>
 #include <platform-nes/types.hpp>
 #include <platform-nes/video.hpp>
 #include <platform-nes/extras/ui/text.hpp>
 #include <new>
 #include <platform-nes/extras/ui/singlechoice.hpp>
 
+using namespace br0::intsh;
+
 namespace gen::title {
 
 TITLE_DATA inline constexpr auto GameTitle_row0 = ::tech::nes_str::encode<charmap_generic>("Super Mary");
 TITLE_DATA inline constexpr auto GameTitle_row1 = ::tech::nes_str::encode<charmap_generic>("Sisters");
 
-TITLE void Draw_GameTitle(void);
+TITLE NI void Draw_GameTitle();
 
 TITLE_DATA inline constexpr auto NewGame_row0 = ::tech::nes_str::encode<charmap_generic>("New Game");
 
-TITLE void Draw_NewGame(void);
+TITLE NI void Draw_NewGame();
 
 TITLE_DATA inline constexpr auto Continue_row0 = ::tech::nes_str::encode<charmap_generic>("Continue");
 
-TITLE void Draw_Continue(void);
+TITLE NI void Draw_Continue();
 
 TITLE_DATA inline constexpr auto Options_row0 = ::tech::nes_str::encode<charmap_generic>("Options");
 
-TITLE void Draw_Options(void);
+TITLE NI void Draw_Options();
 
 // SingleChoice: TitleOptions
-system inline alignas(ui::option::SingleChoice) unsigned char TitleOptions_storage[sizeof(ui::option::SingleChoice)];
-inline ui::option::SingleChoice& TitleOptions = reinterpret_cast<ui::option::SingleChoice&>(TitleOptions_storage);
+system inline alignas(ui::choice::SingleChoice) unsigned char TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
+inline ui::choice::SingleChoice& TitleOptions = reinterpret_cast<ui::choice::SingleChoice&>(TitleOptions_storage);
 inline AI void Make_TitleOptions() {
-    new (&TitleOptions) ui::option::SingleChoice(3, 0);
+    new (&TitleOptions) ui::choice::SingleChoice(3, 0);
 }
 
 }  // namespace gen::title
