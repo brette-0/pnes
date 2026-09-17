@@ -31,6 +31,7 @@
 #include <QVector>
 #include <QSplitter>
 #include <QComboBox>
+#include <QSpinBox>
 #include <QSignalBlocker>
 #include <QFontDatabase>
 #include <QMenuBar>
@@ -211,6 +212,11 @@ constexpr int kSplitterRole = Qt::UserRole + 15;
 // that inherited part is never itself stored on the child.
 constexpr int kHideTargetsRole = Qt::UserRole + 16;
 constexpr int kHideRegionsRole = Qt::UserRole + 17;
+// SingleChoice-only: index (into its option children, in tree order) that
+// should be selected on Make -- baked directly as SingleChoice's
+// defaultOption constructor argument, same as nOptions (the child count)
+// itself.
+constexpr int kDefaultOptionRole = Qt::UserRole + 18;
 // Compile-time and runtime textboxes are separate kinds -- currently
 // identical in behavior, but distinguished now because they'll diverge in
 // meaning later (e.g. how their text is ultimately resolved by generated
@@ -377,6 +383,25 @@ QVector<QTreeWidgetItem*> collectPrefixedItems(QTreeWidgetItem* node) {
     return result;
 }
 
+// Every SingleChoice node in the tree, in document order -- codegen's own
+// walk over the grouping nodes ctTextBox/rtTextBox codegen never visits
+// directly (collectComponentItems skips them, since they carry no geometry
+// of their own).
+QVector<QTreeWidgetItem*> collectSingleChoiceItems(QTreeWidgetItem* node) {
+    QVector<QTreeWidgetItem*> result;
+    std::function<void(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* n) {
+        for (int i = 0; i < n->childCount(); ++i) {
+            QTreeWidgetItem* child = n->child(i);
+            if (isSingleChoiceItem(child)) {
+                result.push_back(child);
+            }
+            visit(child);
+        }
+    };
+    visit(node);
+    return result;
+}
+
 // A node is hidden for the current target/region if *it* was set to hide on
 // either one, or if any ancestor was -- children never store this
 // themselves (their own kHideTargetsRole/kHideRegionsRole entries, if any,
@@ -388,6 +413,23 @@ bool isEffectivelyHidden(const QTreeWidgetItem* item, const QString& target, con
         if (n->data(0, kHideRegionsRole).toStringList().contains(region)) return true;
     }
     return false;
+}
+
+// A SingleChoice's options, in tree order -- its direct ctTextBox/rtTextBox
+// children (not grandchildren: an option is a leaf, it doesn't itself group
+// further options). Hidden-for-target/region children are dropped, same as
+// everywhere else in codegen, so a scene never bakes/counts an option that
+// isn't actually present on the exported target.
+QVector<QTreeWidgetItem*> singleChoiceMembers(const QTreeWidgetItem* scItem, const QString& target,
+                                                const QString& region) {
+    QVector<QTreeWidgetItem*> result;
+    for (int i = 0; i < scItem->childCount(); ++i) {
+        QTreeWidgetItem* child = scItem->child(i);
+        if (isComponentItem(child) && !isEffectivelyHidden(child, target, region)) {
+            result.push_back(child);
+        }
+    }
+    return result;
 }
 
 // --- Property expressions -----------------------------------------------
@@ -633,6 +675,48 @@ std::optional<long long> evalExpr(
     }
 }
 
+// Re-emits `node` as a C++ expression rather than collapsing it to one
+// number -- used for a variadic-viewport target's SingleChoice member
+// positions, where VIEWPORT_T{X,Y}/VIEWPORT_P{X,Y} aren't a fixed number the
+// way they are for a fixed-panel target, but a value only known once the
+// generated Make_ function actually runs (see video::viewport_tx() and
+// friends). Substituted 1:1 with the matching accessor so the emitted
+// arithmetic is exactly the formula the scene author typed. Every other
+// identifier -- a cross-reference to another node's own position/size/
+// textSize, or `this` -- is NOT runtime-variable (only the viewport itself
+// is), so those are baked to the already-resolved int `resolveIdent` hands
+// back, same as a fixed-panel target bakes everything.
+QString emitExprCpp(const ExprPtr& node, const std::function<long long(const QString&, int)>& resolveIdent) {
+    if (!node) return QStringLiteral("0");
+    switch (node->kind) {
+        case ExprNode::Kind::Number:
+            return QString::number(node->number);
+        case ExprNode::Kind::Ident:
+            if (node->identProp < 0) {
+                if (node->identName == QLatin1String("VIEWPORT_TX")) return QStringLiteral("video::viewport_tx()");
+                if (node->identName == QLatin1String("VIEWPORT_TY")) return QStringLiteral("video::viewport_ty()");
+                if (node->identName == QLatin1String("VIEWPORT_PX")) return QStringLiteral("video::viewport_px()");
+                if (node->identName == QLatin1String("VIEWPORT_PY")) return QStringLiteral("video::viewport_py()");
+            }
+            return QString::number(resolveIdent(node->identName, node->identProp));
+        case ExprNode::Kind::Neg:
+            return QString("-(%1)").arg(emitExprCpp(node->a, resolveIdent));
+        case ExprNode::Kind::Add:
+            return QString("(%1 + %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+        case ExprNode::Kind::Sub:
+            return QString("(%1 - %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+        case ExprNode::Kind::Mul:
+            return QString("(%1 * %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+        case ExprNode::Kind::Div:
+            return QString("(%1 / %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+        case ExprNode::Kind::Shl:
+            return QString("(%1 << %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+        case ExprNode::Kind::Shr:
+            return QString("(%1 >> %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+    }
+    return QStringLiteral("0");
+}
+
 // .uis ("User Interface Scene") file format: a JSON object holding a flat
 // "version" and a "nodes" array -- root's own children, each recursively
 // carrying its own "children". Component and negative-space nodes carry
@@ -655,6 +739,7 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
         }
     } else if (isSingleChoiceItem(item)) {
         obj["kind"] = QStringLiteral("singlechoice");
+        obj["defaultOption"] = item->data(0, kDefaultOptionRole).toInt();
     } else {
         obj["kind"] = QStringLiteral("branch");
     }
@@ -713,6 +798,7 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
     } else if (kind == QLatin1String("singlechoice")) {
         item->setFlags(item->flags() | Qt::ItemIsEditable);
         item->setData(0, kKindRole, QString(kSingleChoiceKind));
+        item->setData(0, kDefaultOptionRole, obj["defaultOption"].toInt(0));
         item->setData(0, kLastValidNameRole, item->text(0));
     }
     if (isPrefixedItem(item)) {
@@ -732,7 +818,7 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
 // stored once at the document's top level alongside "version" rather than on
 // every node.
 bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int nametable, const QString& target,
-                   const QString& region, const QString& linkerPrefix) {
+                   const QString& region, const QString& linkerPrefix, const QString& bssPrefix) {
     QJsonArray nodes;
     for (int i = 0; i < rootItem->childCount(); ++i) {
         nodes.append(serializeNode(rootItem->child(i)));
@@ -743,6 +829,7 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
     doc["target"] = target;
     doc["region"] = region;
     doc["linker_prefix"] = linkerPrefix;
+    doc["bss_prefix"] = bssPrefix;
     doc["nodes"] = nodes;
 
     QFile file(path);
@@ -759,10 +846,10 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
 // scene was already open. `target`/`region` are matched by name rather than
 // trusted as-is, since the caller (whose combo defines the valid set) is the
 // one who knows what a missing or unrecognized value should fall back to.
-// `linker_prefix` has no such validation -- it's free-form text -- and simply
-// defaults to empty when absent (e.g. an older file).
+// `linker_prefix`/`bss_prefix` have no such validation -- they're free-form
+// text -- and simply default to empty when absent (e.g. an older file).
 bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, QString& outTarget,
-                   QString& outRegion, QString& outLinkerPrefix) {
+                   QString& outRegion, QString& outLinkerPrefix, QString& outBssPrefix) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
@@ -777,6 +864,7 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
     outTarget = doc.object()["target"].toString();
     outRegion = doc.object()["region"].toString();
     outLinkerPrefix = doc.object()["linker_prefix"].toString();
+    outBssPrefix = doc.object()["bss_prefix"].toString();
     return true;
 }
 
@@ -803,15 +891,30 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
 //     across translation units, see text.hpp). No linker_prefix: an
 //     always-inline wrapper has no meaningful placement of its own.
 //
-// SingleChoice and negative-space nodes emit nothing themselves -- a
-// SingleChoice is purely an editor-side grouping (ui::choice::SingleChoice
-// only ever owns an option index; drawing the chosen option is "entirely the
-// caller's job, via plain ui::text::Make/Draw", per its own header comment),
-// and negative space is an editor-only exclusion zone with no runtime
-// counterpart at all. We never bundle a component's make/draw together, or
-// decide call order for the caller -- codegen only emits the wrappers; when
-// and in what order a scene's components actually get placed/drawn is up to
-// the game code that calls them.
+// Negative-space nodes emit nothing themselves -- an editor-only exclusion
+// zone with no runtime counterpart at all. We never bundle a component's
+// make/draw together, or decide call order for the caller -- codegen only
+// emits the wrappers; when and in what order a scene's components actually
+// get placed/drawn is up to the game code that calls them. We also never
+// emit a draw callback for a SingleChoice: per its own header comment,
+// drawing the chosen option is "entirely the caller's job, via plain
+// ui::text::Make/Draw" -- codegen's job for one is only to emit the
+// ui::choice::SingleChoice instance itself, its options' positions, and the
+// Make_ function that constructs it (see genSingleChoice below).
+//
+// Every generated declaration lives inside `namespace gen::<sceneName>`, so
+// two scenes can freely reuse the same component names without colliding.
+//
+// A SingleChoice's member positions are baked very differently depending on
+// whether `target` has a fixed panel size known at compile time (NES/GBA/
+// PSP) or a variadic one only known once the game is actually running
+// (GCN onward, except PSP -- see kVariadicTargets): on a fixed target,
+// `<name>_options` is a `const` array of already-resolved positions, exactly
+// like a ctTextBox's own placement is baked; on a variadic target it's
+// mutable storage populated by Make_, each element re-deriving its member's
+// position expression at runtime via video::viewport_*() (see emitExprCpp)
+// since VIEWPORT_TX/TY/PX/PY can't be collapsed to one number the way they
+// can for a fixed panel.
 
 // Fixed nametable quadrant size, mirroring src/nes/video.cpp's xy_to_nt_addr
 // (32 tiles wide, 30 tall per quadrant) -- the addressing scheme every
@@ -819,6 +922,14 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
 // of that target's own visible viewport tile count.
 constexpr int kNametableQuadW = 32;
 constexpr int kNametableQuadH = 30;
+
+// Targets whose viewport size isn't fixed at compile time -- "gamecube
+// onwards", per platform-nes's own generational split, except PSP (which
+// keeps a fixed 480x272/letterboxed panel like NES/GBA). Everything NOT in
+// this set bakes a SingleChoice's member positions to plain constants, the
+// same way ctTextBox already does; everything in it re-derives them at
+// runtime in Make_ (see the generateCode doc comment above).
+const QSet<QString> kVariadicTargets{"GCN", "DS", "DSI", "Wii", "Wii U", "3DS", "Switch", "PC"};
 
 QString bareName(const QTreeWidgetItem* item) {
     return item->text(0).mid(requiredPrefixFor(item).length());
@@ -846,11 +957,42 @@ struct GeneratedFiles {
     QString cpp;
 };
 
+// Mirrors src/nes/video.cpp's xy_to_nt_addr exactly -- the PPU-address math
+// behind ::ppu::CartesianToAddress -- so NES export can bake the same VRAM
+// address that function would compute, entirely at design time. Only valid
+// for the fixed, single-page-wrap nametable addressing NES itself uses;
+// never called for any other target (see genCtTextBoxBody).
+quint16 nesNtAddr(int x, int y) {
+    constexpr quint16 base = 0x2000;
+    const quint16 ux = static_cast<quint16>(x);
+    const quint16 uy = static_cast<quint16>(y);
+    const quint16 nt_h = static_cast<quint16>((ux >> 5 & 1) << 10);
+    const quint16 col = ux & 0x1F;
+    if (uy < 30) {
+        return static_cast<quint16>(base + nt_h + (uy << 5) + col);
+    }
+    const quint16 nt_v = static_cast<quint16>((uy / 30) << 11);
+    const quint16 row = uy % 30;
+    return static_cast<quint16>(base + nt_h + nt_v + row * 32 + col);
+}
+
 // Emits one ctTextBox's placement function body: a ppu::WriteFromBufferToNameTable
 // call per wrapped row, each row's text a local string literal -- same
 // wrap/align math as TileGridWidget::paintEvent, so what's exported always
 // matches what the canvas previewed.
-QString genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY) {
+//
+// On NES the panel is fixed, so unlike every other target it never needs the
+// vec2<u16> overload's per-tile page-aware address recomputation (see
+// src/emu/ppu.cpp's own WriteFromBufferToNameTable) -- the VRAM address for
+// each row is exactly as constant as its tile position, so it's baked here
+// via nesNtAddr and passed through the address overload instead, the same
+// "pay the CartesianToAddress cost once, off the hot path" a caller doing
+// this by hand would (see ::ppu::WriteFromBufferToNameTable's own address-
+// overload doc comment). Every other target keeps the vec2<u16> form, which
+// re-derives the page-aware address per tile -- required once a viewport can
+// be wider/taller than one nametable page, which NES's fixed 32x30 panel
+// never is.
+QString genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes) {
     const int x = item->data(0, kPosXRole).toInt() + ntOffX;
     const int y = item->data(0, kPosYRole).toInt() + ntOffY;
     const int w = std::max(1, item->data(0, kSizeWRole).toInt());
@@ -873,14 +1015,123 @@ QString genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY) {
             const QString rowVar = QString("row%1").arg(row);
             lines << QString("    static const char %1[] = \"%2\";")
                          .arg(rowVar, cStringEscape(rowText));
-            lines << QString("    ppu::WriteFromBufferToNameTable(vec2<u16>{%1, %2}, "
-                              "reinterpret_cast<const u8*>(%3), sizeof(%3) - 1, 0);")
-                         .arg(x + startCol)
-                         .arg(y + row)
-                         .arg(rowVar);
+            if (isNes) {
+                lines << QString("    ppu::WriteFromBufferToNameTable(0x%1, "
+                                  "reinterpret_cast<const u8*>(%2), sizeof(%2) - 1, 0);")
+                             .arg(static_cast<uint>(nesNtAddr(x + startCol, y + row)), 4, 16, QLatin1Char('0'))
+                             .arg(rowVar);
+            } else {
+                lines << QString("    ppu::WriteFromBufferToNameTable(vec2<u16>{%1, %2}, "
+                                  "reinterpret_cast<const u8*>(%3), sizeof(%3) - 1, 0);")
+                             .arg(x + startCol)
+                             .arg(y + row)
+                             .arg(rowVar);
+            }
         }
     }
     return lines.join('\n');
+}
+
+// Emits one SingleChoice node's declarations: its options' positions
+// (`<name>_options`), its instance storage + reference (`<name>`), and the
+// Make_ function that constructs it -- see the generateCode doc comment
+// above for why the shape differs between a fixed and a variadic target.
+// Everything lives header-only (`inline`), same reasoning as rtTextBox's own
+// wrapper: it has to be safely includable from more than one TU. Returns
+// empty for a SingleChoice with no (visible) options -- nothing to
+// construct.
+//
+// `bssPrefixTok` is already empty on every target but NES (see
+// generateCode) -- it places the instance's own mutable storage, and, on a
+// variadic target, its mutable options array.
+QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, const QString& target,
+                             const QString& region, int ntOffX, int ntOffY, const QString& bssPrefixTok) {
+    const QVector<QTreeWidgetItem*> members = singleChoiceMembers(scItem, target, region);
+    if (members.isEmpty()) {
+        return QString();
+    }
+    const QString name = bareName(scItem);
+    const int nOptions = members.size();
+    const int defaultOption = std::clamp(scItem->data(0, kDefaultOptionRole).toInt(), 0, nOptions - 1);
+    const bool variadic = kVariadicTargets.contains(target);
+
+    // Cross-reference resolver for a member's position expression (e.g.
+    // `Other.pos.x`, `this.textSize`) -- these are never runtime-variable,
+    // only VIEWPORT_* is (see emitExprCpp), so they're baked to the
+    // already-resolved value every other geometry node's own codegen uses.
+    auto resolveBaked = [rootItem](const QTreeWidgetItem* self, const QString& rawName, int prop) -> long long {
+        const QString wanted = (rawName == QLatin1String("this")) ? bareName(self) : rawName;
+        for (QTreeWidgetItem* other : collectComponentItems(rootItem)) {
+            if (bareName(other) != wanted) continue;
+            switch (prop) {
+                case 0: return other->data(0, kPosXRole).toInt();
+                case 1: return other->data(0, kPosYRole).toInt();
+                case 2: return other->data(0, kSizeWRole).toInt();
+                case 3: return other->data(0, kSizeHRole).toInt();
+                case 4: return other->data(0, kTextContentRole).toString().length();
+                default: return 0;
+            }
+        }
+        return 0;
+    };
+
+    QStringList lines;
+    lines << QString("// SingleChoice: %1").arg(name);
+
+    if (variadic) {
+        // Mutable, populated by Make_ below -- the viewport size (and
+        // therefore every member's resolved position) isn't known until the
+        // game is actually running. On a fixed panel there's nothing to
+        // store here at all: each member's position is already baked
+        // straight into its own Draw_<Name> (see genCtTextBoxBody), so a
+        // second copy of the same PPU address in an `_options` array would
+        // just be redundant data.
+        lines << QString("%1inline vec2<u16> %2_options[%3];").arg(bssPrefixTok, name).arg(nOptions);
+    }
+
+    // ui::option::SingleChoice has no default constructor (and its real
+    // constructor isn't constexpr), so it can't be declared directly at
+    // namespace scope without a dynamic pre-main initializer -- exactly what
+    // an explicit Make_ step is meant to avoid. Instead: raw, correctly-
+    // aligned storage (no constructor runs, so it's legitimately placeable
+    // via bssPrefixTok) plus a reference alias, constructed in place by
+    // Make_ below via placement-new -- no heap involved.
+    lines << QString("%1inline alignas(ui::option::SingleChoice) unsigned char %2_storage[sizeof(ui::option::SingleChoice)];")
+                 .arg(bssPrefixTok, name);
+    lines << QString("inline ui::option::SingleChoice& %1 = reinterpret_cast<ui::option::SingleChoice&>(%1_storage);")
+                 .arg(name);
+
+    QStringList makeBody;
+    if (variadic) {
+        for (int i = 0; i < members.size(); ++i) {
+            QTreeWidgetItem* member = members[i];
+            auto resolveFor = [&resolveBaked, member](const QString& n, int p) { return resolveBaked(member, n, p); };
+
+            QString xSrc = member->data(0, kPosXExprRole).toString().trimmed();
+            if (xSrc.isEmpty()) xSrc = QStringLiteral("0");
+            QString ySrc = member->data(0, kPosYExprRole).toString().trimmed();
+            if (ySrc.isEmpty()) ySrc = QStringLiteral("0");
+            bool okX = false;
+            bool okY = false;
+            ExprPtr xAst = ExprParser(xSrc).parse(okX);
+            ExprPtr yAst = ExprParser(ySrc).parse(okY);
+            const QString xCpp =
+                okX ? emitExprCpp(xAst, resolveFor) : QString::number(member->data(0, kPosXRole).toInt());
+            const QString yCpp =
+                okY ? emitExprCpp(yAst, resolveFor) : QString::number(member->data(0, kPosYRole).toInt());
+            const QString xFinal = ntOffX ? QString("(%1 + %2)").arg(xCpp).arg(ntOffX) : xCpp;
+            const QString yFinal = ntOffY ? QString("(%1 + %2)").arg(yCpp).arg(ntOffY) : yCpp;
+            makeBody << QString("    %1_options[%2] = vec2<u16>{static_cast<u16>(%3), static_cast<u16>(%4)};")
+                            .arg(name)
+                            .arg(i)
+                            .arg(xFinal, yFinal);
+        }
+    }
+    makeBody << QString("    new (&%1) ui::option::SingleChoice(%2, %3);").arg(name).arg(nOptions).arg(defaultOption);
+
+    lines << QString("inline AI void Make_%1() {\n%2\n}").arg(name, makeBody.join("\n"));
+
+    return lines.join("\n") + "\n";
 }
 
 // Builds the target-specific .hpp/.cpp pair for `rootItem`'s whole scene.
@@ -888,13 +1139,23 @@ QString genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY) {
 // isEffectivelyHidden) are skipped entirely, so an export never emits a
 // function for something the scene itself says shouldn't exist there.
 GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, const QString& region, int nametable,
-                             const QString& linkerPrefix, const QString& sceneName) {
+                             const QString& linkerPrefix, const QString& bssPrefix, const QString& sceneName) {
     const int ntOffX = (nametable & 1) * kNametableQuadW;
     const int ntOffY = ((nametable >> 1) & 1) * kNametableQuadH;
-    const QString linkerPrefixTok = linkerPrefix.trimmed().isEmpty() ? QString() : (linkerPrefix.trimmed() + " ");
+    // linker_prefix/bss_prefix are placement attributes -- a bank or section
+    // a linker script maps to a real region of ROM/RAM. Off NES that concept
+    // doesn't exist (CREATE_SEGMENT_KEYWORD-built macros already expand to
+    // nothing there), and every OTHER target's generated code has no reason
+    // to even reference a macro that's only ever defined for the NES build
+    // -- so both are only ever emitted when actually exporting for NES.
+    const bool isNes = (target == QLatin1String("NES"));
+    const QString linkerPrefixTok =
+        (isNes && !linkerPrefix.trimmed().isEmpty()) ? (linkerPrefix.trimmed() + " ") : QString();
+    const QString bssPrefixTok = (isNes && !bssPrefix.trimmed().isEmpty()) ? (bssPrefix.trimmed() + " ") : QString();
 
     QStringList hppDecls;
     QStringList cppDefs;
+    bool usesSingleChoice = false;
 
     for (QTreeWidgetItem* item : collectComponentItems(rootItem)) {
         if (!isComponentItem(item)) continue;  // negative-space carries no code
@@ -903,9 +1164,14 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
         const QString name = bareName(item);
 
         if (isCtTextBoxItem(item)) {
-            hppDecls << QString("%1void %2(void);").arg(linkerPrefixTok, name);
-            cppDefs << QString("%1void %2(void) {\n%3\n}\n")
-                           .arg(linkerPrefixTok, name, genCtTextBoxBody(item, ntOffX, ntOffY));
+            // Actually draws (bakes the ppu::WriteFromBufferToNameTable calls
+            // itself), unlike rtTextBox's wrapper below -- named Draw_<Name>
+            // so a scene's generated API reads the same way SingleChoice's
+            // own Make_<Name> does: the verb up front says what calling it
+            // does.
+            hppDecls << QString("%1void Draw_%2(void);").arg(linkerPrefixTok, name);
+            cppDefs << QString("%1void Draw_%2(void) {\n%3\n}\n")
+                           .arg(linkerPrefixTok, name, genCtTextBoxBody(item, ntOffX, ntOffY, isNes));
         } else {  // rtTextBox
             const int w = std::max(1, item->data(0, kSizeWRole).toInt());
             const int h = std::max(1, item->data(0, kSizeHRole).toInt());
@@ -921,17 +1187,34 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
         }
     }
 
+    for (QTreeWidgetItem* scItem : collectSingleChoiceItems(rootItem)) {
+        if (isEffectivelyHidden(scItem, target, region)) continue;
+        const QString decl = genSingleChoiceDecl(scItem, rootItem, target, region, ntOffX, ntOffY, bssPrefixTok);
+        if (!decl.isEmpty()) {
+            hppDecls << decl;
+            usesSingleChoice = true;
+        }
+    }
+
+    QStringList hppIncludes{"#include <platform-nes/types.hpp>", "#include <platform-nes/video.hpp>",
+                             "#include <platform-nes/extras/ui/text.hpp>"};
+    if (usesSingleChoice) {
+        hppIncludes << "#include <new>" << "#include <platform-nes/extras/ui/singlechoice.hpp>";
+    }
+
     GeneratedFiles out;
     out.hpp = QString("#pragma once\n\n"
                        "// Generated by uitk from \"%1\" -- do not edit by hand.\n\n"
-                       "#include <platform-nes/types.hpp>\n"
-                       "#include <platform-nes/video.hpp>\n"
-                       "#include <platform-nes/extras/ui/text.hpp>\n\n"
-                       "%2")
-                   .arg(sceneName, hppDecls.join("\n"));
+                       "%2\n\n"
+                       "namespace gen::%1 {\n\n"
+                       "%3"
+                       "\n}  // namespace gen::%1\n")
+                   .arg(sceneName, hppIncludes.join("\n"), hppDecls.join("\n\n"));
     out.cpp = QString("// Generated by uitk from \"%1\" -- do not edit by hand.\n\n"
                        "#include \"%2.hpp\"\n\n"
-                       "%3")
+                       "namespace gen::%1 {\n\n"
+                       "%3"
+                       "\n}  // namespace gen::%1\n")
                   .arg(sceneName, sceneName, cppDefs.join("\n"));
     return out;
 }
@@ -1330,7 +1613,23 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     auto* linkerPrefixEdit = new QLineEdit(content);
     linkerPrefixEdit->setToolTip("Emitted immediately before every generated function definition that "
                                   "isn't marked AI -- e.g. a linker-section attribute -- so codegen places "
-                                  "it wherever the linker expects it. Left empty, nothing is emitted.");
+                                  "it wherever the linker expects it. Left empty, nothing is emitted. "
+                                  "Only ever emitted when exporting for NES -- every other target's "
+                                  "generated code never references it.");
+
+    // Same idea as Linker Prefix, but for a SingleChoice's own mutable
+    // storage (and, on a variadic-viewport target, its mutable options
+    // array) -- code/rodata and BSS commonly need different placement
+    // attributes on NES (see demo/src/banks.hpp's TITLE vs TITLE_DATA for
+    // why: LLD rejects code and data sharing one literal section name), so
+    // this is a second, independent free-form field rather than reusing
+    // Linker Prefix for both. Empty by default, and -- like Linker Prefix --
+    // only ever emitted when exporting for NES.
+    auto* bssPrefixEdit = new QLineEdit(content);
+    bssPrefixEdit->setToolTip("Emitted immediately before a SingleChoice's own instance storage (and, on a "
+                               "variadic-viewport target, its mutable options array) -- e.g. a RAM-section "
+                               "placement attribute. Left empty, nothing is emitted. Only ever emitted when "
+                               "exporting for NES.");
 
     // --- File menu: New / Open / Save / Save As, plus unsaved-changes
     // tracking so those and closing the window never silently discard work.
@@ -1376,7 +1675,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     });
 
     auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, nametableCombo, targetCombo,
-                     regionCombo, linkerPrefixEdit]() {
+                     regionCombo, linkerPrefixEdit, bssPrefixEdit]() {
         QString path = QFileDialog::getSaveFileName(window, "Save Scene", QString(), "UI Scene (*.uis)");
         if (path.isEmpty()) {
             return false;
@@ -1385,7 +1684,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             path += ".uis";
         }
         if (!writeUisFile(path, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
-                           regionCombo->currentText(), linkerPrefixEdit->text())) {
+                           regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + path);
             return false;
         }
@@ -1396,12 +1695,12 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     };
 
     auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window, nametableCombo, targetCombo,
-                   regionCombo, linkerPrefixEdit]() {
+                   regionCombo, linkerPrefixEdit, bssPrefixEdit]() {
         if (currentPath->isEmpty()) {
             return doSaveAs();
         }
         if (!writeUisFile(*currentPath, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
-                           regionCombo->currentText(), linkerPrefixEdit->text())) {
+                           regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + *currentPath);
             return false;
         }
@@ -1430,7 +1729,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     window->confirmClose = confirmDiscard;
 
     auto doNew = [rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard, resolveAllPtr,
-                  nametableCombo, targetCombo, regionCombo, linkerPrefixEdit] {
+                  nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit] {
         if (!confirmDiscard()) {
             return;
         }
@@ -1440,6 +1739,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         targetCombo->setCurrentIndex(0);
         regionCombo->setCurrentIndex(0);
         linkerPrefixEdit->clear();
+        bssPrefixEdit->clear();
         *loading = false;
         (*resolveAllPtr)();
         currentPath->clear();
@@ -1448,7 +1748,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     };
 
     auto doOpen = [window, tree, rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard,
-                   resolveAllPtr, nametableCombo, targetCombo, regionCombo, linkerPrefixEdit] {
+                   resolveAllPtr, nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit] {
         if (!confirmDiscard()) {
             return;
         }
@@ -1463,7 +1763,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         QString target;
         QString region;
         QString linkerPrefix;
-        if (!parseUisFile(path, nodes, nametable, target, region, linkerPrefix)) {
+        QString bssPrefix;
+        if (!parseUisFile(path, nodes, nametable, target, region, linkerPrefix, bssPrefix)) {
             QMessageBox::warning(window, "Open Failed", "Could not read file:\n" + path);
             return;
         }
@@ -1481,6 +1782,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         targetCombo->setCurrentIndex(targetIndex);
         regionCombo->setCurrentIndex(regionIndex);
         linkerPrefixEdit->setText(linkerPrefix);
+        bssPrefixEdit->setText(bssPrefix);
         *loading = false;
         (*resolveAllPtr)();
         tree->expandItem(rootItem);
@@ -1522,13 +1824,13 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // Writes one target's generated .hpp/.cpp pair into `dir`/<target-lower>/,
     // matching the gen/<target>/... layout the #include STRCAT(...) convention
     // (technology.hpp) expects on the consuming side.
-    auto exportOneTarget = [window, rootItem, regionCombo, nametableCombo, linkerPrefixEdit, sceneName](
-                                const QString& dir, const QString& target) -> bool {
+    auto exportOneTarget = [window, rootItem, regionCombo, nametableCombo, linkerPrefixEdit, bssPrefixEdit,
+                             sceneName](const QString& dir, const QString& target) -> bool {
         const QString targetDir = dir + "/" + target.toLower();
         if (!QDir().mkpath(targetDir)) return false;
         const GeneratedFiles files = generateCode(rootItem, target, regionCombo->currentText(),
                                                     nametableCombo->currentIndex(), linkerPrefixEdit->text(),
-                                                    sceneName());
+                                                    bssPrefixEdit->text(), sceneName());
         QFile hppFile(targetDir + "/" + sceneName() + ".hpp");
         QFile cppFile(targetDir + "/" + sceneName() + ".cpp");
         if (!hppFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
@@ -1597,6 +1899,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
                       [markDirtyFromCombo](int) { markDirtyFromCombo(); });
     QObject::connect(linkerPrefixEdit, &QLineEdit::textChanged,
                       [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
+    QObject::connect(bssPrefixEdit, &QLineEdit::textChanged,
+                      [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
 
     // --- Properties panel: shows/edits the selected node's geometry,
     // alignment, and hide-on-Target/Region lists. Hidden entirely (not just
@@ -1616,6 +1920,14 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     auto* alignCombo = new QComboBox(properties);
     auto* textEdit = new QLineEdit(properties);
     auto* splitterEdit = new QLineEdit(properties);
+    // SingleChoice-only: which option child (0-based, in tree order) Make
+    // selects by default -- clamped against the child count at export time,
+    // not here, since the count can change (options added/removed) after
+    // this is set.
+    auto* defaultOptionSpin = new QSpinBox(properties);
+    defaultOptionSpin->setRange(0, 255);
+    defaultOptionSpin->setToolTip("Which option (0-based, in tree order) this SingleChoice starts on.\n"
+                                    "Clamped to the number of option children it actually has on export.");
 
     // Hide-on-Target/Region: a checkable-menu button rather than a list
     // widget, so a multi-select fits the sidebar's width without eating a
@@ -1702,6 +2014,11 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     componentForm->addRow("Text", textEdit);
     componentForm->addRow("Splitter", splitterEdit);
 
+    auto* choiceGroup = new QGroupBox("Choice", properties);
+    auto* choiceForm = new QFormLayout(choiceGroup);
+    choiceForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    choiceForm->addRow("Default Option", defaultOptionSpin);
+
     auto* visibilityGroup = new QGroupBox("Visibility", properties);
     auto* visibilityForm = new QFormLayout(visibilityGroup);
     visibilityForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
@@ -1710,6 +2027,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
 
     propertiesLayout->addWidget(geometryGroup);
     propertiesLayout->addWidget(componentGroup);
+    propertiesLayout->addWidget(choiceGroup);
     propertiesLayout->addWidget(visibilityGroup);
     properties->setVisible(false);
 
@@ -1717,8 +2035,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // edit handlers below (which would otherwise write the same values
     // straight back -- harmless, but pointless).
     auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, textEdit, splitterEdit,
-                         hideTargetsButton, hideTargetActions, hideRegionsButton, hideRegionActions,
-                         updateHideButtonSummary, suppressHideWrite](QTreeWidgetItem* item) {
+                         defaultOptionSpin, hideTargetsButton, hideTargetActions, hideRegionsButton,
+                         hideRegionActions, updateHideButtonSummary, suppressHideWrite](QTreeWidgetItem* item) {
         const QSignalBlocker bx(posXEdit);
         const QSignalBlocker by(posYEdit);
         const QSignalBlocker bw(sizeWEdit);
@@ -1726,6 +2044,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         const QSignalBlocker ba(alignCombo);
         const QSignalBlocker bt(textEdit);
         const QSignalBlocker bs(splitterEdit);
+        const QSignalBlocker bd(defaultOptionSpin);
         auto exprOr = [item](int exprRole, int fallback) {
             const QString s = item->data(0, exprRole).toString();
             return s.isEmpty() ? QString::number(fallback) : s;
@@ -1738,6 +2057,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         textEdit->setText(item->data(0, kTextContentRole).toString());
         const QString splitter = item->data(0, kSplitterRole).toString();
         splitterEdit->setText(splitter.isEmpty() ? QStringLiteral(" ") : splitter);
+        defaultOptionSpin->setValue(item->data(0, kDefaultOptionRole).toInt());
 
         *suppressHideWrite = true;
         const QStringList hideTargets = item->data(0, kHideTargetsRole).toStringList();
@@ -1769,18 +2089,20 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
 
     QObject::connect(
         tree, &QTreeWidget::currentItemChanged,
-        [properties, geometryGroup, componentGroup, visibilityGroup, populateFrom,
+        [properties, geometryGroup, componentGroup, choiceGroup, visibilityGroup, populateFrom,
          updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
             const bool selected = isPrefixedItem(current);
             properties->setVisible(selected);
             // Geometry means nothing for SingleChoice -- it's a pure grouping
             // node, no position/size of its own. Alignment/text/splitter only
             // mean something for a textbox's text -- neither SingleChoice nor
-            // a negative-space zone has any text. Visibility (hide-on-
+            // a negative-space zone has any text. Default Option only means
+            // something for SingleChoice itself. Visibility (hide-on-
             // Target/Region) applies to every prefixed kind, so that group is
             // never toggled off here.
             geometryGroup->setVisible(isGeometryItem(current));
             componentGroup->setVisible(isComponentItem(current));
+            choiceGroup->setVisible(isSingleChoiceItem(current));
             visibilityGroup->setVisible(selected);
             if (selected) {
                 populateFrom(current);
@@ -1796,13 +2118,13 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     QObject::connect(
         tree, &QTreeWidget::itemChanged,
         [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit, sizeHEdit, textEdit,
-         splitterEdit](QTreeWidgetItem* item, int column) {
+         splitterEdit, defaultOptionSpin](QTreeWidgetItem* item, int column) {
             if (column != 0 || item != tree->currentItem() || !isPrefixedItem(item)) {
                 return;
             }
             updateErrorHighlight(item);
             if (posXEdit->hasFocus() || posYEdit->hasFocus() || sizeWEdit->hasFocus() || sizeHEdit->hasFocus() ||
-                textEdit->hasFocus() || splitterEdit->hasFocus()) {
+                textEdit->hasFocus() || splitterEdit->hasFocus() || defaultOptionSpin->hasFocus()) {
                 return;
             }
             populateFrom(item);
@@ -1844,6 +2166,12 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         if (isComponentItem(item)) {
             const QString text = splitterEdit->text();
             item->setData(0, kSplitterRole, text.isEmpty() ? QStringLiteral(" ") : text);
+        }
+    });
+    QObject::connect(defaultOptionSpin, qOverload<int>(&QSpinBox::valueChanged), [tree](int v) {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isSingleChoiceItem(item)) {
+            item->setData(0, kDefaultOptionRole, v);
         }
     });
     // Applies to every prefixed kind (geometry or SingleChoice) -- unlike the
@@ -2345,6 +2673,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     globalForm->addRow("Target:", targetCombo);
     globalForm->addRow("Region:", regionCombo);
     globalForm->addRow("Linker Prefix:", linkerPrefixEdit);
+    globalForm->addRow("BSS Prefix:", bssPrefixEdit);
     layout->addWidget(globalGroup);
 
     dock->setWidget(content);
