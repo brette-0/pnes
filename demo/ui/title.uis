@@ -1,102 +1,123 @@
 {
-  "bss_prefix": "SYSTEM",
-  "charmap": "generic",
-  "data_prefix": "TITLE_DATA",
-  "linker_prefix": "TITLE",
-  "nametable": 3,
-  "nodes": [
-    {
-      "align": 1,
-      "children": [],
-      "hideRegions": [],
-      "hideTargets": [],
-      "kind": "ctTextBox",
-      "name": "[CT] GameTitle",
-      "posXExpr": "1",
-      "posYExpr": "1",
-      "sizeHExpr": "2",
-      "sizeWExpr": "10",
-      "splitter": " ",
-      "text": "Super Mary Sisters"
-    },
-    {
-      "children": [
+    "bss_prefix": "SYSMEM",
+    "charmap": "generic",
+    "data_prefix": "TITLE_DATA",
+    "linker_prefix": "TITLE",
+    "nametable": 3,
+    "nodes": [
         {
-          "align": 0,
-          "children": [],
-          "hideRegions": [],
-          "hideTargets": [],
-          "kind": "ctTextBox",
-          "name": "[CT] NewGame",
-          "posXExpr": "( ( VIEWPORT_TX >> 1 ) << 1 ) - 1 - 8",
-          "posYExpr": "1",
-          "sizeHExpr": "1",
-          "sizeWExpr": "8",
-          "splitter": " ",
-          "text": "New Game"
+            "align": 1,
+            "charmapOverride": "",
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] GameTitle",
+            "posXExpr": "1",
+            "posYExpr": "1",
+            "sizeHExpr": "2",
+            "sizeWExpr": "10",
+            "splitter": " ",
+            "text": "SUPER MARY SISTERS"
         },
         {
-          "align": 0,
-          "children": [],
-          "hideRegions": [],
-          "hideTargets": [],
-          "kind": "ctTextBox",
-          "name": "[CT] Continue",
-          "posXExpr": "NewGame.pos.x",
-          "posYExpr": "NewGame.pos.y + 1",
-          "sizeHExpr": "1",
-          "sizeWExpr": "8",
-          "splitter": " ",
-          "text": "Continue"
-        },
-        {
-          "align": 0,
-          "children": [],
-          "hideRegions": [],
-          "hideTargets": [],
-          "kind": "ctTextBox",
-          "name": "[CT] Options",
-          "posXExpr": "NewGame.pos.x",
-          "posYExpr": "NewGame.pos.y + 2",
-          "sizeHExpr": "1",
-          "sizeWExpr": "7",
-          "splitter": " ",
-          "text": "Options"
-        },
-        {
-          "align": 0,
-          "children": [],
-          "hideRegions": [],
-          "hideTargets": [
-            "NES",
-            "GBA",
-            "GCN",
-            "DS",
-            "DSI",
-            "Wii",
-            "Wii U",
-            "3DS",
-            "Switch",
-            "PSP"
-          ],
-          "kind": "ctTextBox",
-          "name": "[CT] Textbox5",
-          "posXExpr": "NewGame.pos.x",
-          "posYExpr": "NewGame.pos.y + 3",
-          "sizeHExpr": "1",
-          "sizeWExpr": "4",
-          "splitter": " ",
-          "text": "Quit"
+            "children": [
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] NewGame",
+                    "posXExpr": "( ( VIEWPORT_TX >> 1 ) << 1 ) - 1 - 8",
+                    "posYExpr": "1",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "8",
+                    "splitter": " ",
+                    "text": "NEW GAME"
+                },
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] Continue",
+                    "posXExpr": "NewGame.pos.x",
+                    "posYExpr": "NewGame.pos.y + 1",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "8",
+                    "splitter": " ",
+                    "text": "CONTINUE"
+                },
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] Options",
+                    "posXExpr": "NewGame.pos.x",
+                    "posYExpr": "NewGame.pos.y + 2",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "7",
+                    "splitter": " ",
+                    "text": "OPTIONS"
+                },
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                        "NES",
+                        "GBA",
+                        "GCN",
+                        "DS",
+                        "DSI",
+                        "Wii",
+                        "Wii U",
+                        "3DS",
+                        "Switch",
+                        "PSP"
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] Quit",
+                    "posXExpr": "NewGame.pos.x",
+                    "posYExpr": "NewGame.pos.y + 3",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "4",
+                    "splitter": " ",
+                    "text": "QUIT"
+                }
+            ],
+            "defaultOption": 0,
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "singlechoice",
+            "name": "[SC] TitleOptions"
         }
-      ],
-      "defaultOption": 0,
-      "hideRegions": [],
-      "hideTargets": [],
-      "kind": "singlechoice",
-      "name": "[SC] TitleOptions"
-    }
-  ],
-  "region": "NTSC",
-  "target": "NES",
-  "version": 1
+    ],
+    "region": "NTSC",
+    "target": "NES",
+    "version": 1
 }

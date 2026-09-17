@@ -54,8 +54,8 @@ template <> struct mmc3::bank_layout<actor_tag> {
 
 #define COLD CREATE_SEGMENT_KEYWORD(".prg_rom_cold")
 
-// TITLE, TITLE_DATA and SYSTEM are NOT defined here -- CMakeLists.txt injects
-// them as whole compile definitions (from local.cmake's TITLE/SYSTEM) onto
+// TITLE, TITLE_DATA and SYSMEM are NOT defined here -- CMakeLists.txt injects
+// them as whole compile definitions (from local.cmake's TITLE/SYSMEM) onto
 // the `demo` target, so they reach every demo .cpp/generated header without
 // needing this file #included first in the right order. TITLE_DATA is
 // TITLE's own value with ".rodata" appended there, same "distinct section

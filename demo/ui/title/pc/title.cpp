@@ -21,8 +21,8 @@ NI void Draw_Options() {
     ppu::WriteFromBufferToNameTable(vec2<u16>{55, 33}, SIZED_OBJ(Options_row0), 0);
 }
 
-NI void Draw_Textbox5() {
-    ppu::WriteFromBufferToNameTable(vec2<u16>{55, 34}, SIZED_OBJ(Textbox5_row0), 0);
+NI void Draw_Quit() {
+    ppu::WriteFromBufferToNameTable(vec2<u16>{55, 34}, SIZED_OBJ(Quit_row0), 0);
 }
 
 }  // namespace gen::title

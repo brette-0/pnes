@@ -69,7 +69,7 @@ set(PLATFORM_NES_UI_SECTION ".prg_rom_cold" CACHE STRING "" FORCE)
 # CREATE_SEGMENT_KEYWORD-built placement macro your own banks.hpp hands out.
 # These are DEMO-owned, unlike AUDIO/UI_SECTION above (a library concern) --
 # your own scenes' Linker/BSS/Data Prefix fields in uitk name these macros
-# directly, so they're deliberately bare (TITLE/SYSTEM, no
+# directly, so they're deliberately bare (TITLE/SYSMEM, no
 # PLATFORM_NES_/_SECTION dressing) rather than namespaced: whatever you type
 # into uitk's prefix fields is exactly the CMake variable you set here.
 #
@@ -91,7 +91,12 @@ set(PLATFORM_NES_UI_SECTION ".prg_rom_cold" CACHE STRING "" FORCE)
 # relationship demo/src/banks.hpp used to hand-write locally), so there's
 # only ever one placement decision per macro to keep in sync, not two.
 set(TITLE ".prg_rom_cold" CACHE STRING "" FORCE)
-set(SYSTEM ".prg_rom_cold" CACHE STRING "" FORCE)
+# Mirrors mmc3.hpp's own ::SYSMEM (".sysmem", onboard system RAM, NOLOAD --
+# see mmc3-helper.ld's `.sysmem (NOLOAD) : { *(.sysmem .sysmem.*) } >ram`).
+# Generated code can't #include the MMC3 mapper header just to get that
+# macro (it isn't NES-mapper-specific and shouldn't couple to one), so it's
+# fed in from here instead, same as TITLE.
+set(SYSMEM ".sysmem" CACHE STRING "" FORCE)
 
 # ELF section the video module (src/nes/video.cpp) is placed into. OPTIONAL and
 # unset by default, unlike audio's: leave it out and video is inlined into its

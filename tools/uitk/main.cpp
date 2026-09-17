@@ -1161,12 +1161,13 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     // reinterpret_cast refuses; only const_cast may do that). The one
     // non-local mutable field this instance actually exposes is already
     // protected at its source.
-    // alignas MUST precede inline here -- `inline alignas(...)` is invalid
-    // (clang: "an attribute list cannot appear here"/"'alignas' attribute
-    // cannot be applied to types"), while `alignas(...) inline` and
-    // `<attribute> alignas(...) inline` both parse fine. Confirmed against
-    // both host clang and llvm-mos's mos-nes-clang++.
-    lines << QString("%1alignas(ui::choice::SingleChoice) inline u8 %2_storage[sizeof(ui::choice::SingleChoice)];")
+    // alignas must come first: `<attribute> alignas(...) inline` fails to
+    // parse at namespace scope (clang: "an attribute list cannot appear
+    // here") on both host clang and mos-nes-clang++, but
+    // `alignas(...) <attribute> inline` is fine -- global scope doesn't
+    // trigger it either way, but every generated decl here lives in
+    // namespace gen::<scene>, so it matters.
+    lines << QString("alignas(ui::choice::SingleChoice) %1inline u8 %2_storage[sizeof(ui::choice::SingleChoice)];")
                  .arg(bssPrefixTok, name);
     lines << QString("inline ui::choice::SingleChoice& %1 = reinterpret_cast<ui::choice::SingleChoice&>(%1_storage);")
                  .arg(name);
@@ -1318,27 +1319,12 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     if (!usedCharmapFns.isEmpty()) {
         QStringList sorted(usedCharmapFns.begin(), usedCharmapFns.end());
         sorted.sort();
-        charmapNote = QString("\n// NOTE: %1 must already be in scope wherever this header is included -- "
-                               "same requirement as any other CHARMAP consumer (see technology.hpp's CHARMAP macro).\n")
-                          .arg(sorted.join(", "));
+        charmapNote = QString("\n// NOTE: %1 must already be in scope here.\n").arg(sorted.join(", "));
     }
 
-    // Same "declared here, provided by the project" contract as charmapNote
-    // above, for Linker/BSS/Data Prefix: each names a CREATE_SEGMENT_KEYWORD-
-    // built placement macro (see technology.hpp) that only exists once the
-    // exporting project feeds it in as a compile definition from its own
-    // local.cmake -- this header references the macro by name but, same as
-    // a lib function declared without a definition, never supplies one
-    // itself, and it's deliberately not something a source file should
-    // #define either (see demo/src/banks.hpp's own comment on this). Unlike
-    // charmap functions, these ARE preprocessor macros, so a missing one is
-    // actually detectable at preprocessing time -- so instead of only a
-    // comment, emit a real #ifndef/#error guard per macro (segmentGuards
-    // below), same pattern already used project-wide for
-    // PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION (see e.g.
-    // src/all/extras/ui/text.cpp): a missing definition fails the build with
-    // a message naming exactly what to add and where, instead of a bare
-    // "undeclared identifier" pointing at some unrelated use site below.
+    // Linker/BSS/Data Prefix macros must be fed in from local.cmake (see
+    // CMakeLists.txt's DEMO_PLACEMENT_DEFINES) -- #error here if one's
+    // missing, same #ifndef/#error pattern as PLATFORM_NES_AUDIO_SECTION/UI.
     QSet<QString> usedSegmentMacros;
     if (isNes) {
         for (const QString& p : {linkerPrefix.trimmed(), bssPrefix.trimmed(), dataPrefix.trimmed()}) {
@@ -1352,11 +1338,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
         QStringList guardLines;
         for (const QString& macroName : sorted) {
             guardLines << QString("#ifndef %1\n"
-                                   "#error \"%1 is not defined. It's a CREATE_SEGMENT_KEYWORD-built placement "
-                                   "macro this generated header references (see technology.hpp) -- set it in your "
-                                   "project's local.cmake and feed it in as a compile definition, the same way "
-                                   "PLATFORM_NES_AUDIO_SECTION/PLATFORM_NES_UI_SECTION already are for the audio/UI "
-                                   "libraries. Not something a source file should #define.\"\n"
+                                   "#error \"%1 is not set -- add it to local.cmake.\"\n"
                                    "#endif")
                             .arg(macroName);
         }

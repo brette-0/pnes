@@ -229,25 +229,30 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             "PLATFORM_NES_UI_SECTION=\"${PLATFORM_NES_UI_SECTION}\"")
 
     # ------------------------------------------------------------------
-    # TITLE / SYSTEM: placement for uitk-generated UI code (and any other
+    # TITLE / SYSMEM: placement for uitk-generated UI code (and any other
     # CREATE_SEGMENT_KEYWORD-built macro demo/src/banks.hpp hands out).
-    # DEMO-owned rather than library-owned like AUDIO/UI_SECTION above, so
-    # these aren't set_source_files_properties()'d onto a fixed file list --
-    # a generated scene's header can be #included from any demo .cpp, so the
-    # definitions below go on the `demo` target as a whole (further down,
-    # once that target exists) instead. Compulsory, same "no silent guess"
-    # stance as AUDIO/UI_SECTION; see local.cmake.example for why these are
-    # bare/ALL_CAPS rather than PLATFORM_NES_*_SECTION-namespaced.
+    # SYSMEM mirrors mmc3.hpp's own ::SYSMEM (".sysmem", onboard system RAM,
+    # NOLOAD -- see mmc3-helper.ld) -- generated code can't just
+    # #include <platform-nes/mappers/mmc3.hpp> to get that macro (it isn't
+    # NES-mapper-specific and shouldn't couple to one), so it's fed in here
+    # instead, same as TITLE. DEMO-owned rather than library-owned like
+    # AUDIO/UI_SECTION above, so these aren't set_source_files_properties()'d
+    # onto a fixed file list -- a generated scene's header can be #included
+    # from any demo .cpp, so the definitions below go on the `demo` target as
+    # a whole (further down, once that target exists) instead. Compulsory,
+    # same "no silent guess" stance as AUDIO/UI_SECTION; see
+    # local.cmake.example for why these are bare/ALL_CAPS rather than
+    # PLATFORM_NES_*_SECTION-namespaced.
     # ------------------------------------------------------------------
     if(NOT TITLE)
         message(FATAL_ERROR
                 "TITLE is not set. It names the ELF section uitk-generated "
                 "title-scene code/data is placed into. See local.cmake.example.")
     endif()
-    if(NOT SYSTEM)
+    if(NOT SYSMEM)
         message(FATAL_ERROR
-                "SYSTEM is not set. It names the ELF section uitk-generated "
-                "code using the \"SYSTEM\" Linker Prefix is placed into. "
+                "SYSMEM is not set. It names the ELF section uitk-generated "
+                "code using the \"SYSMEM\" Linker Prefix is placed into. "
                 "See local.cmake.example.")
     endif()
 
@@ -641,18 +646,18 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     )
     target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
-    # TITLE/TITLE_DATA/SYSTEM, once as a list so both compile paths that see
+    # TITLE/TITLE_DATA/SYSMEM, once as a list so both compile paths that see
     # demo/*.cpp stay in sync: the real `demo` target below (normal
     # target_compile_definitions), AND the hand-rolled PASS1_ELF compiler
     # invocation just below, which bypasses every CMake target property
     # (its own comment explains why) and so does NOT inherit anything set on
     # `demo` -- these have to be threaded through explicitly as raw -D flags
     # or uitk-generated demo/ui/**/*.cpp fails this diagnostic build with the
-    # very #error guards TITLE/SYSTEM exist to produce.
+    # very #error guards TITLE/SYSMEM exist to produce.
     set(DEMO_PLACEMENT_DEFINES
             "TITLE=CREATE_SEGMENT_KEYWORD(\"${TITLE}\")"
             "TITLE_DATA=CREATE_SEGMENT_KEYWORD(\"${TITLE}.rodata\")"
-            "SYSTEM=CREATE_SEGMENT_KEYWORD(\"${SYSTEM}\")")
+            "SYSMEM=CREATE_SEGMENT_KEYWORD(\"${SYSMEM}\")")
     list(TRANSFORM DEMO_PLACEMENT_DEFINES PREPEND "-D" OUTPUT_VARIABLE DEMO_PLACEMENT_FLAGS)
 
     file(GLOB_RECURSE DEMO_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/*.cpp)
@@ -666,6 +671,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             # silencer must be set explicitly to match the demo target. -x c++
             # forces the C++ frontend for the source inputs.
             -std=gnu++23 -Wno-c23-extensions -x c++
+            -include ${CMAKE_SOURCE_DIR}/demo/src/graphics/charmaps.hpp
             -Os ${PLATFORM_DEFINE_FLAGS} ${DEMO_PLACEMENT_FLAGS} -D${ORIENTATION}
             # Reserve 10 ZP bytes for FamiStudio (8 vars + 2 alignment slack).
             # mos-nes.cfg defaults to -mlto-zp=224 (the full region); capping at
@@ -743,7 +749,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
 
     target_link_libraries(demo PRIVATE platform-nes)
 
-    # TITLE/TITLE_DATA/SYSTEM as real, whole-macro compile definitions (not
+    # TITLE/TITLE_DATA/SYSMEM as real, whole-macro compile definitions (not
     # just the section-name strings AUDIO/UI_SECTION feed into a locally
     # #define'd macro) -- so they reach every demo .cpp/generated header
     # without depending on banks.hpp having been #included first in the
@@ -2103,3 +2109,9 @@ endif()
 # has created the platform-nes target by this point): 0 for NTSC (every
 # target's default) or 1 for the nes_pal target set above.
 target_compile_definitions(platform-nes PUBLIC REGION=${REGION})
+
+# uitk-generated title.cpp (every target dir under demo/ui/title/) uses
+# charmap_generic but never includes demo/src/graphics/charmaps.hpp itself --
+# force it in ahead of every demo TU instead. Safe project-wide: it's just a
+# constexpr inline function (see its own header comment -- no ODR/LTO cost).
+target_compile_options(demo PRIVATE -include ${CMAKE_SOURCE_DIR}/demo/src/graphics/charmaps.hpp)
