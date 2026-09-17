@@ -944,6 +944,8 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
 // edits its text content. Both act through the tree item's data roles, so
 // the sidebar's properties panel and the canvas always agree.
 class TileGridWidget : public QWidget {
+    static constexpr double kGlyphSupersample = 4.0;
+
 public:
     TileGridWidget(double tilePx, QTreeWidget* tree, QComboBox* targetCombo, QComboBox* regionCombo,
                    QWidget* parent = nullptr)
@@ -951,9 +953,13 @@ public:
         // A monospace font from the OS, sized to fill most of a cell's
         // height -- its glyphs are narrower than they are tall, though, so
         // drawCellGlyph() additionally stretches each one horizontally to
-        // fill the (square) cell edge-to-edge.
+        // fill the (square) cell edge-to-edge. Rasterized several times
+        // larger than the cell (kGlyphSupersample) and then scaled back down
+        // with SmoothPixmapTransform -- at typical tile sizes (a handful of
+        // pixels), rendering directly at the target size produces glyphs too
+        // small for FreeType to hint/antialias legibly.
         glyphFont_ = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-        glyphFont_.setPixelSize(std::max(1, qRound(tilePx_ * 0.75)));
+        glyphFont_.setPixelSize(std::max(1, qRound(tilePx_ * 0.75 * kGlyphSupersample)));
         naturalGlyphWidthPx_ = std::max(1, QFontMetrics(glyphFont_).horizontalAdvance(QLatin1Char('M')));
         naturalGlyphHeightPx_ = std::max(1, QFontMetrics(glyphFont_).height());
     }
@@ -962,6 +968,7 @@ protected:
     void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
         painter.fillRect(rect(), Qt::black);
 
         // Negative-space zones paint first, one flat red cell at a time --
