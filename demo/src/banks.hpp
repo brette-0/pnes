@@ -54,13 +54,33 @@ template <> struct mmc3::bank_layout<actor_tag> {
 
 #define COLD CREATE_SEGMENT_KEYWORD(".prg_rom_cold")
 
-// TITLE, TITLE_DATA and SYSMEM are NOT defined here -- CMakeLists.txt injects
-// them as whole compile definitions (from local.cmake's TITLE/SYSMEM) onto
-// the `demo` target, so they reach every demo .cpp/generated header without
-// needing this file #included first in the right order. TITLE_DATA is
-// TITLE's own value with ".rodata" appended there, same "distinct section
-// NAME, same physical bank as ::COLD/::TITLE" reasoning as before (clang/LLD
-// reject code and data sharing one section's literal name).
+// On TARGET_NES, TITLE and TITLE_DATA are NOT defined here -- CMakeLists.txt
+// injects them as whole compile definitions (from local.cmake's TITLE) onto
+// the `demo` target instead, so they reach every demo .cpp/generated header
+// without needing this file #included first in the right order, and so a
+// developer's local.cmake choice of bank actually takes effect (a #define
+// here would silently win over that -D once this header's included, same
+// footgun the CallInLevelGraphics fallback below avoids with its own
+// TARGET_NES guard). TITLE_DATA is TITLE's own value with ".rodata" appended
+// there, same "distinct section NAME, same physical bank as ::COLD/::TITLE"
+// reasoning as before (clang/LLD reject code and data sharing one section's
+// literal name).
+//
+// Off NES, nothing generates those -D flags at all (CMakeLists.txt's
+// DEMO_PLACEMENT_DEFINES only exists in the nes/nes_pal branch) -- but
+// shared code (demo/src/graphics/{colours,strings}.hpp, uitk-generated
+// title.cpp, ...) still tags data with TITLE/TITLE_DATA unconditionally, the
+// same way it uses ::COLD or ::ACTORS. Those compile everywhere because
+// CREATE_SEGMENT_KEYWORD itself is a no-op off NES (technology.hpp) --
+// TITLE/TITLE_DATA just need *a* definition to reach that no-op, which
+// nothing else was ever providing. The literal section name passed here is
+// irrelevant off NES (CREATE_SEGMENT_KEYWORD discards it), so there's no
+// bank/placement decision being made -- just filling in a macro every other
+// platform never had.
+#ifndef TARGET_NES
+#define TITLE CREATE_SEGMENT_KEYWORD("")
+#define TITLE_DATA CREATE_SEGMENT_KEYWORD("")
+#endif
 
 #define LEVEL_CODE CREATE_SEGMENT_KEYWORD(".prg_rom_level_code")
 
