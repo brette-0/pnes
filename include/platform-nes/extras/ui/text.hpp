@@ -11,6 +11,13 @@ using namespace br0::intsh;
 // text boxes
 
 namespace ui::text {
+    enum Alignment : u8 {
+        Left,
+        Centre,
+        Right
+    };
+
+
     /*
      *  Same wrapping rule as Draw, but instead of writing rows to the
      *  nametable it records where each row would have started and how
@@ -61,16 +68,41 @@ namespace ui::text {
      *  always_inline needs to accept a body under LTO -- see ::AI's own
      *  comment in technology.hpp.
      */
-    inline AI void Draw(const buffer<u8*>* rows, const u16 address, const u8 height) {
+    template <Alignment align>
+    AI void Draw(const buffer<u8*>* rows, u16 address, vec2<u8> box);
+
+    template <>
+    AI inline void Draw<Left>(const buffer<u8*>* rows, const u16 address, const vec2<u8> box) {
         ppu::WriteFromBufferToNameTable(address, rows[0].addr, rows[0].size, 0);
         u16 rowAddr = address;
-        for (u8 i = 1; i < height; i++) {
+        for (u8 i = 1; i < box.y; i++) {
             rowAddr += video::viewport_tx();
             ppu::WriteFromBufferToNameTable(rowAddr, rows[i].addr, rows[i].size, i);
         }
     }
 
-    inline AI void Draw(const buffer<u8*>* chunks, const vec2<u16> pos, const u8 boxY) {
-        Draw(chunks, ppu::CartesianToAddress(pos), boxY);
+    template <>
+    AI inline void Draw<Centre>(const buffer<u8*>* rows, const u16 address, const vec2<u8> box) {
+        u16 rowBase = address;
+        ppu::WriteFromBufferToNameTable(rowBase + (box.x - rows[0].size) / 2, rows[0].addr, rows[0].size, 0);
+        for (u8 i = 1; i < box.y; i++) {
+            rowBase += video::viewport_tx();
+            ppu::WriteFromBufferToNameTable(rowBase + (box.x - rows[i].size) / 2, rows[i].addr, rows[i].size, i);
+        }
+    }
+
+    template <>
+    AI inline void Draw<Right>(const buffer<u8*>* rows, const u16 address, const vec2<u8> box) {
+        u16 rowBase = address;
+        ppu::WriteFromBufferToNameTable(rowBase + (box.x - rows[0].size), rows[0].addr, rows[0].size, 0);
+        for (u8 i = 1; i < box.y; i++) {
+            rowBase += video::viewport_tx();
+            ppu::WriteFromBufferToNameTable(rowBase + (box.x - rows[i].size), rows[i].addr, rows[i].size, i);
+        }
+    }
+
+    template <Alignment align>
+    AI void Draw(const buffer<u8*>* chunks, const vec2<u16> pos, const u8 boxY) {
+        Draw<align>(chunks, ppu::CartesianToAddress(pos), boxY);
     }
 }
