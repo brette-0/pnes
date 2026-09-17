@@ -57,6 +57,7 @@
 #include <map>
 #include <optional>
 #include <utility>
+#include <cstdio>
 
 namespace {
 
@@ -1635,6 +1636,14 @@ struct Sidebar {
     QLineEdit* yEdit;
     QComboBox* targetCombo;
     QComboBox* regionCombo;
+
+    // Exposed for the headless CLI export path (see runCliExport), which
+    // needs the same load/resolve/export machinery the File/Export menu
+    // actions use, but driven by argv instead of dialogs.
+    std::function<QString()> sceneName;
+    std::function<bool(const QString&)> loadScene;
+    std::function<bool()> hasUnresolvedErrors;
+    std::function<bool(const QString&, const QString&)> exportOneTarget;
 };
 
 // `maxTilesX`/`maxTilesY` bound the fields to whatever will actually fit on
@@ -1946,16 +1955,13 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         updateTitle();
     };
 
-    auto doOpen = [window, tree, rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard,
-                   resolveAllPtr, nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit,
-                   dataPrefixEdit, charmapEdit] {
-        if (!confirmDiscard()) {
-            return;
-        }
-        const QString path = QFileDialog::getOpenFileName(window, "Open Scene", QString(), "UI Scene (*.uis)");
-        if (path.isEmpty()) {
-            return;
-        }
+    // Parses `path` and rebuilds the tree/combos from it wholesale -- the
+    // guts of Open, factored out so the headless CLI export path (see
+    // runCliExport) can load a scene the exact same way without going
+    // through a file-picker dialog or the unsaved-changes prompt.
+    auto loadSceneFromFile = [tree, rootItem, currentPath, dirty, loading, updateTitle, resolveAllPtr,
+                               nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit,
+                               dataPrefixEdit, charmapEdit](const QString& path) -> bool {
         // Parse before touching the tree, so a corrupt/unreadable file never
         // wipes out whatever scene was already open.
         QJsonArray nodes;
@@ -1967,8 +1973,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         QString dataPrefix;
         QString charmap;
         if (!parseUisFile(path, nodes, nametable, target, region, linkerPrefix, bssPrefix, dataPrefix, charmap)) {
-            QMessageBox::warning(window, "Open Failed", "Could not read file:\n" + path);
-            return;
+            return false;
         }
         // An unrecognized or missing target/region (an older file, or a
         // hand-edited one) falls back to the first entry rather than leaving
@@ -1993,6 +1998,20 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         *currentPath = path;
         *dirty = false;
         updateTitle();
+        return true;
+    };
+
+    auto doOpen = [window, confirmDiscard, loadSceneFromFile] {
+        if (!confirmDiscard()) {
+            return;
+        }
+        const QString path = QFileDialog::getOpenFileName(window, "Open Scene", QString(), "UI Scene (*.uis)");
+        if (path.isEmpty()) {
+            return;
+        }
+        if (!loadSceneFromFile(path)) {
+            QMessageBox::warning(window, "Open Failed", "Could not read file:\n" + path);
+        }
     };
 
     auto* fileMenu = window->menuBar()->addMenu("&File");
@@ -2018,25 +2037,48 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         return false;
     };
 
+    // Writes `content` to `path`, but only touches the file (and its mtime)
+    // when the content actually differs -- and always logs which happened to
+    // stdout. A GUI export has QMessageBox for outcomes, but a headless CLI
+    // export (see runCliExport, invoked from CMake's uitk-export target and
+    // CI's codegen-check job) has nothing *but* this to tell a caller what
+    // was and wasn't updated -- that's the log a `cmake --build --target
+    // uitk-export` run shows.
+    auto writeIfChanged = [](const QString& path, const QString& content) -> bool {
+        QFile file(path);
+        const bool existedBefore = file.exists();
+        if (existedBefore && file.open(QIODevice::ReadOnly)) {
+            const bool unchanged = (QString::fromUtf8(file.readAll()) == content);
+            file.close();
+            if (unchanged) {
+                std::fprintf(stdout, "  unchanged  %s\n", qPrintable(path));
+                return true;
+            }
+        }
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            std::fprintf(stderr, "  FAILED     %s\n", qPrintable(path));
+            return false;
+        }
+        file.write(content.toUtf8());
+        std::fprintf(stdout, "  %s    %s\n", existedBefore ? "updated" : "created", qPrintable(path));
+        return true;
+    };
+
     // Writes one target's generated .hpp/.cpp pair into `dir`/<target-lower>/,
     // matching the gen/<target>/... layout the #include STRCAT(...) convention
     // (technology.hpp) expects on the consuming side.
     auto exportOneTarget = [window, rootItem, regionCombo, nametableCombo, linkerPrefixEdit, bssPrefixEdit,
-                             dataPrefixEdit, charmapEdit,
-                             sceneName](const QString& dir, const QString& target) -> bool {
+                             dataPrefixEdit, charmapEdit, sceneName,
+                             writeIfChanged](const QString& dir, const QString& target) -> bool {
         const QString targetDir = dir + "/" + target.toLower();
         if (!QDir().mkpath(targetDir)) return false;
         const GeneratedFiles files = generateCode(rootItem, target, regionCombo->currentText(),
                                                     nametableCombo->currentIndex(), linkerPrefixEdit->text(),
                                                     bssPrefixEdit->text(), dataPrefixEdit->text(),
                                                     charmapEdit->text(), sceneName());
-        QFile hppFile(targetDir + "/" + sceneName() + ".hpp");
-        QFile cppFile(targetDir + "/" + sceneName() + ".cpp");
-        if (!hppFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
-        if (!cppFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
-        hppFile.write(files.hpp.toUtf8());
-        cppFile.write(files.cpp.toUtf8());
-        return true;
+        const bool hppOk = writeIfChanged(targetDir + "/" + sceneName() + ".hpp", files.hpp);
+        const bool cppOk = writeIfChanged(targetDir + "/" + sceneName() + ".cpp", files.cpp);
+        return hppOk && cppOk;
     };
 
     auto doExportTarget = [window, hasUnresolvedErrors, exportOneTarget]() {
@@ -2921,7 +2963,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     updateGlobalSceneVisibility(tree->currentItem());
 
     dock->setWidget(content);
-    return {dock, tree, xEdit, yEdit, targetCombo, regionCombo};
+    return {dock, tree, xEdit, yEdit, targetCombo, regionCombo,
+             sceneName, loadSceneFromFile, hasUnresolvedErrors, exportOneTarget};
 }
 
 // Creates the viewport panel widget (not yet parented), sized to
@@ -2991,9 +3034,151 @@ ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidge
     return {grid, [sync] { (*sync)(); }};
 }
 
+// Matches `target` against kTargetNames case-insensitively (a CLI caller
+// shouldn't have to get "NES" vs "nes" exactly right) and returns the
+// canonically-cased entry -- what exportOneTarget's own Target-name
+// comparisons (and its lower-cased output directory) expect. Empty if
+// `target` doesn't match any known target.
+QString canonicalTargetName(const QString& target) {
+    for (const QString& t : kTargetNames) {
+        if (t.compare(target, Qt::CaseInsensitive) == 0) return t;
+    }
+    return QString();
+}
+
+// Headless -e/-E CLI export path. Builds the exact same sidebar
+// (tree/combos/resolver) the interactive GUI does -- so a CLI export always
+// produces byte-identical output to what File > Export would write for the
+// same .uis file -- but never shows the window or enters the event loop.
+// `outputPath` is the gen/ root; exportOneTarget (see createSidebar) writes
+// each target's pair under `outputPath/<target-lower>/<sceneName>.hpp|.cpp`.
+int runCliExport(int argc, char** argv, bool exportAll, const QString& inputPath, const QString& outputPath,
+                  const QString& target) {
+    QApplication app(argc, argv);
+
+    UitkMainWindow window;
+    QScreen* screen = QGuiApplication::screenAt(QCursor::pos());
+    if (!screen) {
+        screen = app.primaryScreen();
+    }
+    const double tilePx = tilePxForScreen(screen->geometry());
+    const int sidebarWidthPx = sidebarWidthForScreen(screen->geometry());
+    const QRect available = screen->availableGeometry();
+    const int maxTilesX = std::max(
+        1, static_cast<int>((available.width() - sidebarWidthPx - kWindowChromeMarginPx) / tilePx));
+    const int maxTilesY =
+        std::max(1, static_cast<int>((available.height() - kWindowChromeMarginPx) / tilePx));
+
+    const Sidebar sidebar = createSidebar(&window, sidebarWidthPx, maxTilesX, maxTilesY, tilePx);
+
+    if (!sidebar.loadScene(inputPath)) {
+        std::fprintf(stderr, "uitk: could not read scene file: %s\n", qPrintable(inputPath));
+        return 1;
+    }
+    if (sidebar.hasUnresolvedErrors()) {
+        std::fprintf(stderr,
+                      "uitk: cannot export %s: one or more components have unresolved properties\n",
+                      qPrintable(inputPath));
+        return 1;
+    }
+
+    std::fprintf(stdout, "uitk: exporting %s (scene \"%s\") to %s\n", qPrintable(inputPath),
+                 qPrintable(sidebar.sceneName()), qPrintable(outputPath));
+
+    if (exportAll) {
+        QStringList failed;
+        for (const QString& t : kTargetNames) {
+            std::fprintf(stdout, "%s:\n", qPrintable(t));
+            if (!sidebar.exportOneTarget(outputPath, t)) failed << t;
+        }
+        if (!failed.isEmpty()) {
+            std::fprintf(stderr, "uitk: could not write generated files for: %s\n",
+                          qPrintable(failed.join(", ")));
+            return 1;
+        }
+        std::fprintf(stdout, "uitk: exported %d target(s) successfully\n", static_cast<int>(kTargetNames.size()));
+        return 0;
+    }
+
+    const QString canonicalTarget = canonicalTargetName(target);
+    if (canonicalTarget.isEmpty()) {
+        std::fprintf(stderr, "uitk: unknown target \"%s\" -- expected one of: %s\n", qPrintable(target),
+                      qPrintable(kTargetNames.join(", ")));
+        return 1;
+    }
+    std::fprintf(stdout, "%s:\n", qPrintable(canonicalTarget));
+    if (!sidebar.exportOneTarget(outputPath, canonicalTarget)) {
+        std::fprintf(stderr, "uitk: could not write generated files to: %s\n", qPrintable(outputPath));
+        return 1;
+    }
+    std::fprintf(stdout, "uitk: export complete\n");
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    // -e/--export and -E/--export-all switch into the headless CLI export
+    // path (runCliExport) instead of the normal GUI -- parsed by hand, ahead
+    // of QApplication ever touching argv, so this works from a script or CI
+    // job with no display server at all (QT_QPA_PLATFORM is forced to
+    // "offscreen" below unless the caller already set it).
+    //
+    //   -e, --export       export a single target (requires -t/--target)
+    //   -E, --export-all   export every target kTargetNames lists
+    //   -i, --input        the .uis scene file to load
+    //   -o, --output       output root; writes <output>/<target>/<name>.hpp|.cpp
+    //   -t, --target       target to export (only with -e/--export)
+    bool cliExport = false;
+    bool cliExportAll = false;
+    QString cliInput;
+    QString cliOutput;
+    QString cliTarget;
+    for (int i = 1; i < argc; ++i) {
+        const QString arg = QString::fromLocal8Bit(argv[i]);
+        const bool wantsValue = (arg == "-i" || arg == "--input" || arg == "-o" || arg == "--output" ||
+                                  arg == "-t" || arg == "--target");
+        if (wantsValue && i + 1 >= argc) {
+            std::fprintf(stderr, "uitk: %s requires an argument\n", qPrintable(arg));
+            return 1;
+        }
+        if (arg == "-e" || arg == "--export") {
+            cliExport = true;
+        } else if (arg == "-E" || arg == "--export-all") {
+            cliExportAll = true;
+        } else if (arg == "-i" || arg == "--input") {
+            cliInput = QString::fromLocal8Bit(argv[++i]);
+        } else if (arg == "-o" || arg == "--output") {
+            cliOutput = QString::fromLocal8Bit(argv[++i]);
+        } else if (arg == "-t" || arg == "--target") {
+            cliTarget = QString::fromLocal8Bit(argv[++i]);
+        }
+    }
+
+    if (cliExport || cliExportAll) {
+        if (cliExport && cliExportAll) {
+            std::fprintf(stderr, "uitk: -e/--export and -E/--export-all are mutually exclusive\n");
+            return 1;
+        }
+        if (cliInput.isEmpty()) {
+            std::fprintf(stderr, "uitk: -e/-E requires -i/--input <scene.uis>\n");
+            return 1;
+        }
+        if (cliOutput.isEmpty()) {
+            std::fprintf(stderr, "uitk: -e/-E requires -o/--output <output dir>\n");
+            return 1;
+        }
+        if (cliExport && cliTarget.isEmpty()) {
+            std::fprintf(stderr, "uitk: -e/--export requires -t/--target <target> "
+                                  "(use -E/--export-all to export every target instead)\n");
+            return 1;
+        }
+        if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
+            qputenv("QT_QPA_PLATFORM", "offscreen");
+        }
+        return runCliExport(argc, argv, cliExportAll, cliInput, cliOutput, cliTarget);
+    }
+
     QApplication app(argc, argv);
 
     UitkMainWindow window;

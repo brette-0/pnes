@@ -35,6 +35,13 @@
 #   act cannot emulate GitHub's macOS/Windows runners, so the `mac-arm64`,
 #   `mac-x64`, `win-x64`, `win-x86` and `win-arm64` jobs are GitHub-hosted
 #   only -- there is no local equivalent on a Linux box.
+#
+#   Every platform job needs codegen-check (below), which builds tools/uitk
+#   (needs Qt) and verifies demo/ui/title/*/title.hpp|.cpp match what
+#   demo/ui/title.uis actually exports. Reproduce it locally with:
+#
+#       cmake --build <builddir> --target uitk-export
+#       git diff demo/ui/title
 name: CI
 
 on:
@@ -50,8 +57,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Gates every platform build below: regenerates demo/ui/title/*/title.hpp|
+  # .cpp from demo/ui/title.uis via uitk (tools/uitk) and fails if that
+  # differs from what's committed -- catching a hand-edited generated file,
+  # or a .uis edit that was never re-exported, before wasting time building
+  # 11+ platforms against stale codegen. The platform jobs use the committed
+  # files as-is (most of their Docker images/runners don't have Qt at all);
+  # this is the only job that ever builds/runs uitk itself. Reproduce
+  # locally with a Qt install: `cmake --build <builddir> --target uitk-export`
+  # (see CMakeLists.txt), then `git diff demo/ui/title`.
+  codegen-check:
+    name: Codegen check (uitk export)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Qt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev
+
+      - name: Build uitk
+        run: |
+          cmake -S tools/uitk -B tools/uitk/build/ci
+          cmake --build tools/uitk/build/ci -j"$(nproc)"
+
+      - name: Regenerate demo/ui/title/*/title.hpp|.cpp
+        run: |
+          tools/uitk/build/ci/uitk --export-all \
+            --input demo/ui/title.uis \
+            --output demo/ui/title
+
+      - name: Verify generated files match what's committed
+        run: |
+          if ! git diff --exit-code -- demo/ui/title; then
+            echo "::error::demo/ui/title/*/title.hpp|.cpp are out of sync with demo/ui/title.uis." \
+                 "Run 'cmake --build <builddir> --target uitk-export' and commit the result."
+            exit 1
+          fi
+
   nes:
     name: NES (ROM)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -76,6 +123,7 @@ jobs:
 
   nes-pal:
     name: NES PAL (ROM)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -100,6 +148,7 @@ jobs:
 
   gc:
     name: GameCube (.dol)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -122,6 +171,7 @@ jobs:
 
   wii:
     name: Wii (.dol)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -144,6 +194,7 @@ jobs:
 
   ctr:
     name: 3DS (.3dsx)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -166,6 +217,7 @@ jobs:
 
   switch:
     name: Switch (.nro)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -188,6 +240,7 @@ jobs:
 
   nds:
     name: Nintendo DS (.nds)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -210,6 +263,7 @@ jobs:
 
   dsi:
     name: Nintendo DSi (.nds)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -232,6 +286,7 @@ jobs:
 
   wiiu:
     name: Wii U (.rpx)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -274,6 +329,7 @@ jobs:
 
   linux-x64:
     name: Linux (x64) (AppImage)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -303,6 +359,7 @@ jobs:
 
   linux-x86:
     name: Linux (x86) (AppImage)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -337,6 +394,7 @@ jobs:
 
   linux-arm64:
     name: Linux (ARM64) (AppImage)
+    needs: codegen-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -370,6 +428,7 @@ jobs:
 
   mac-arm64:
     name: macOS (ARM64) (app)
+    needs: codegen-check
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -400,6 +459,7 @@ jobs:
 
   mac-x64:
     name: macOS (x64) (app)
+    needs: codegen-check
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -430,6 +490,7 @@ jobs:
 
   win-x64:
     name: Windows (x64) (exe)
+    needs: codegen-check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -468,6 +529,7 @@ jobs:
 
   win-x86:
     name: Windows (x86) (exe)
+    needs: codegen-check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -506,6 +568,7 @@ jobs:
 
   win-arm64:
     name: Windows (ARM64) (exe)
+    needs: codegen-check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7

@@ -660,7 +660,14 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             "SYSMEM=CREATE_SEGMENT_KEYWORD(\"${SYSMEM}\")")
     list(TRANSFORM DEMO_PLACEMENT_DEFINES PREPEND "-D" OUTPUT_VARIABLE DEMO_PLACEMENT_FLAGS)
 
+    # demo/ui/title/ holds one uitk-generated title.cpp per console, all
+    # sharing the same gen::title:: symbol names -- glob only the one this
+    # target actually builds, or every other platform's title.cpp comes
+    # along too and the linker sees duplicate symbols for all of them.
     file(GLOB_RECURSE DEMO_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/*.cpp)
+    list(FILTER DEMO_C_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/ui/title/nes/*.cpp)
+    list(APPEND DEMO_C_SOURCES ${DEMO_TITLE_SOURCES})
 
     set(PASS1_ELF ${CMAKE_BINARY_DIR}/demo_pass1.elf)
     add_custom_command(
@@ -832,8 +839,10 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "wii")
 
     if(TARGET_PLATFORM STREQUAL "gc")
         set(PLATFORM_DEFINE TARGET_GC)
+        set(DEMO_TITLE_DIR gcn)
     else()
         set(PLATFORM_DEFINE TARGET_WII)
+        set(DEMO_TITLE_DIR wii)
     endif()
 
     # Alternative nametable wiring (see the TARGET_NES branch's own comment,
@@ -914,6 +923,9 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "wii")
                 COMPILE_OPTIONS "--embed-dir=${OGC_ASSET_DIR}")
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+    list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
     # (being the includer) emits the folded CHR ROM image. Declare the art as an
@@ -974,6 +986,8 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
     FetchContent_MakeAvailable(intsh tuple)
 
+    set(DEMO_TITLE_DIR 3ds)
+
     # The 3DS backend presents the shared software PPU (src/emu) through citro2d:
     # the emulator and all the nametable/OAM/palette write functions are
     # platform-agnostic and compiled here alongside the citro2d video/present,
@@ -997,6 +1011,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+    list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
     # (being the includer) emits the folded CHR ROM image. Declare the art as an
@@ -1060,6 +1077,8 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
         FetchContent_MakeAvailable(intsh tuple)
 
+        set(DEMO_TITLE_DIR switch)
+
         # The Switch backend presents the shared software PPU (src/emu): the
         # emulator and all the nametable/OAM/palette write functions are
         # platform-agnostic and compiled here alongside the libnx framebuffer
@@ -1083,6 +1102,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1173,6 +1195,8 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
         FetchContent_MakeAvailable(intsh tuple)
 
+        set(DEMO_TITLE_DIR "wii u")
+
         # The SDL2 Wii U portlib (devkitPro package wiiu-sdl2). Its CMake config
         # provides the SDL2::SDL2-static imported target, whose interface pulls in
         # the GX2/coreinit/VPAD system libs it wraps.
@@ -1244,6 +1268,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                     COMPILE_OPTIONS "--embed-dir=${WIIU_ASSET_DIR}")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1412,6 +1439,8 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
         FetchContent_MakeAvailable(intsh tuple)
 
+        set(DEMO_TITLE_DIR psp)
+
         # The PSP backend presents the shared software PPU (src/emu): the
         # emulator and all the nametable/OAM/palette write functions are
         # platform-agnostic and compiled here alongside the raw-VRAM video/
@@ -1477,6 +1506,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                     COMPILE_OPTIONS "--embed-dir=${PSP_ASSET_DIR}")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1570,6 +1602,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_compile_definitions(platform-nes PUBLIC TARGET_NDS)
         if(TARGET_PLATFORM STREQUAL "dsi")
             target_compile_definitions(platform-nes PUBLIC TARGET_DSI)
+            set(DEMO_TITLE_DIR dsi)
+        else()
+            set(DEMO_TITLE_DIR ds)
         endif()
         # Alternative nametable wiring (see the TARGET_NES branch's own comment,
         # near the top of this file): a fact about which board a build is
@@ -1580,6 +1615,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1657,6 +1695,8 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
         FetchContent_MakeAvailable(intsh tuple)
 
+        set(DEMO_TITLE_DIR gba)
+
         # The GBA backend maps the shared PPU bookkeeping (src/emu) onto libgba 2D
         # hardware: the emulator and all the nametable/OAM/palette write functions
         # are platform-agnostic and compiled here alongside the libgba video/
@@ -1680,6 +1720,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1729,6 +1772,8 @@ else()
     project(platform-nes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
+
+    set(DEMO_TITLE_DIR pc)
 
     if(TARGET_PLATFORM STREQUAL "mac")
         set(PLATFORM_DEFINE TARGET_MACOS)
@@ -1923,6 +1968,9 @@ else()
     endif()
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/ui/title/")
+    file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/ui/title/${DEMO_TITLE_DIR}/*.cpp")
+    list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
     # (being the includer) emits the folded CHR ROM image. Declare the art as an
@@ -2115,3 +2163,49 @@ target_compile_definitions(platform-nes PUBLIC REGION=${REGION})
 # force it in ahead of every demo TU instead. Safe project-wide: it's just a
 # constexpr inline function (see its own header comment -- no ODR/LTO cost).
 target_compile_options(demo PRIVATE -include ${CMAKE_SOURCE_DIR}/demo/src/graphics/charmaps.hpp)
+
+# ----------------------------------------------------------------------
+# uitk-export -- regenerates every demo/ui/title/<target>/title.hpp|.cpp
+# pair from demo/ui/title.uis by building and running tools/uitk (see
+# tools/uitk/README.md). `demo` depends on it below, so a plain build of
+# `demo` always runs it first and always sees its log output -- there's no
+# separate step to remember after editing a .uis file.
+#
+# uitk is a standalone Qt Widgets app (tools/uitk/CMakeLists.txt), built here
+# via its own nested `cmake` invocation rather than add_subdirectory -- most
+# importantly, that means it's never built through *this* project's own
+# toolchain. That matters concretely for TARGET_PLATFORM=nes/nes_pal, which
+# points CMAKE_TOOLCHAIN_FILE at the llvm-mos cross-compiler above: a nested
+# `cmake -S tools/uitk -B ...` subprocess doesn't inherit that (it's never
+# passed along), so it always configures against the host's own compiler,
+# regardless of which platform this build itself targets.
+#
+# Requires Qt (Widgets) on the machine doing the build -- if it's missing,
+# the dependency is skipped and `demo` falls back to whatever's already
+# committed under demo/ui/title/, with a configure-time warning so that's
+# never silent. CI's `codegen-check` job (.github/workflows/ci.yml) runs
+# this same export on a machine that always has Qt and fails the workflow
+# before any platform job starts if the result would differ from what's
+# committed -- so a Qt-less local build can't merge stale codegen unnoticed.
+find_package(Qt6 QUIET COMPONENTS Widgets)
+if(NOT Qt6Widgets_FOUND)
+    find_package(Qt5 QUIET COMPONENTS Widgets)
+endif()
+if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
+    add_custom_target(uitk-export
+            COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tools/uitk -B ${CMAKE_BINARY_DIR}/uitk-build
+            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/uitk-build
+            COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
+                    --input ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
+                    --output ${CMAKE_SOURCE_DIR}/demo/ui/title
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Regenerating demo/ui/title/*/title.hpp|.cpp from demo/ui/title.uis via uitk"
+            VERBATIM)
+    add_dependencies(demo uitk-export)
+else()
+    message(WARNING
+            "Qt Widgets not found; 'demo' will build against whatever's already committed "
+            "under demo/ui/title/ instead of regenerating it from demo/ui/title.uis. Install "
+            "Qt6 (or Qt5) to keep that in sync locally after editing a .uis file -- CI's "
+            "codegen-check job verifies it regardless of whether this machine can.")
+endif()
