@@ -217,6 +217,11 @@ constexpr int kHideRegionsRole = Qt::UserRole + 17;
 // defaultOption constructor argument, same as nOptions (the child count)
 // itself.
 constexpr int kDefaultOptionRole = Qt::UserRole + 18;
+// Per-textbox (ct or rt) override of the scene's Default Charmap -- empty
+// means "use the scene's Default Charmap"; non-empty names a different
+// CHARMAP mapname (see technology.hpp's CHARMAP macro) for this node's row
+// text/splitter to be encoded through instead.
+constexpr int kCharmapOverrideRole = Qt::UserRole + 19;
 // Compile-time and runtime textboxes are separate kinds -- currently
 // identical in behavior, but distinguished now because they'll diverge in
 // meaning later (e.g. how their text is ultimately resolved by generated
@@ -736,6 +741,7 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
             obj["align"] = item->data(0, kAlignRole).toInt();
             obj["text"] = item->data(0, kTextContentRole).toString();
             obj["splitter"] = item->data(0, kSplitterRole).toString();
+            obj["charmapOverride"] = item->data(0, kCharmapOverrideRole).toString();
         }
     } else if (isSingleChoiceItem(item)) {
         obj["kind"] = QStringLiteral("singlechoice");
@@ -793,6 +799,7 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
             item->setData(0, kAlignRole, obj["align"].toInt());
             item->setData(0, kTextContentRole, obj["text"].toString());
             item->setData(0, kSplitterRole, obj["splitter"].toString(QStringLiteral(" ")));
+            item->setData(0, kCharmapOverrideRole, obj["charmapOverride"].toString());
         }
         item->setData(0, kLastValidNameRole, item->text(0));
     } else if (kind == QLatin1String("singlechoice")) {
@@ -1154,7 +1161,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     // reinterpret_cast refuses; only const_cast may do that). The one
     // non-local mutable field this instance actually exposes is already
     // protected at its source.
-    lines << QString("%1inline alignas(ui::choice::SingleChoice) unsigned char %2_storage[sizeof(ui::choice::SingleChoice)];")
+    lines << QString("%1inline alignas(ui::choice::SingleChoice) u8 %2_storage[sizeof(ui::choice::SingleChoice)];")
                  .arg(bssPrefixTok, name);
     lines << QString("inline ui::choice::SingleChoice& %1 = reinterpret_cast<ui::choice::SingleChoice&>(%1_storage);")
                  .arg(name);
@@ -1214,22 +1221,37 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     const QString bssPrefixTok = (isNes && !bssPrefix.trimmed().isEmpty()) ? (bssPrefix.trimmed() + " ") : QString();
     const QString dataPrefixTok =
         (isNes && !dataPrefix.trimmed().isEmpty()) ? (dataPrefix.trimmed() + " ") : QString();
-    // Empty until a scene actually sets a Charmap -- a scene that hasn't
-    // opted in yet keeps ctTextBox's previous plain `static const char[]`
-    // behavior rather than referencing a `charmap_` symbol that doesn't
-    // exist (see genCtTextBoxBody).
+    // Empty until a scene actually sets a Default Charmap -- a scene that
+    // hasn't opted in yet keeps ctTextBox's previous plain
+    // `static const char[]` behavior rather than referencing a `charmap_`
+    // symbol that doesn't exist (see genCtTextBoxBody). A node's own Charmap
+    // Override (kCharmapOverrideRole), when set, takes precedence over this
+    // default for that node alone -- see nodeCharmapFn below.
     const QString charmapTrimmed = charmap.trimmed();
-    const QString charmapFn = charmapTrimmed.isEmpty() ? QString() : ("charmap_" + charmapTrimmed);
+    const QString defaultCharmapFn = charmapTrimmed.isEmpty() ? QString() : ("charmap_" + charmapTrimmed);
+    // Per-node charmap: an explicit override wins over the scene's default;
+    // neither set means "no charmap" (plain-string fallback), same as before
+    // Charmap Override existed.
+    auto nodeCharmapFn = [&defaultCharmapFn](const QTreeWidgetItem* item) -> QString {
+        const QString override_ = item->data(0, kCharmapOverrideRole).toString().trimmed();
+        return override_.isEmpty() ? defaultCharmapFn : ("charmap_" + override_);
+    };
 
     QStringList hppDecls;
     QStringList cppDefs;
     bool usesSingleChoice = false;
+    // Every charmap_ function actually referenced by this export (default
+    // and/or per-node overrides), so the in-scope note below (charmapNote)
+    // covers all of them, not just the scene default.
+    QSet<QString> usedCharmapFns;
 
     for (QTreeWidgetItem* item : collectComponentItems(rootItem)) {
         if (!isComponentItem(item)) continue;  // negative-space carries no code
         if (isEffectivelyHidden(item, target, region)) continue;
 
         const QString name = bareName(item);
+        const QString charmapFn = nodeCharmapFn(item);
+        if (!charmapFn.isEmpty()) usedCharmapFns.insert(charmapFn);
 
         if (isCtTextBoxItem(item)) {
             // Actually draws (bakes the ppu::WriteFromBufferToNameTable calls
@@ -1287,12 +1309,14 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
         hppIncludes << "#include <new>" << "#include <platform-nes/extras/ui/singlechoice.hpp>";
     }
 
-    const QString charmapNote =
-        charmapFn.isEmpty()
-            ? QString()
-            : QString("\n// NOTE: %1 must already be in scope wherever this header is included -- "
-                      "same requirement as any other CHARMAP consumer (see technology.hpp's CHARMAP macro).\n")
-                  .arg(charmapFn);
+    QString charmapNote;
+    if (!usedCharmapFns.isEmpty()) {
+        QStringList sorted(usedCharmapFns.begin(), usedCharmapFns.end());
+        sorted.sort();
+        charmapNote = QString("\n// NOTE: %1 must already be in scope wherever this header is included -- "
+                               "same requirement as any other CHARMAP consumer (see technology.hpp's CHARMAP macro).\n")
+                          .arg(sorted.join(", "));
+    }
 
     GeneratedFiles out;
     out.hpp = QString("#pragma once\n\n"
@@ -1624,9 +1648,10 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     auto* tree = new QTreeWidget(content);
     tree->setHeaderHidden(true);
 
-    auto* rootItem = new QTreeWidgetItem(tree, QStringList{"root"});
+    auto* rootItem = new QTreeWidgetItem(tree, QStringList{"scene"});
     tree->addTopLevelItem(rootItem);
     tree->expandItem(rootItem);
+    tree->setCurrentItem(rootItem);
 
     // Renaming a prefixed node (geometry, or SingleChoice) must never lose the
     // "[CT] "/"[RT] "/"[N] "/"[SC] " prefix that marks its kind -- if an edit
@@ -1744,13 +1769,17 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // CHARMAP macro, e.g. demo/src/graphics/charmaps.hpp's charmap_generic),
     // not something uitk can generate, so this only ever names it. Left
     // empty, a scene falls back to its previous plain `static const char[]`
-    // behavior instead of referencing a symbol that doesn't exist.
+    // behavior instead of referencing a symbol that doesn't exist. This is
+    // only the scene-wide default -- any individual textbox can name a
+    // different mapname via its own Charmap Override property
+    // (kCharmapOverrideRole), which wins over this for that node alone.
     auto* charmapEdit = new QLineEdit(content);
-    charmapEdit->setToolTip("Mapname of the CHARMAP (technology.hpp) every ctTextBox's row text -- and every "
-                             "rtTextBox's splitter byte -- is encoded through, e.g. \"generic\" for "
+    charmapEdit->setToolTip("Default mapname of the CHARMAP (technology.hpp) every ctTextBox's row text -- and "
+                             "every rtTextBox's splitter byte -- is encoded through, e.g. \"generic\" for "
                              "charmap_generic. charmap_<name> must already be defined and in scope wherever "
                              "the generated header is included. Left empty, text is emitted as a plain, "
-                             "unencoded C string instead.");
+                             "unencoded C string instead (unless a node's own Charmap Override sets one). "
+                             "A textbox's Charmap Override property replaces this default for that node.");
 
     // --- File menu: New / Open / Save / Save As, plus unsaved-changes
     // tracking so those and closing the window never silently discard work.
@@ -1770,10 +1799,25 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // VIEWPORT_TX/VIEWPORT_PY) exist, further down.
     auto resolveAllPtr = std::make_shared<std::function<void()>>([] {});
 
-    auto updateTitle = [window, currentPath, dirty] {
+    // Scene name generated files (and the .cpp's #include of its own .hpp)
+    // are keyed by -- the saved file's basename, or "scene" before a scene's
+    // ever been saved once. Also what the tree's root item displays (see
+    // updateTitle below), in place of a literal "root" label, so the tree
+    // always shows what the exported gen::<sceneName> namespace will
+    // actually be called.
+    auto sceneName = [currentPath] {
+        return currentPath->isEmpty() ? QStringLiteral("scene") : QFileInfo(*currentPath).completeBaseName();
+    };
+
+    auto updateTitle = [window, currentPath, dirty, rootItem, tree, sceneName] {
         const QString name =
             currentPath->isEmpty() ? QStringLiteral("Untitled") : QFileInfo(*currentPath).fileName();
         window->setWindowTitle(QString("uitk - %1%2").arg(name, *dirty ? "*" : ""));
+        // Blocked so relabeling root doesn't itself re-trigger the
+        // itemChanged handler below (which would mark the scene dirty and
+        // call back into updateTitle for a purely cosmetic rename).
+        const QSignalBlocker blocker(tree);
+        rootItem->setText(0, sceneName());
     };
     updateTitle();
 
@@ -1934,13 +1978,6 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     addFileAction("Save", QKeySequence::Save, doSave);
     addFileAction("Save As...", QKeySequence::SaveAs, doSaveAs);
 
-    // Scene name generated files (and the .cpp's #include of its own .hpp)
-    // are keyed by -- the saved file's basename, or "scene" before a scene's
-    // ever been saved once.
-    auto sceneName = [currentPath] {
-        return currentPath->isEmpty() ? QStringLiteral("scene") : QFileInfo(*currentPath).completeBaseName();
-    };
-
     // Refuses to export while any component can't currently be resolved --
     // exporting a scene with an unresolved position/size would just bake in
     // whatever stale/default value happened to be sitting in kPosXRole etc.,
@@ -2057,6 +2094,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     auto* alignCombo = new QComboBox(properties);
     auto* textEdit = new QLineEdit(properties);
     auto* splitterEdit = new QLineEdit(properties);
+    auto* charmapOverrideEdit = new QLineEdit(properties);
     // SingleChoice-only: which option child (0-based, in tree order) Make
     // selects by default -- clamped against the child count at export time,
     // not here, since the count can change (options added/removed) after
@@ -2122,6 +2160,9 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     splitterEdit->setMaxLength(1);
     splitterEdit->setToolTip("The single character that marks a word boundary when wrapping text "
                               "onto the next row (default: space).");
+    charmapOverrideEdit->setToolTip("CHARMAP mapname (technology.hpp) to encode this node's row text/splitter "
+                                     "through, in place of the scene's Default Charmap.\n"
+                                     "Leave blank to use the scene's Default Charmap.");
 
     // Grouped into "Geometry" (any geometry node's position/size),
     // "Properties" (textbox-only: alignment/text/splitter), and "Visibility"
@@ -2150,6 +2191,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     componentForm->addRow("Alignment", alignCombo);
     componentForm->addRow("Text", textEdit);
     componentForm->addRow("Splitter", splitterEdit);
+    componentForm->addRow("Charmap Override", charmapOverrideEdit);
 
     auto* choiceGroup = new QGroupBox("Choice", properties);
     auto* choiceForm = new QFormLayout(choiceGroup);
@@ -2172,8 +2214,9 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // edit handlers below (which would otherwise write the same values
     // straight back -- harmless, but pointless).
     auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, textEdit, splitterEdit,
-                         defaultOptionSpin, hideTargetsButton, hideTargetActions, hideRegionsButton,
-                         hideRegionActions, updateHideButtonSummary, suppressHideWrite](QTreeWidgetItem* item) {
+                         charmapOverrideEdit, defaultOptionSpin, hideTargetsButton, hideTargetActions,
+                         hideRegionsButton, hideRegionActions, updateHideButtonSummary,
+                         suppressHideWrite](QTreeWidgetItem* item) {
         const QSignalBlocker bx(posXEdit);
         const QSignalBlocker by(posYEdit);
         const QSignalBlocker bw(sizeWEdit);
@@ -2181,6 +2224,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         const QSignalBlocker ba(alignCombo);
         const QSignalBlocker bt(textEdit);
         const QSignalBlocker bs(splitterEdit);
+        const QSignalBlocker bc(charmapOverrideEdit);
         const QSignalBlocker bd(defaultOptionSpin);
         auto exprOr = [item](int exprRole, int fallback) {
             const QString s = item->data(0, exprRole).toString();
@@ -2194,6 +2238,7 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         textEdit->setText(item->data(0, kTextContentRole).toString());
         const QString splitter = item->data(0, kSplitterRole).toString();
         splitterEdit->setText(splitter.isEmpty() ? QStringLiteral(" ") : splitter);
+        charmapOverrideEdit->setText(item->data(0, kCharmapOverrideRole).toString());
         defaultOptionSpin->setValue(item->data(0, kDefaultOptionRole).toInt());
 
         *suppressHideWrite = true;
@@ -2255,13 +2300,14 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     QObject::connect(
         tree, &QTreeWidget::itemChanged,
         [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit, sizeHEdit, textEdit,
-         splitterEdit, defaultOptionSpin](QTreeWidgetItem* item, int column) {
+         splitterEdit, charmapOverrideEdit, defaultOptionSpin](QTreeWidgetItem* item, int column) {
             if (column != 0 || item != tree->currentItem() || !isPrefixedItem(item)) {
                 return;
             }
             updateErrorHighlight(item);
             if (posXEdit->hasFocus() || posYEdit->hasFocus() || sizeWEdit->hasFocus() || sizeHEdit->hasFocus() ||
-                textEdit->hasFocus() || splitterEdit->hasFocus() || defaultOptionSpin->hasFocus()) {
+                textEdit->hasFocus() || splitterEdit->hasFocus() || charmapOverrideEdit->hasFocus() ||
+                defaultOptionSpin->hasFocus()) {
                 return;
             }
             populateFrom(item);
@@ -2303,6 +2349,12 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         if (isComponentItem(item)) {
             const QString text = splitterEdit->text();
             item->setData(0, kSplitterRole, text.isEmpty() ? QStringLiteral(" ") : text);
+        }
+    });
+    QObject::connect(charmapOverrideEdit, &QLineEdit::editingFinished, [tree, charmapOverrideEdit] {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isComponentItem(item)) {
+            item->setData(0, kCharmapOverrideRole, charmapOverrideEdit->text().trimmed());
         }
     });
     QObject::connect(defaultOptionSpin, qOverload<int>(&QSpinBox::valueChanged), [tree](int v) {
@@ -2806,14 +2858,38 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     auto* globalForm = new QFormLayout(globalGroup);
     globalForm->addRow("Viewport X (tx):", xEdit);
     globalForm->addRow("Viewport Y (tx):", yEdit);
-    globalForm->addRow("Nametable:", nametableCombo);
     globalForm->addRow("Target:", targetCombo);
     globalForm->addRow("Region:", regionCombo);
-    globalForm->addRow("Linker Prefix:", linkerPrefixEdit);
-    globalForm->addRow("BSS Prefix:", bssPrefixEdit);
-    globalForm->addRow("Data Prefix:", dataPrefixEdit);
-    globalForm->addRow("Charmap:", charmapEdit);
     layout->addWidget(globalGroup);
+
+    // "Scene" holds everything that's a property of *this* scene's export
+    // (placement attributes + the nametable it targets) rather than of the
+    // viewport/Target/Region concepts above -- split out now, ahead of any
+    // actual need, so a later per-scene field has an obvious home instead of
+    // getting wedged into Global alongside Viewport/Target/Region.
+    auto* sceneGroup = new QGroupBox("Scene", content);
+    auto* sceneForm = new QFormLayout(sceneGroup);
+    sceneForm->addRow("Nametable:", nametableCombo);
+    sceneForm->addRow("Linker Prefix:", linkerPrefixEdit);
+    sceneForm->addRow("BSS Prefix:", bssPrefixEdit);
+    sceneForm->addRow("Data Prefix:", dataPrefixEdit);
+    sceneForm->addRow("Default Charmap:", charmapEdit);
+    layout->addWidget(sceneGroup);
+
+    // Global/Scene are scene-wide properties, not the selected node's -- they
+    // only make sense to show/edit while the root (the scene itself) is
+    // selected, same as how the node Properties panel above only shows for a
+    // prefixed node.
+    auto updateGlobalSceneVisibility = [globalGroup, sceneGroup, rootItem](QTreeWidgetItem* current) {
+        const bool onRoot = (current == rootItem);
+        globalGroup->setVisible(onRoot);
+        sceneGroup->setVisible(onRoot);
+    };
+    QObject::connect(tree, &QTreeWidget::currentItemChanged,
+                      [updateGlobalSceneVisibility](QTreeWidgetItem* current, QTreeWidgetItem*) {
+                          updateGlobalSceneVisibility(current);
+                      });
+    updateGlobalSceneVisibility(tree->currentItem());
 
     dock->setWidget(content);
     return {dock, tree, xEdit, yEdit, targetCombo, regionCombo};

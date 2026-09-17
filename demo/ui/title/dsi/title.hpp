@@ -34,7 +34,7 @@ NI void Draw_Options();
 
 // SingleChoice: TitleOptions
 inline atomic vec2<u16> TitleOptions_options[3];
-inline alignas(ui::choice::SingleChoice) unsigned char TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
+inline alignas(ui::choice::SingleChoice) u8 TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
 inline ui::choice::SingleChoice& TitleOptions = reinterpret_cast<ui::choice::SingleChoice&>(TitleOptions_storage);
 inline AI void Make_TitleOptions() {
     TitleOptions_options[0] = vec2<u16>{static_cast<u16>((((((video::viewport_tx() >> 1) << 1) - 1) - 8) + 32)), static_cast<u16>((1 + 30))};

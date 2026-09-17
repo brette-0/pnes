@@ -33,7 +33,7 @@ TITLE_DATA inline constexpr auto Options_row0 = ::tech::nes_str::encode<charmap_
 TITLE NI void Draw_Options();
 
 // SingleChoice: TitleOptions
-system inline alignas(ui::choice::SingleChoice) unsigned char TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
+system inline alignas(ui::choice::SingleChoice) u8 TitleOptions_storage[sizeof(ui::choice::SingleChoice)];
 inline ui::choice::SingleChoice& TitleOptions = reinterpret_cast<ui::choice::SingleChoice&>(TitleOptions_storage);
 inline AI void Make_TitleOptions() {
     new (&TitleOptions) ui::choice::SingleChoice(3, 0);
