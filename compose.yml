@@ -82,12 +82,21 @@ services:
         # value into the .inc that file includes, so this is the one place
         # the two are named. UI has no such external contract -- .prg_rom_cold
         # co-locates it with the cold bank, same as local.cmake.example.
+        # TITLE/SYSMEM are the same story, one level up: uitk-generated
+        # demo/ui/**/*.cpp references them directly (see CMakeLists.txt's
+        # DEMO_PLACEMENT_DEFINES), also gitignored-local.cmake-only and also
+        # mandatory (FATAL_ERROR if unset) -- same values as
+        # local.cmake.example: TITLE co-locates with the cold bank like UI's
+        # above, SYSMEM mirrors mmc3.hpp's own ::SYSMEM (.sysmem, onboard
+        # system RAM).
         cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" \
           -DCMAKE_TOOLCHAIN_FILE="$$LLVM_MOS_SDK/lib/cmake/llvm-mos-sdk/llvm-mos-toolchain.cmake" \
           -DCMAKE_PREFIX_PATH="$$LLVM_MOS_SDK" \
           -DTOPLEVEL_LD=/tmp/platform-nes/demo/link.ld \
           -DPLATFORM_NES_AUDIO_SECTION=.prg_rom_audio \
-          -DPLATFORM_NES_UI_SECTION=.prg_rom_cold
+          -DPLATFORM_NES_UI_SECTION=.prg_rom_cold \
+          -DTITLE=.prg_rom_cold \
+          -DSYSMEM=.sysmem
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo.nes"
 
