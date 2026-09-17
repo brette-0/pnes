@@ -1,5 +1,7 @@
 {
-    "bss_prefix": "SYSTEM",
+    "bss_prefix": "system",
+    "charmap": "generic",
+    "data_prefix": "TITLE_DATA",
     "linker_prefix": "TITLE",
     "nametable": 3,
     "nodes": [

@@ -818,7 +818,8 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
 // stored once at the document's top level alongside "version" rather than on
 // every node.
 bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int nametable, const QString& target,
-                   const QString& region, const QString& linkerPrefix, const QString& bssPrefix) {
+                   const QString& region, const QString& linkerPrefix, const QString& bssPrefix,
+                   const QString& dataPrefix, const QString& charmap) {
     QJsonArray nodes;
     for (int i = 0; i < rootItem->childCount(); ++i) {
         nodes.append(serializeNode(rootItem->child(i)));
@@ -830,6 +831,8 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
     doc["region"] = region;
     doc["linker_prefix"] = linkerPrefix;
     doc["bss_prefix"] = bssPrefix;
+    doc["data_prefix"] = dataPrefix;
+    doc["charmap"] = charmap;
     doc["nodes"] = nodes;
 
     QFile file(path);
@@ -846,10 +849,12 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
 // scene was already open. `target`/`region` are matched by name rather than
 // trusted as-is, since the caller (whose combo defines the valid set) is the
 // one who knows what a missing or unrecognized value should fall back to.
-// `linker_prefix`/`bss_prefix` have no such validation -- they're free-form
-// text -- and simply default to empty when absent (e.g. an older file).
+// `linker_prefix`/`bss_prefix`/`data_prefix`/`charmap` have no such
+// validation -- they're free-form text -- and simply default to empty when
+// absent (e.g. an older file).
 bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, QString& outTarget,
-                   QString& outRegion, QString& outLinkerPrefix, QString& outBssPrefix) {
+                   QString& outRegion, QString& outLinkerPrefix, QString& outBssPrefix, QString& outDataPrefix,
+                   QString& outCharmap) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
@@ -865,6 +870,8 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
     outRegion = doc.object()["region"].toString();
     outLinkerPrefix = doc.object()["linker_prefix"].toString();
     outBssPrefix = doc.object()["bss_prefix"].toString();
+    outDataPrefix = doc.object()["data_prefix"].toString();
+    outCharmap = doc.object()["charmap"].toString();
     return true;
 }
 
@@ -976,10 +983,33 @@ quint16 nesNtAddr(int x, int y) {
     return static_cast<quint16>(base + nt_h + nt_v + row * 32 + col);
 }
 
-// Emits one ctTextBox's placement function body: a ppu::WriteFromBufferToNameTable
-// call per wrapped row, each row's text a local string literal -- same
-// wrap/align math as TileGridWidget::paintEvent, so what's exported always
-// matches what the canvas previewed.
+// A ctTextBox's generated pieces: `rootDecls` are namespace-scope
+// declarations (the charmap-encoded row data, when a charmap is in use --
+// see genCtTextBoxBody) that belong at the root of `gen::<sceneName>`, not
+// nested inside the Draw_ function itself; `body` is that function's
+// statements.
+struct CtTextBoxGen {
+    QString rootDecls;
+    QString body;
+};
+
+// Emits one ctTextBox's data + placement function body: a
+// ppu::WriteFromBufferToNameTable call per wrapped row -- same wrap/align
+// math as TileGridWidget::paintEvent, so what's exported always matches what
+// the canvas previewed.
+//
+// With a scene charmap set (`charmapFn` non-empty), each row's text is
+// mapped through it at compile time -- the same ::tech::nes_str::encode
+// technology demo/src/graphics/strings.hpp already hand-writes (e.g.
+// msg_title) -- and hoisted to a `<dataPrefixTok>inline constexpr auto
+// <Name>_rowN = ...` declaration at the namespace root, so it's a single
+// rodata object the linker folds regardless of how many TUs include it, not
+// a local buffer reallocated on every call. The Draw_ function then just
+// points WriteFromBufferToNameTable at it via ::SIZED_OBJ, which also
+// already supplies the exact (unterminated) row length `encode<>` produces
+// -- no `sizeof(...) - 1` needed the way a plain C string literal wants.
+// With no charmap set, this falls back to the previous plain
+// `static const char[]` behavior, for a scene that hasn't set one yet.
 //
 // On NES the panel is fixed, so unlike every other target it never needs the
 // vec2<u16> overload's per-tile page-aware address recomputation (see
@@ -992,7 +1022,8 @@ quint16 nesNtAddr(int x, int y) {
 // re-derives the page-aware address per tile -- required once a viewport can
 // be wider/taller than one nametable page, which NES's fixed 32x30 panel
 // never is.
-QString genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes) {
+CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, int ntOffX, int ntOffY, bool isNes,
+                               const QString& dataPrefixTok, const QString& charmapFn) {
     const int x = item->data(0, kPosXRole).toInt() + ntOffX;
     const int y = item->data(0, kPosYRole).toInt() + ntOffY;
     const int w = std::max(1, item->data(0, kSizeWRole).toInt());
@@ -1002,7 +1033,8 @@ QString genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bo
     const QChar splitter = splitterStr.isEmpty() ? QLatin1Char(' ') : splitterStr.at(0);
     const QString text = item->data(0, kTextContentRole).toString();
 
-    QStringList lines;
+    QStringList rootLines;
+    QStringList bodyLines;
     if (!text.isEmpty()) {
         const QStringList rows = wrapTextIntoRows(text, splitter, w);
         for (int row = 0; row < h && row < rows.size(); ++row) {
@@ -1012,24 +1044,33 @@ QString genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bo
             const int startCol = (align == TextAlign::Left)    ? 0
                                   : (align == TextAlign::Right) ? slack
                                                                  : slack / 2;
-            const QString rowVar = QString("row%1").arg(row);
-            lines << QString("    static const char %1[] = \"%2\";")
-                         .arg(rowVar, cStringEscape(rowText));
-            if (isNes) {
-                lines << QString("    ppu::WriteFromBufferToNameTable(0x%1, "
-                                  "reinterpret_cast<const u8*>(%2), sizeof(%2) - 1, 0);")
-                             .arg(static_cast<uint>(nesNtAddr(x + startCol, y + row)), 4, 16, QLatin1Char('0'))
-                             .arg(rowVar);
+
+            QString sourceArgs;  // the (source, count) args to WriteFromBufferToNameTable
+            if (charmapFn.isEmpty()) {
+                const QString rowVar = QString("row%1").arg(row);
+                bodyLines << QString("    static const char %1[] = \"%2\";")
+                                 .arg(rowVar, cStringEscape(rowText));
+                sourceArgs = QString("reinterpret_cast<const u8*>(%1), sizeof(%1) - 1").arg(rowVar);
             } else {
-                lines << QString("    ppu::WriteFromBufferToNameTable(vec2<u16>{%1, %2}, "
-                                  "reinterpret_cast<const u8*>(%3), sizeof(%3) - 1, 0);")
-                             .arg(x + startCol)
-                             .arg(y + row)
-                             .arg(rowVar);
+                const QString dataName = QString("%1_row%2").arg(name).arg(row);
+                rootLines << QString("%1inline constexpr auto %2 = ::tech::nes_str::encode<%3>(\"%4\");")
+                                 .arg(dataPrefixTok, dataName, charmapFn, cStringEscape(rowText));
+                sourceArgs = QString("SIZED_OBJ(%1)").arg(dataName);
+            }
+
+            if (isNes) {
+                bodyLines << QString("    ppu::WriteFromBufferToNameTable(0x%1, %2, 0);")
+                                 .arg(static_cast<uint>(nesNtAddr(x + startCol, y + row)), 4, 16, QLatin1Char('0'))
+                                 .arg(sourceArgs);
+            } else {
+                bodyLines << QString("    ppu::WriteFromBufferToNameTable(vec2<u16>{%1, %2}, %3, 0);")
+                                 .arg(x + startCol)
+                                 .arg(y + row)
+                                 .arg(sourceArgs);
             }
         }
     }
-    return lines.join('\n');
+    return {rootLines.join("\n"), bodyLines.join("\n")};
 }
 
 // Emits one SingleChoice node's declarations: its options' positions
@@ -1089,16 +1130,16 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
         lines << QString("%1inline vec2<u16> %2_options[%3];").arg(bssPrefixTok, name).arg(nOptions);
     }
 
-    // ui::option::SingleChoice has no default constructor (and its real
+    // ui::choice::SingleChoice has no default constructor (and its real
     // constructor isn't constexpr), so it can't be declared directly at
     // namespace scope without a dynamic pre-main initializer -- exactly what
     // an explicit Make_ step is meant to avoid. Instead: raw, correctly-
     // aligned storage (no constructor runs, so it's legitimately placeable
     // via bssPrefixTok) plus a reference alias, constructed in place by
     // Make_ below via placement-new -- no heap involved.
-    lines << QString("%1inline alignas(ui::option::SingleChoice) unsigned char %2_storage[sizeof(ui::option::SingleChoice)];")
+    lines << QString("%1inline alignas(ui::choice::SingleChoice) unsigned char %2_storage[sizeof(ui::choice::SingleChoice)];")
                  .arg(bssPrefixTok, name);
-    lines << QString("inline ui::option::SingleChoice& %1 = reinterpret_cast<ui::option::SingleChoice&>(%1_storage);")
+    lines << QString("inline ui::choice::SingleChoice& %1 = reinterpret_cast<ui::choice::SingleChoice&>(%1_storage);")
                  .arg(name);
 
     QStringList makeBody;
@@ -1127,7 +1168,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
                             .arg(xFinal, yFinal);
         }
     }
-    makeBody << QString("    new (&%1) ui::option::SingleChoice(%2, %3);").arg(name).arg(nOptions).arg(defaultOption);
+    makeBody << QString("    new (&%1) ui::choice::SingleChoice(%2, %3);").arg(name).arg(nOptions).arg(defaultOption);
 
     lines << QString("inline AI void Make_%1() {\n%2\n}").arg(name, makeBody.join("\n"));
 
@@ -1139,19 +1180,29 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
 // isEffectivelyHidden) are skipped entirely, so an export never emits a
 // function for something the scene itself says shouldn't exist there.
 GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, const QString& region, int nametable,
-                             const QString& linkerPrefix, const QString& bssPrefix, const QString& sceneName) {
+                             const QString& linkerPrefix, const QString& bssPrefix, const QString& dataPrefix,
+                             const QString& charmap, const QString& sceneName) {
     const int ntOffX = (nametable & 1) * kNametableQuadW;
     const int ntOffY = ((nametable >> 1) & 1) * kNametableQuadH;
-    // linker_prefix/bss_prefix are placement attributes -- a bank or section
-    // a linker script maps to a real region of ROM/RAM. Off NES that concept
-    // doesn't exist (CREATE_SEGMENT_KEYWORD-built macros already expand to
-    // nothing there), and every OTHER target's generated code has no reason
-    // to even reference a macro that's only ever defined for the NES build
-    // -- so both are only ever emitted when actually exporting for NES.
+    // linker_prefix/bss_prefix/data_prefix are placement attributes -- a
+    // bank or section a linker script maps to a real region of ROM/RAM. Off
+    // NES that concept doesn't exist (CREATE_SEGMENT_KEYWORD-built macros
+    // already expand to nothing there), and every OTHER target's generated
+    // code has no reason to even reference a macro that's only ever defined
+    // for the NES build -- so all three are only ever emitted when actually
+    // exporting for NES.
     const bool isNes = (target == QLatin1String("NES"));
     const QString linkerPrefixTok =
         (isNes && !linkerPrefix.trimmed().isEmpty()) ? (linkerPrefix.trimmed() + " ") : QString();
     const QString bssPrefixTok = (isNes && !bssPrefix.trimmed().isEmpty()) ? (bssPrefix.trimmed() + " ") : QString();
+    const QString dataPrefixTok =
+        (isNes && !dataPrefix.trimmed().isEmpty()) ? (dataPrefix.trimmed() + " ") : QString();
+    // Empty until a scene actually sets a Charmap -- a scene that hasn't
+    // opted in yet keeps ctTextBox's previous plain `static const char[]`
+    // behavior rather than referencing a `charmap_` symbol that doesn't
+    // exist (see genCtTextBoxBody).
+    const QString charmapTrimmed = charmap.trimmed();
+    const QString charmapFn = charmapTrimmed.isEmpty() ? QString() : ("charmap_" + charmapTrimmed);
 
     QStringList hppDecls;
     QStringList cppDefs;
@@ -1168,22 +1219,39 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             // itself), unlike rtTextBox's wrapper below -- named Draw_<Name>
             // so a scene's generated API reads the same way SingleChoice's
             // own Make_<Name> does: the verb up front says what calling it
-            // does.
-            hppDecls << QString("%1void Draw_%2(void);").arg(linkerPrefixTok, name);
-            cppDefs << QString("%1void Draw_%2(void) {\n%3\n}\n")
-                           .arg(linkerPrefixTok, name, genCtTextBoxBody(item, ntOffX, ntOffY, isNes));
+            // does. NI (not AI, unlike every other generated wrapper here):
+            // it's real emitted code, not a thin pass-through, so it gets a
+            // pinned, real JSR target rather than being duplicated into
+            // every caller.
+            const CtTextBoxGen gen = genCtTextBoxBody(item, name, ntOffX, ntOffY, isNes, dataPrefixTok, charmapFn);
+            if (!gen.rootDecls.isEmpty()) {
+                hppDecls << gen.rootDecls;
+            }
+            hppDecls << QString("%1NI void Draw_%2();").arg(linkerPrefixTok, name);
+            cppDefs << QString("%1NI void Draw_%2() {\n%3\n}\n").arg(linkerPrefixTok, name, gen.body);
         } else {  // rtTextBox
             const int w = std::max(1, item->data(0, kSizeWRole).toInt());
             const int h = std::max(1, item->data(0, kSizeHRole).toInt());
             const QString splitterStr = item->data(0, kSplitterRole).toString();
             const QChar splitter = splitterStr.isEmpty() ? QLatin1Char(' ') : splitterStr.at(0);
+            // Text isn't known until runtime, so there's nothing here to
+            // charmap-encode -- but whatever buffer the caller eventually
+            // passes in IS expected to already be charmap-encoded (it's
+            // handed straight to ui::text::Make, same raw bytes ppu writes
+            // land untranslated), so the splitter byte Make compares each
+            // character against has to be encoded through the very same
+            // charmap too, not left as a raw ASCII literal that would never
+            // match an encoded space/boundary byte.
+            const QString splitterArg = charmapFn.isEmpty()
+                                             ? QString("'%1'").arg(cCharEscape(splitter))
+                                             : QString("%1('%2')").arg(charmapFn, cCharEscape(splitter));
             hppDecls << QString("inline AI buffer<u8*>* %1(const u8* buff, const u8 sBuff) {\n"
-                                 "    return ui::text::Make(buff, sBuff, vec2<u8>{%2, %3}, '%4');\n"
+                                 "    return ui::text::Make(buff, sBuff, vec2<u8>{%2, %3}, %4);\n"
                                  "}\n")
                              .arg(name)
                              .arg(w)
                              .arg(h)
-                             .arg(cCharEscape(splitter));
+                             .arg(splitterArg);
         }
     }
 
@@ -1202,14 +1270,22 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
         hppIncludes << "#include <new>" << "#include <platform-nes/extras/ui/singlechoice.hpp>";
     }
 
+    const QString charmapNote =
+        charmapFn.isEmpty()
+            ? QString()
+            : QString("\n// NOTE: %1 must already be in scope wherever this header is included -- "
+                      "same requirement as any other CHARMAP consumer (see technology.hpp's CHARMAP macro).\n")
+                  .arg(charmapFn);
+
     GeneratedFiles out;
     out.hpp = QString("#pragma once\n\n"
-                       "// Generated by uitk from \"%1\" -- do not edit by hand.\n\n"
-                       "%2\n\n"
+                       "// Generated by uitk from \"%1\" -- do not edit by hand.\n"
+                       "%4"
+                       "\n%2\n\n"
                        "namespace gen::%1 {\n\n"
                        "%3"
                        "\n}  // namespace gen::%1\n")
-                   .arg(sceneName, hppIncludes.join("\n"), hppDecls.join("\n\n"));
+                   .arg(sceneName, hppIncludes.join("\n"), hppDecls.join("\n\n"), charmapNote);
     out.cpp = QString("// Generated by uitk from \"%1\" -- do not edit by hand.\n\n"
                        "#include \"%2.hpp\"\n\n"
                        "namespace gen::%1 {\n\n"
@@ -1631,6 +1707,33 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
                                "placement attribute. Left empty, nothing is emitted. Only ever emitted when "
                                "exporting for NES.");
 
+    // Third placement field, same NES-only rule as Linker/BSS Prefix, but
+    // for a ctTextBox's own charmap-encoded row data (see genCtTextBoxBody)
+    // -- rodata, same as code, but LLD still rejects code and data sharing
+    // one literal section name (demo/src/banks.hpp's TITLE vs TITLE_DATA is
+    // exactly this split, hand-written), so it needs its own independent
+    // field rather than reusing Linker Prefix.
+    auto* dataPrefixEdit = new QLineEdit(content);
+    dataPrefixEdit->setToolTip("Emitted immediately before a ctTextBox's own charmap-encoded row data -- e.g. "
+                                "a ROM-section placement attribute (see demo/src/graphics/strings.hpp's "
+                                "TITLE_DATA for the hand-written equivalent). Left empty, nothing is emitted. "
+                                "Only ever emitted when exporting for NES.");
+
+    // The mapname passed to ::tech::nes_str::encode<charmap_<name>> for
+    // every ctTextBox's row text, and to charmap_<name> directly for a
+    // rtTextBox's splitter byte (see genCtTextBoxBody/generateCode) --
+    // `charmap_<name>` itself is project code (defined via technology.hpp's
+    // CHARMAP macro, e.g. demo/src/graphics/charmaps.hpp's charmap_generic),
+    // not something uitk can generate, so this only ever names it. Left
+    // empty, a scene falls back to its previous plain `static const char[]`
+    // behavior instead of referencing a symbol that doesn't exist.
+    auto* charmapEdit = new QLineEdit(content);
+    charmapEdit->setToolTip("Mapname of the CHARMAP (technology.hpp) every ctTextBox's row text -- and every "
+                             "rtTextBox's splitter byte -- is encoded through, e.g. \"generic\" for "
+                             "charmap_generic. charmap_<name> must already be defined and in scope wherever "
+                             "the generated header is included. Left empty, text is emitted as a plain, "
+                             "unencoded C string instead.");
+
     // --- File menu: New / Open / Save / Save As, plus unsaved-changes
     // tracking so those and closing the window never silently discard work.
     // An empty currentPath means "no file yet" -- a new scene doesn't ask
@@ -1674,8 +1777,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         }
     });
 
-    auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, nametableCombo, targetCombo,
-                     regionCombo, linkerPrefixEdit, bssPrefixEdit]() {
+    auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, nametableCombo, targetCombo, regionCombo,
+                     linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit]() {
         QString path = QFileDialog::getSaveFileName(window, "Save Scene", QString(), "UI Scene (*.uis)");
         if (path.isEmpty()) {
             return false;
@@ -1684,7 +1787,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
             path += ".uis";
         }
         if (!writeUisFile(path, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
-                           regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text())) {
+                           regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text(),
+                           dataPrefixEdit->text(), charmapEdit->text())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + path);
             return false;
         }
@@ -1695,12 +1799,13 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     };
 
     auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window, nametableCombo, targetCombo,
-                   regionCombo, linkerPrefixEdit, bssPrefixEdit]() {
+                   regionCombo, linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit]() {
         if (currentPath->isEmpty()) {
             return doSaveAs();
         }
         if (!writeUisFile(*currentPath, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
-                           regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text())) {
+                           regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text(),
+                           dataPrefixEdit->text(), charmapEdit->text())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + *currentPath);
             return false;
         }
@@ -1729,7 +1834,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     window->confirmClose = confirmDiscard;
 
     auto doNew = [rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard, resolveAllPtr,
-                  nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit] {
+                  nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit,
+                  charmapEdit] {
         if (!confirmDiscard()) {
             return;
         }
@@ -1740,6 +1846,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         regionCombo->setCurrentIndex(0);
         linkerPrefixEdit->clear();
         bssPrefixEdit->clear();
+        dataPrefixEdit->clear();
+        charmapEdit->clear();
         *loading = false;
         (*resolveAllPtr)();
         currentPath->clear();
@@ -1748,7 +1856,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     };
 
     auto doOpen = [window, tree, rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard,
-                   resolveAllPtr, nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit] {
+                   resolveAllPtr, nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit,
+                   dataPrefixEdit, charmapEdit] {
         if (!confirmDiscard()) {
             return;
         }
@@ -1764,7 +1873,9 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         QString region;
         QString linkerPrefix;
         QString bssPrefix;
-        if (!parseUisFile(path, nodes, nametable, target, region, linkerPrefix, bssPrefix)) {
+        QString dataPrefix;
+        QString charmap;
+        if (!parseUisFile(path, nodes, nametable, target, region, linkerPrefix, bssPrefix, dataPrefix, charmap)) {
             QMessageBox::warning(window, "Open Failed", "Could not read file:\n" + path);
             return;
         }
@@ -1783,6 +1894,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         regionCombo->setCurrentIndex(regionIndex);
         linkerPrefixEdit->setText(linkerPrefix);
         bssPrefixEdit->setText(bssPrefix);
+        dataPrefixEdit->setText(dataPrefix);
+        charmapEdit->setText(charmap);
         *loading = false;
         (*resolveAllPtr)();
         tree->expandItem(rootItem);
@@ -1825,12 +1938,14 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     // matching the gen/<target>/... layout the #include STRCAT(...) convention
     // (technology.hpp) expects on the consuming side.
     auto exportOneTarget = [window, rootItem, regionCombo, nametableCombo, linkerPrefixEdit, bssPrefixEdit,
+                             dataPrefixEdit, charmapEdit,
                              sceneName](const QString& dir, const QString& target) -> bool {
         const QString targetDir = dir + "/" + target.toLower();
         if (!QDir().mkpath(targetDir)) return false;
         const GeneratedFiles files = generateCode(rootItem, target, regionCombo->currentText(),
                                                     nametableCombo->currentIndex(), linkerPrefixEdit->text(),
-                                                    bssPrefixEdit->text(), sceneName());
+                                                    bssPrefixEdit->text(), dataPrefixEdit->text(),
+                                                    charmapEdit->text(), sceneName());
         QFile hppFile(targetDir + "/" + sceneName() + ".hpp");
         QFile cppFile(targetDir + "/" + sceneName() + ".cpp");
         if (!hppFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
@@ -1900,6 +2015,10 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     QObject::connect(linkerPrefixEdit, &QLineEdit::textChanged,
                       [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
     QObject::connect(bssPrefixEdit, &QLineEdit::textChanged,
+                      [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
+    QObject::connect(dataPrefixEdit, &QLineEdit::textChanged,
+                      [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
+    QObject::connect(charmapEdit, &QLineEdit::textChanged,
                       [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
 
     // --- Properties panel: shows/edits the selected node's geometry,
@@ -2674,6 +2793,8 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
     globalForm->addRow("Region:", regionCombo);
     globalForm->addRow("Linker Prefix:", linkerPrefixEdit);
     globalForm->addRow("BSS Prefix:", bssPrefixEdit);
+    globalForm->addRow("Data Prefix:", dataPrefixEdit);
+    globalForm->addRow("Charmap:", charmapEdit);
     layout->addWidget(globalGroup);
 
     dock->setWidget(content);

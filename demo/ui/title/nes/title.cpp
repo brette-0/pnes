@@ -5,25 +5,20 @@
 namespace gen::title {
 
 TITLE void Draw_GameTitle(void) {
-    static const char row0[] = "Super Mary";
-    ppu::WriteFromBufferToNameTable(0x2c21, reinterpret_cast<const u8*>(row0), sizeof(row0) - 1, 0);
-    static const char row1[] = "Sisters";
-    ppu::WriteFromBufferToNameTable(0x2c42, reinterpret_cast<const u8*>(row1), sizeof(row1) - 1, 0);
+    ppu::WriteFromBufferToNameTable(0x2c21, SIZED_OBJ(GameTitle_row0), 0);
+    ppu::WriteFromBufferToNameTable(0x2c42, SIZED_OBJ(GameTitle_row1), 0);
 }
 
 TITLE void Draw_NewGame(void) {
-    static const char row0[] = "New Game";
-    ppu::WriteFromBufferToNameTable(0x2c37, reinterpret_cast<const u8*>(row0), sizeof(row0) - 1, 0);
+    ppu::WriteFromBufferToNameTable(0x2c37, SIZED_OBJ(NewGame_row0), 0);
 }
 
 TITLE void Draw_Continue(void) {
-    static const char row0[] = "Continue";
-    ppu::WriteFromBufferToNameTable(0x2c57, reinterpret_cast<const u8*>(row0), sizeof(row0) - 1, 0);
+    ppu::WriteFromBufferToNameTable(0x2c57, SIZED_OBJ(Continue_row0), 0);
 }
 
 TITLE void Draw_Options(void) {
-    static const char row0[] = "Options";
-    ppu::WriteFromBufferToNameTable(0x2c77, reinterpret_cast<const u8*>(row0), sizeof(row0) - 1, 0);
+    ppu::WriteFromBufferToNameTable(0x2c77, SIZED_OBJ(Options_row0), 0);
 }
 
 }  // namespace gen::title
