@@ -46,6 +46,27 @@ struct vec2 {
         return *this;
     }
 
+    // Volatile-qualified overloads so `atomic vec2<t>` (volatile on NES, see
+    // the `atomic` macro) can still be assigned/mutated in place -- the
+    // implicit copy assignment operator the compiler would otherwise
+    // generate is never volatile-qualified, so without these an `atomic
+    // vec2<...>` object has no usable operator= at all.
+    constexpr volatile vec2& operator=(const vec2& rhs) volatile {
+        x = rhs.x;
+        y = rhs.y;
+        return *this;
+    }
+    constexpr volatile vec2& operator+=(const vec2& rhs) volatile {
+        x += rhs.x;
+        y += rhs.y;
+        return *this;
+    }
+    constexpr volatile vec2& operator-=(const vec2& rhs) volatile {
+        x -= rhs.x;
+        y -= rhs.y;
+        return *this;
+    }
+
     // element-wise conversion to a vec2 of another (convertible) element type
     template <addable u>
     constexpr operator vec2<u>() const {
