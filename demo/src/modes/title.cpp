@@ -146,7 +146,7 @@ namespace title {
             SIZED_OBJ(msg_menu), menuPos, kMenuBoxWidth,
             chrHUDWhitespace_tile, 0, menuOptionAddr, kMenuOptions
         );
-        ui::text::Draw(menuChunks, menuPos, kMenuOptions);
+        ui::text::Draw(menuChunks, menuPos, vec2<u8>{kMenuBoxWidth, kMenuOptions}, ui::text::Left);
         QueueSelectorDraw(menuOptionAddr[menu.option]);
 
         // Free whatever a PREVIOUS visit to the title screen left behind --
@@ -273,7 +273,7 @@ namespace title {
             clearAddr = static_cast<u16>(clearAddr + 32);
         }
 
-        ui::text::Draw(pPlayModeChunks, playModeAddr, kPlayModeOptions);
+        ui::text::Draw(pPlayModeChunks, playModeAddr, vec2<u8>{kPlayModeBoxWidth, kPlayModeOptions}, ui::text::Left);
         QueueSelectorDraw(playModeOptionAddr[pPlayMode->option]);
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
@@ -289,7 +289,7 @@ namespace title {
             clearAddr = static_cast<u16>(clearAddr + 32);
         }
 
-        ui::text::Draw(pMenuChunks, menuAddr, kMenuOptions);
+        ui::text::Draw(pMenuChunks, menuAddr, vec2<u8>{kMenuBoxWidth, kMenuOptions}, ui::text::Left);
         QueueSelectorDraw(menuOptionAddr[pMainMenu->option]);
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
@@ -309,14 +309,16 @@ namespace title {
     }
 
     void InitTitleScreen() {
-         const auto titleText = ui::text::Make(
+        const vec2<u8> titleBox{static_cast<u8>((viewport_mx() >> 1) - 1), 3};
+        const auto titleText = ui::text::Make(
                 SIZED_OBJ(msg_title),
-                {static_cast<u8>((viewport_mx() >> 1) - 1), 3}, chrHUDWhitespace_tile
+                titleBox, chrHUDWhitespace_tile
             );
         ui::text::Draw(
             titleText,
             {kMenuNT + 1, static_cast<u16>(kBottomRightNT + 1)},
-            3
+            titleBox,
+            ui::text::Left
         );
 
         delete[] titleText;

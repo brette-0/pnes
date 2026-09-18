@@ -45,7 +45,7 @@ namespace ui::text {
      *  walks rows by a plain +32 add -- see the address overload below if
      *  even that one division doesn't belong on the caller's hot path.
      */
-    AI void Draw(const buffer<u8*>* chunks, const vec2<u16> pos, const u8 boxY);
+    AI void Draw(const buffer<u8*>* chunks, vec2<u16> pos, vec2<u8> box, Alignment align);
 
     /*
      *  Address overload of Draw(): @p address is row 0's nametable address
@@ -82,15 +82,18 @@ namespace ui::text {
                 case Left:
                 default:
                     useAddr = rowAddr;
+                    break;
 
                 case Right:
                     useAddr = rowAddr + (box.x - rows[i].size);
+                    break;
 
                 case Centre:
                     useAddr = rowAddr + (box.x - rows[i].size) / 2;
+                    break;
             }
 
-            ppu::WriteFromBufferToNameTable(useAddr, rows[i].addr, rows[i].size, i);
+            ppu::WriteFromBufferToNameTable(useAddr, rows[i].addr, rows[i].size, 0);
         }
     }
 
