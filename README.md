@@ -80,3 +80,6 @@ their nameplate clock/MIPS looks sufficient.
   floor to roughly a Pentium II 300-350 / K6-2 350+ or a Cortex-A7 quad (Raspberry Pi 2, 2015)-class core.
 
 These are order-of-magnitude estimates, not measured benchmarks of this codebase.
+
+
+> Please note that the use of Generative AI was used to assist development and research in the creation of this project. Code may be annotated, remodeled and for some of the targets emulation backends fully written by an AI. This project was, however, always fully controlled by human design, methodologies and design principals. AI was used to accelerate production time in code only, AI has not been used in the creation of any audio or visual assets for any demonstrations of the technology in this library.
