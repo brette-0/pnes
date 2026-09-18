@@ -165,7 +165,7 @@ add_compile_definitions(PROJECT_NAME="${PROJECT_NAME}")
 # for the same reason (bypasses CMAKE_CXX_STANDARD entirely, per its own
 # comment) -- this just does that project-wide instead of trusting CMake's
 # standard-injection machinery to work for this toolchain at all.
-add_compile_options(-std=gnu++23)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=gnu++23>)
 
 # ----------------------------------------------------------------------
 # br0::intsh — header-only integer type aliases, used via #include <intsh>.
