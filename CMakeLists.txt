@@ -40,6 +40,79 @@ if((TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal") AND NO
         CACHE PATH "llvm-mos-sdk root (derived from LLVM_MOS_SDK)" FORCE)
 endif()
 
+# Mapper 4 (MMC3), not NROM: linked against the generic nes-platform crt0
+# (LLVM_MOS_PLATFORM=nes, not nes-nrom), since nes-nrom's own crt0.o/link.ld
+# hardcode NROM-specific __prg_rom_size/__chr_rom_size defaults that this
+# MMC3 build must supply itself (see mmc3-helper.ld's COROLLARY-equivalent
+# reasoning, carried over from vrc1-helper.ld).
+#
+# The generic nes platform has no default link.ld (unlike nes-nrom and the
+# other mapper subtargets), so -T must be supplied explicitly. This has to
+# happen *before* ANY CXX compiler probe -- not just project() below, but
+# also enable_language(CXX) further down (ahead of find_package(Qt...) for
+# the uitk-export step), which already binds CXX to this same llvm-mos cross
+# compiler once CMAKE_TOOLCHAIN_FILE is set above. Both perform real links
+# for compiler identification/ABI detection, and without -T those fail
+# before any of this project's own code is ever touched ("cannot find linker
+# script link.ld", then a harder-to-place "No known features for CXX
+# compiler" once identification itself silently comes back empty) -- so this
+# has to sit here, immediately after CMAKE_TOOLCHAIN_FILE is set above, not
+# down by the "NES target" project() block where it used to live.
+#
+# CMAKE_CXX_FLAGS, not CMAKE_EXE_LINKER_FLAGS: CMake's own
+# CMAKE_DETERMINE_COMPILER_ID probe builds its test invocation from
+# CMAKE_<LANG>_FLAGS specifically (see CMakeDetermineCompilerId.cmake) and
+# does not consult CMAKE_EXE_LINKER_FLAGS at all, so -T placed there is
+# invisible to that one probe even though it reaches every ordinary target's
+# link step. Compile-only steps harmlessly warn that -T is unused; silenced
+# below rather than left to spam every translation unit.
+if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
+    # BANKED CALL, Phase 5: TOPLEVEL_LD (originally VRC1_LD, renamed when the
+    # demo converted from VRC1 to MMC3 -- the variable was never actually
+    # mapper-specific, just named after whichever mapper existed first) is
+    # not hardcoded into the library's own tree -- the library only ever
+    # supplies a HELPER script (src/nes/mappers/mmc3-helper.ld: hardware
+    # facts and mechanical plumbing), never the actual, final linker script a
+    # real project links against (see BANKED_CALL_THEORY.txt's "THE FINAL
+    # LINKER SCRIPT MUST BE USER-MADE" section -- written against VRC1, but
+    # the principle is mapper-agnostic). The demo supplies its own top-level
+    # script (demo/link.ld) via local.cmake, matching LLVM_MOS_SDK's own "no
+    # fallback, missing is a hard configure-time error" convention just
+    # above -- see local.cmake.example.
+    if(NOT TOPLEVEL_LD)
+        message(FATAL_ERROR
+            "NES build requires a top-level linker script, but TOPLEVEL_LD is "
+            "unset. Copy local.cmake.example to local.cmake and set it to "
+            "your own project's top-level script, e.g.\n"
+            "    set(TOPLEVEL_LD \"\${CMAKE_SOURCE_DIR}/demo/link.ld\" CACHE FILEPATH \"\" FORCE)\n"
+            "That script should INCLUDE mmc3-helper.ld (src/nes/mappers) for "
+            "the hardware/mechanical parts it doesn't need to reinvent.")
+    endif()
+    # -L: GNU ld/lld's INCLUDE directive does NOT search the directory of the
+    # script doing the including -- only the linker's own -L search paths --
+    # so a top-level script's `INCLUDE mmc3-helper.ld` needs this to resolve
+    # at all.
+    set(CMAKE_CXX_FLAGS "-T ${TOPLEVEL_LD} -L${CMAKE_SOURCE_DIR}/src/nes/mappers -Wno-unused-command-line-argument")
+
+    # Also needs to be this early, same reasoning as CMAKE_CXX_FLAGS above:
+    # the llvm-mos toolchain file (llvm-mos-toolchain.cmake) reads
+    # LLVM_MOS_PLATFORM to pick CMAKE_CXX_COMPILER -- mos-${LLVM_MOS_PLATFORM}-
+    # clang++ when set, a generic (and for this project's purposes, wrong --
+    # no NES-specific default include/library paths) mos-clang++ otherwise --
+    # and sets CMAKE_CXX_COMPILER_FORCED, so whichever it picks at the FIRST
+    # enable_language(CXX)/project() call is locked in for the rest of this
+    # configure, cached, never re-resolved later. Previously this was only
+    # set down in the "NES target" project() block, well after the
+    # uitk-export step's own enable_language(CXX) already ran -- meaning
+    # LLVM_MOS_PLATFORM was still unset at that point, and it silently locked
+    # in the generic mos-clang++, which has no NES sysroot and can't even
+    # find <cstdint>. Hardcoded to "nes" (mapper 4/MMC3, not NROM) here for
+    # the same reason the later project() block's own copy of this line was
+    # unconditional: TOPLEVEL_LD above is hardcoded to this one mapper too,
+    # nothing here branches on a second one yet.
+    set(LLVM_MOS_PLATFORM nes)
+endif()
+
 # Application / SDL3 window title, compiled in as the PROJECT_NAME define.
 # Set PROJECT_NAME in local.cmake to override per-developer; a default keeps
 # the window titled when local.cmake is absent or leaves it unset.
@@ -75,12 +148,24 @@ add_compile_definitions(PROJECT_NAME="${PROJECT_NAME}")
 # The library and demo are compiled as C++23. C++20 would cover the
 # designated initialisers used throughout, but the SDL3 backend relies
 # on <stdatomic.h>'s `atomic_int` (_vblank_flag), which only became
-# usable from C++ in C++23. The gnu++ dialect (CMAKE_CXX_EXTENSIONS ON)
-# keeps the GNU compound-literal extension the video/interrupt code uses.
-# Both toolchains accept it: llvm-mos's clang++ and host GCC.
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS ON)
+# usable from C++ in C++23. The gnu++ dialect keeps the GNU compound-literal
+# extension the video/interrupt code uses. Both toolchains accept it:
+# llvm-mos's clang++ and host GCC.
+#
+# Raw -std=gnu++23, not CMAKE_CXX_STANDARD 23 + CMAKE_CXX_STANDARD_REQUIRED
+# ON + CMAKE_CXX_EXTENSIONS ON (what this used to be): that trio makes every
+# target's CXX_STANDARD property go through CMake's own compile-feature
+# verification (cmStandardLevelResolver::CompileFeatureKnown), which hard-
+# errors ("No known features for CXX compiler ...") for a compiler whose
+# reported version it doesn't recognize -- exactly llvm-mos's clang++, which
+# reports itself as Clang 23.0.0 (tracking upstream LLVM trunk's current
+# in-development major version, not a real numbered Clang release CMake's
+# compiled-in version table has ever seen). PASS1_ELF's own raw compiler
+# invocation further down already had to duplicate -std=gnu++23 explicitly
+# for the same reason (bypasses CMAKE_CXX_STANDARD entirely, per its own
+# comment) -- this just does that project-wide instead of trusting CMake's
+# standard-injection machinery to work for this toolchain at all.
+add_compile_options(-std=gnu++23)
 
 # ----------------------------------------------------------------------
 # br0::intsh — header-only integer type aliases, used via #include <intsh>.
@@ -112,6 +197,29 @@ FetchContent_Declare(
         GIT_SHALLOW    TRUE
         SOURCE_SUBDIR  br0
 )
+
+# intsh and br0::tuple each declare their own INTERFACE
+# target_compile_features(... cxx_std_20) -- reasonable in isolation, but it
+# routes through CMake's own compile-feature verification
+# (cmStandardLevelResolver::CompileFeatureKnown) for whichever compiler ends
+# up consuming them, and that hard-errors ("No known features for CXX
+# compiler ...") for llvm-mos's clang++, which reports itself as Clang
+# 23.0.0 -- a version CMake's compiled-in version table doesn't recognize
+# (see this project's own -std=gnu++23 add_compile_options above, added for
+# the exact same reason). Can't fix this upstream in either repo from here
+# (they're fetched fresh into _deps/ on every clean configure, never part of
+# this source tree) -- instead, strip the property right after each fetch
+# makes the targets available: this project's own -std=gnu++23 already
+# guarantees at least as much as cxx_std_20 ever would, so nothing is
+# actually lost by no longer asking CMake to separately verify it.
+macro(_fixup_fetched_cxx_std_targets)
+    if(TARGET intsh)
+        set_property(TARGET intsh PROPERTY INTERFACE_COMPILE_FEATURES "")
+    endif()
+    if(TARGET br0_tuple)
+        set_property(TARGET br0_tuple PROPERTY INTERFACE_COMPILE_FEATURES "")
+    endif()
+endmacro()
 
 # ----------------------------------------------------------------------
 # uitk-export -- regenerates every demo/gen/title/<target>/title.hpp|.cpp
@@ -178,7 +286,30 @@ FetchContent_Declare(
 # care which compiler got enabled, only that FindThreads' own assertion is
 # satisfied (CMAKE_SYSTEM_NAME=Generic sets no CMAKE_FIND_ROOT_PATH, so
 # nothing here restricts the search to a cross sysroot either way).
+#
+# Saved BEFORE enable_language(CXX): for nes/nes_pal, CMake's own compiler
+# enablement exports CXX (and, on some setups, CC) as real process
+# environment variables pointing at the just-identified compiler --
+# confirmed directly against this llvm-mos toolchain, not documented
+# behavior this comment previously assumed didn't apply. That's fine for
+# THIS process, but execute_process() below spawns nested `cmake`
+# subprocesses that inherit this same process's environment (regardless of
+# PATH, and regardless of nothing being passed as COMMAND arguments) -- so
+# without restoring these first, tools/uitk's own host-only configure
+# silently inherits CXX=<the NES cross-compiler> too and fails its own
+# compiler sanity check trying to link a plain host test program against
+# NES crt0.
+set(_HOST_ENV_CXX "$ENV{CXX}")
+set(_HOST_ENV_CC "$ENV{CC}")
 enable_language(CXX)
+# What enable_language(CXX) just bound CXX/CC to (see this block's own
+# comment above) -- saved so the host-compiler swap below, around the
+# nested uitk subprocesses only, can be undone afterward. Every later
+# project()/enable_language(CXX) call in this file (inside each
+# TARGET_PLATFORM branch) needs CXX/CC still pointed at this, not left on
+# the host values the uitk swap leaves behind.
+set(_MOS_ENV_CXX "$ENV{CXX}")
+set(_MOS_ENV_CC "$ENV{CC}")
 find_package(Qt6 QUIET COMPONENTS Widgets)
 if(NOT Qt6Widgets_FOUND)
     find_package(Qt5 QUIET COMPONENTS Widgets)
@@ -191,6 +322,23 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
                  ${CMAKE_SOURCE_DIR}/demo/ui/gameOptions.uis
                  ${UITK_SOURCES}
                  ${CMAKE_SOURCE_DIR}/tools/uitk/CMakeLists.txt)
+
+    # Restore CXX/CC to whatever they were before enable_language(CXX) above
+    # (the host's default if the invoking shell never set them itself) --
+    # see that block's own comment. Every execute_process() below is a
+    # nested `cmake` subprocess that must configure/build tools/uitk against
+    # the HOST compiler, never whatever enable_language(CXX) just bound CXX
+    # to for TARGET_PLATFORM=nes/nes_pal.
+    if(_HOST_ENV_CXX)
+        set(ENV{CXX} "${_HOST_ENV_CXX}")
+    else()
+        unset(ENV{CXX})
+    endif()
+    if(_HOST_ENV_CC)
+        set(ENV{CC} "${_HOST_ENV_CC}")
+    else()
+        unset(ENV{CC})
+    endif()
 
     execute_process(
             COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tools/uitk -B ${CMAKE_BINARY_DIR}/uitk-build
@@ -226,6 +374,24 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
     if(NOT UITK_EXPORT_RESULT EQUAL 0)
         message(FATAL_ERROR "uitk: export failed (see output above).")
     endif()
+
+    # Put CXX/CC back to what enable_language(CXX) above actually bound them
+    # to -- undoes the host-compiler swap just for the nested uitk
+    # subprocesses (see both this swap's own comment and the one on
+    # _MOS_ENV_CXX/_MOS_ENV_CC above). Every project()/enable_language(CXX)
+    # call from here on (inside each TARGET_PLATFORM branch below) must see
+    # CXX/CC pointed at the SAME compiler enable_language(CXX) already
+    # identified and cached, not the host swap.
+    if(_MOS_ENV_CXX)
+        set(ENV{CXX} "${_MOS_ENV_CXX}")
+    else()
+        unset(ENV{CXX})
+    endif()
+    if(_MOS_ENV_CC)
+        set(ENV{CC} "${_MOS_ENV_CC}")
+    else()
+        unset(ENV{CC})
+    endif()
 elseif(EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/title AND EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/playOptions)
     message(WARNING
         "Qt Widgets not found; using whatever's already under demo/gen/ "
@@ -250,54 +416,11 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
         set(REGION 1)
     endif()
 
-    # Mapper 4 (MMC3), not NROM: linked against the generic nes-platform
-    # crt0 (LLVM_MOS_PLATFORM=nes, not nes-nrom), since nes-nrom's own
-    # crt0.o/link.ld hardcode NROM-specific __prg_rom_size/__chr_rom_size
-    # defaults that this MMC3 build must supply itself (see mmc3-helper.ld's
-    # COROLLARY-equivalent reasoning, carried over from vrc1-helper.ld).
-    #
-    # The generic nes platform has no default link.ld (unlike nes-nrom and
-    # the other mapper subtargets), so -T must be supplied explicitly. This
-    # has to happen *before* project() below: project() runs CMake's own
-    # compiler-identification and ABI-detection probes, which both perform
-    # real links, and without -T those fail before any of this project's
-    # own code is ever touched ("cannot find linker script link.ld", then
-    # a harder-to-place "No known features for CXX compiler" once
-    # identification itself silently comes back empty).
-    #
-    # CMAKE_CXX_FLAGS, not CMAKE_EXE_LINKER_FLAGS: CMake's own
-    # CMAKE_DETERMINE_COMPILER_ID probe builds its test invocation from
-    # CMAKE_<LANG>_FLAGS specifically (see CMakeDetermineCompilerId.cmake) and
-    # does not consult CMAKE_EXE_LINKER_FLAGS at all, so -T placed there is
-    # invisible to that one probe even though it reaches every ordinary
-    # target's link step. Compile-only steps harmlessly warn that -T is
-    # unused; silenced below rather than left to spam every translation unit.
-    # BANKED CALL, Phase 5: TOPLEVEL_LD (originally VRC1_LD, renamed when the
-    # demo converted from VRC1 to MMC3 -- the variable was never actually
-    # mapper-specific, just named after whichever mapper existed first) is
-    # not hardcoded into the library's own tree -- the library only ever
-    # supplies a HELPER script (src/nes/mappers/mmc3-helper.ld: hardware
-    # facts and mechanical plumbing), never the actual, final linker script a
-    # real project links against (see BANKED_CALL_THEORY.txt's "THE FINAL
-    # LINKER SCRIPT MUST BE USER-MADE" section -- written against VRC1, but
-    # the principle is mapper-agnostic). The demo supplies its own top-level
-    # script (demo/link.ld) via local.cmake, matching LLVM_MOS_SDK's own "no
-    # fallback, missing is a hard configure-time error" convention just
-    # above -- see local.cmake.example.
-    if(NOT TOPLEVEL_LD)
-        message(FATAL_ERROR
-            "NES build requires a top-level linker script, but TOPLEVEL_LD is "
-            "unset. Copy local.cmake.example to local.cmake and set it to "
-            "your own project's top-level script, e.g.\n"
-            "    set(TOPLEVEL_LD \"\${CMAKE_SOURCE_DIR}/demo/link.ld\" CACHE FILEPATH \"\" FORCE)\n"
-            "That script should INCLUDE mmc3-helper.ld (src/nes/mappers) for "
-            "the hardware/mechanical parts it doesn't need to reinvent.")
-    endif()
-    # -L: GNU ld/lld's INCLUDE directive does NOT search the directory of the
-    # script doing the including -- only the linker's own -L search paths --
-    # so a top-level script's `INCLUDE mmc3-helper.ld` needs this to resolve
-    # at all.
-    set(CMAKE_CXX_FLAGS "-T ${TOPLEVEL_LD} -L${CMAKE_SOURCE_DIR}/src/nes/mappers -Wno-unused-command-line-argument")
+    # CMAKE_CXX_FLAGS (-T/-L/TOPLEVEL_LD's own FATAL_ERROR guard) is set much
+    # earlier now, right after CMAKE_TOOLCHAIN_FILE near the top of this file
+    # -- see that block's own comment for why (the unconditional
+    # enable_language(CXX) the uitk-export step needs, further up still,
+    # turned out to need it too, not just project() below).
 
     # ------------------------------------------------------------------
     # Where the FamiStudio audio backend is placed. THIS BACKEND IS A PROJECT
@@ -423,7 +546,11 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
         endif()
     endforeach()
 
-    set(LLVM_MOS_PLATFORM nes)
+    # LLVM_MOS_PLATFORM itself is set much earlier now (right after
+    # CMAKE_TOOLCHAIN_FILE near the top of this file) -- see that block's own
+    # comment for why (CMAKE_CXX_COMPILER_FORCED locks in whatever it picks
+    # at the FIRST enable_language(CXX), and the uitk-export step's own call
+    # happens before this point).
     find_package(llvm-mos-sdk REQUIRED)
     project(platform-nes CXX)
     set(PLATFORM_DEFINE TARGET_NES "REGION=${REGION}")
@@ -463,6 +590,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     list(TRANSFORM PLATFORM_DEFINE PREPEND "-D" OUTPUT_VARIABLE PLATFORM_DEFINE_FLAGS)
 
     FetchContent_MakeAvailable(intsh tuple)
+    _fixup_fetched_cxx_std_targets()
 
     # FamiStudio sound engine sources are fetched directly from upstream
     # to avoid vendoring a copy in the repository.
@@ -782,7 +910,12 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # (its own comment explains why) and so does NOT inherit anything set on
     # `demo` -- these have to be threaded through explicitly as raw -D flags
     # or uitk-generated demo/ui/**/*.cpp fails this diagnostic build with the
-    # very #error guards TITLE/SYSMEM exist to produce.
+    # very #error guards TITLE/SYSMEM exist to produce. GEN_TARGET_DIR (below,
+    # -DGEN_TARGET_DIR=nes on the PASS1_ELF command line itself, since it's
+    # the one define here that's NOT also needed by demo/src/banks.hpp) is
+    # the same story: title.cpp's own #error guard on it exists for exactly
+    # this reason -- catch a compile path that forgot it, loudly, instead of
+    # a confusing "file not found" from the #include STRCAT(...) below it.
     set(DEMO_PLACEMENT_DEFINES
             "TITLE=CREATE_SEGMENT_KEYWORD(\"${TITLE}\")"
             "TITLE_DATA=CREATE_SEGMENT_KEYWORD(\"${TITLE}.rodata\")"
@@ -794,9 +927,11 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # target actually builds, or every other platform's title.cpp comes
     # along too and the linker sees duplicate symbols for all of them.
     file(GLOB_RECURSE DEMO_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/*.cpp)
-    list(FILTER DEMO_C_SOURCES EXCLUDE REGEX "/demo/gen/title/")
+    list(FILTER DEMO_C_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/gen/title/nes/*.cpp)
     list(APPEND DEMO_C_SOURCES ${DEMO_TITLE_SOURCES})
+    file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/gen/playOptions/nes/*.cpp)
+    list(APPEND DEMO_C_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
 
     set(PASS1_ELF ${CMAKE_BINARY_DIR}/demo_pass1.elf)
     add_custom_command(
@@ -808,7 +943,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             # forces the C++ frontend for the source inputs.
             -std=gnu++23 -Wno-c23-extensions -x c++
             -include ${CMAKE_SOURCE_DIR}/demo/src/graphics/charmaps.hpp
-            -Os ${PLATFORM_DEFINE_FLAGS} ${DEMO_PLACEMENT_FLAGS} -D${ORIENTATION}
+            -Os ${PLATFORM_DEFINE_FLAGS} ${DEMO_PLACEMENT_FLAGS} -DGEN_TARGET_DIR=nes -D${ORIENTATION}
             # Reserve 10 ZP bytes for FamiStudio (8 vars + 2 alignment slack).
             # mos-nes.cfg defaults to -mlto-zp=224 (the full region); capping at
             # 214 prevents mos-zero-page-alloc from filling the last 10 bytes and
@@ -884,6 +1019,14 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     set_target_properties(demo PROPERTIES SUFFIX ".nes")
 
     target_link_libraries(demo PRIVATE platform-nes)
+
+    # Bareword (unquoted) macro naming this target's own demo/gen/*/<dir>
+    # subdirectory -- consumed via ::STRCAT (platform-nes/technology.hpp) for
+    # a computed #include, e.g. `#include STRCAT(../../gen/title/GEN_TARGET_DIR/title.hpp)`,
+    # not a search-path trick. Value always matches DEMO_TITLE_DIR (hardcoded
+    # "nes" here, same as the glob above, since this branch never sets that
+    # variable).
+    target_compile_definitions(demo PRIVATE GEN_TARGET_DIR=nes)
 
     # TITLE/TITLE_DATA/SYSMEM as real, whole-macro compile definitions (not
     # just the section-name strings AUDIO/UI_SECTION feed into a locally
@@ -965,6 +1108,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "wii")
     project(platform-nes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
+    _fixup_fetched_cxx_std_targets()
 
     if(TARGET_PLATFORM STREQUAL "gc")
         set(PLATFORM_DEFINE TARGET_GC)
@@ -1052,9 +1196,11 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "wii")
                 COMPILE_OPTIONS "--embed-dir=${OGC_ASSET_DIR}")
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+    file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
+    list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
     # (being the includer) emits the folded CHR ROM image. Declare the art as an
@@ -1066,6 +1212,12 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "wii")
     add_executable(demo ${DEMO_SOURCES})
     set_target_properties(demo PROPERTIES SUFFIX ".elf")
     target_link_libraries(demo PRIVATE platform-nes)
+
+    # See the TARGET_NES branch's own comment on this same call for
+    # GEN_TARGET_DIR. Quoted: DEMO_TITLE_DIR is "wii u" (a space) on the Wii
+    # branch below, and an unquoted argument here would split on that space
+    # into two separate (wrong) compile definitions.
+    target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
     # CHR art is pulled in with #embed (C23). devkitPPC's GCC supports it without
     # a diagnostic here; keep the Clang-only silencer guard for parity with the
@@ -1114,6 +1266,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     project(platform-nes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
+    _fixup_fetched_cxx_std_targets()
 
     set(DEMO_TITLE_DIR 3ds)
 
@@ -1140,9 +1293,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+    file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
+    list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
     # (being the includer) emits the folded CHR ROM image. Declare the art as an
@@ -1154,6 +1309,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     add_executable(demo ${DEMO_SOURCES})
     set_target_properties(demo PROPERTIES SUFFIX ".elf")
     target_link_libraries(demo PRIVATE platform-nes citro2d citro3d ctru m)
+
+    # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
+    target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
     # CHR art is pulled in with #embed (C23). devkitARM's GCC supports it without
     # a diagnostic here; keep the Clang-only silencer guard for parity with the
@@ -1205,6 +1363,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _fixup_fetched_cxx_std_targets()
 
         set(DEMO_TITLE_DIR switch)
 
@@ -1231,9 +1390,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1244,6 +1405,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         add_executable(demo ${DEMO_SOURCES})
         set_target_properties(demo PROPERTIES SUFFIX ".elf")
         target_link_libraries(demo PRIVATE platform-nes nx)
+
+        # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
+        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
         # CHR art is pulled in with #embed (C23); keep the Clang-only silencer for
         # parity with the other branches (no-op under devkitA64's GCC).
@@ -1323,6 +1487,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _fixup_fetched_cxx_std_targets()
 
         set(DEMO_TITLE_DIR "wii u")
 
@@ -1397,9 +1562,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                     COMPILE_OPTIONS "--embed-dir=${WIIU_ASSET_DIR}")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1412,6 +1579,12 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # The demo supplies its own main() via the RESET macro, so the backend
         # builds with SDL_MAIN_HANDLED and SDL2main is deliberately NOT linked.
         target_link_libraries(demo PRIVATE platform-nes)
+
+        # See the TARGET_NES branch's own comment on this same call for
+        # GEN_TARGET_DIR. Quoted: DEMO_TITLE_DIR is "wii u" (a space) on this
+        # branch, and an unquoted argument here would split on that space
+        # into two separate (wrong) compile definitions.
+        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
         # CHR art is pulled in with #embed (C23); keep the Clang-only silencer for
         # parity with the other branches (no-op under devkitPPC's GCC).
@@ -1567,6 +1740,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _fixup_fetched_cxx_std_targets()
 
         set(DEMO_TITLE_DIR psp)
 
@@ -1635,9 +1809,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                     COMPILE_OPTIONS "--embed-dir=${PSP_ASSET_DIR}")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1650,6 +1826,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # create_pbp_file()/psp-fixup-imports below, not a bare "demo".
         set_target_properties(demo PROPERTIES SUFFIX ".elf")
         target_link_libraries(demo PRIVATE platform-nes pspdisplay pspctrl pspaudio pspge psppower)
+
+        # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
+        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
         # CHR art is pulled in with #embed (C23); keep the Clang-only silencer
         # for parity with the other branches (no-op under psp-g++/GCC).
@@ -1713,6 +1892,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _fixup_fetched_cxx_std_targets()
 
         # The DS backend maps the shared PPU bookkeeping (src/emu) onto libnds 2D
         # hardware: the emulator and all the nametable/OAM/palette write functions
@@ -1744,9 +1924,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1757,6 +1939,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         add_executable(demo ${DEMO_SOURCES})
         set_target_properties(demo PROPERTIES SUFFIX ".elf")
         target_link_libraries(demo PRIVATE platform-nes nds9)
+
+        # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
+        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
         # CHR art is pulled in with #embed (C23); keep the Clang-only silencer for
         # parity with the other branches (no-op under devkitARM's GCC).
@@ -1823,6 +2008,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _fixup_fetched_cxx_std_targets()
 
         set(DEMO_TITLE_DIR gba)
 
@@ -1849,9 +2035,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1864,6 +2052,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # libgba (-lgba) + gba.specs come in via the platform module's standard
         # libraries/linker flags, so only the engine archive is linked explicitly.
         target_link_libraries(demo PRIVATE platform-nes)
+
+        # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
+        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
         # CHR art is pulled in with #embed (C23); keep the Clang-only silencer for
         # parity with the other branches (no-op under devkitARM's GCC).
@@ -1901,6 +2092,7 @@ else()
     project(platform-nes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
+    _fixup_fetched_cxx_std_targets()
 
     set(DEMO_TITLE_DIR pc)
 
@@ -2097,9 +2289,11 @@ else()
     endif()
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/title/")
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+    file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
+    list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
     # (being the includer) emits the folded CHR ROM image. Declare the art as an
@@ -2110,6 +2304,9 @@ else()
 
     add_executable(demo ${DEMO_SOURCES})
     target_link_libraries(demo PRIVATE platform-nes)
+
+    # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
+    target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
     # CHR art is pulled in with #embed (C23), which Clang flags as an extension
     # in C++ mode. It is the intended mechanism here, so silence the diagnostic.

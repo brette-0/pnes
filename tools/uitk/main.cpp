@@ -952,16 +952,19 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
 // Every generated declaration lives inside `namespace gen::<sceneName>`, so
 // two scenes can freely reuse the same component names without colliding.
 //
-// A SingleChoice's member positions are baked very differently depending on
-// whether `target` has a fixed panel size known at compile time (NES/GBA/
-// PSP) or a variadic one only known once the game is actually running
-// (GCN onward, except PSP -- see kVariadicTargets): on a fixed target,
-// `<name>_options` is a `const` array of already-resolved positions, exactly
-// like a ctTextBox's own placement is baked; on a variadic target it's
-// mutable storage populated by Make_, each element re-deriving its member's
-// position expression at runtime via video::viewport_*() (see emitExprCpp)
-// since VIEWPORT_TX/TY/PX/PY can't be collapsed to one number the way they
-// can for a fixed panel.
+// A SingleChoice's member positions -- and, the same way, a ctTextBox's own
+// placement (see genCtTextBoxBody/genCtTextBoxEraseBody) -- are baked very
+// differently depending on whether `target` has a fixed panel size known at
+// compile time (NES/GBA/PSP) or a variadic one only known once the game is
+// actually running (GCN onward, except PSP -- see kVariadicTargets): on a
+// fixed target, the position is a plain already-resolved constant; on a
+// variadic target it re-derives its stored position expression at runtime via
+// video::viewport_*() (see emitExprCpp) since VIEWPORT_TX/TY/PX/PY can't be
+// collapsed to one number the way they can for a fixed panel. A SingleChoice
+// additionally needs mutable storage for this (`<name>_options`, populated by
+// Make_) since it has multiple members computed at once; a ctTextBox has only
+// the one position, so its Draw_/Erase_ body just re-evaluates the expression
+// inline every call.
 
 // Fixed nametable quadrant size, mirroring src/nes/video.cpp's xy_to_nt_addr
 // (32 tiles wide, 30 tall per quadrant) -- the addressing scheme every
@@ -1042,6 +1045,59 @@ struct CtTextBoxGen {
     QString body;
 };
 
+// Cross-reference resolver for a position expression's `Other.pos.x`-style
+// identifiers -- these are never runtime-variable, only VIEWPORT_* is (see
+// emitExprCpp), so they're baked to the already-resolved value every other
+// geometry node's own codegen uses. `.enabled` (prop 5) is the one exception
+// that isn't itself stored on the node -- it's recomputed here the same way
+// resolveAllPtr's own resolveIdent does, against this export's actual
+// target/region rather than whatever happened to be selected in the sidebar
+// when the scene was last edited. Shared by genCtTextBoxBody/
+// genCtTextBoxEraseBody and genSingleChoiceDecl's own copy of the same logic.
+long long resolvePositionRef(QTreeWidgetItem* rootItem, const QString& target, const QString& region,
+                              const QTreeWidgetItem* self, const QString& rawName, int prop) {
+    const QString wanted = (rawName == QLatin1String("this")) ? bareName(self) : rawName;
+    for (QTreeWidgetItem* other : collectComponentItems(rootItem)) {
+        if (bareName(other) != wanted) continue;
+        switch (prop) {
+            case 0: return other->data(0, kPosXRole).toInt();
+            case 1: return other->data(0, kPosYRole).toInt();
+            case 2: return other->data(0, kSizeWRole).toInt();
+            case 3: return other->data(0, kSizeHRole).toInt();
+            case 4: return other->data(0, kTextContentRole).toString().length();
+            case 5: return isEffectivelyHidden(other, target, region) ? 0 : 1;
+            default: return 0;
+        }
+    }
+    return 0;
+}
+
+// Emits one position component (x or y) of `item` as a runtime C++
+// expression when `variadic` is set and the node's stored expression text
+// (kPosXExprRole/kPosYExprRole) parses -- the same VIEWPORT_TX/TY/PX/PY-aware
+// placement a SingleChoice's own members already get on a variadic target
+// (see the kVariadicTargets doc comment above) -- falling back to the
+// already-resolved literal otherwise (fixed target, or an expression that
+// doesn't parse). A ctTextBox has exactly one position, unlike a
+// SingleChoice's several members, so this re-evaluates inline in Draw_/
+// Erase_ rather than needing separate mutable storage populated by a Make_.
+QString emitPosComponent(const QTreeWidgetItem* item, int exprRole, int literalRole, bool variadic,
+                          QTreeWidgetItem* rootItem, const QString& target, const QString& region) {
+    if (variadic) {
+        QString src = item->data(0, exprRole).toString().trimmed();
+        if (src.isEmpty()) src = QStringLiteral("0");
+        bool ok = false;
+        const ExprPtr ast = ExprParser(src).parse(ok);
+        if (ok) {
+            auto resolveFor = [rootItem, target, region, item](const QString& n, int p) {
+                return resolvePositionRef(rootItem, target, region, item, n, p);
+            };
+            return emitExprCpp(ast, resolveFor);
+        }
+    }
+    return QString::number(item->data(0, literalRole).toInt());
+}
+
 // Emits one ctTextBox's data + placement function body: a
 // ppu::WriteFromBufferToNameTable call per wrapped row -- same wrap/align
 // math as TileGridWidget::paintEvent, so what's exported always matches what
@@ -1072,7 +1128,8 @@ struct CtTextBoxGen {
 // be wider/taller than one nametable page, which NES's fixed 32x30 panel
 // never is.
 CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, int ntOffX, int ntOffY, bool isNes,
-                               const QString& dataPrefixTok, const QString& charmapFn) {
+                               bool variadic, QTreeWidgetItem* rootItem, const QString& target,
+                               const QString& region, const QString& dataPrefixTok, const QString& charmapFn) {
     const int x = item->data(0, kPosXRole).toInt() + ntOffX;
     const int y = item->data(0, kPosYRole).toInt() + ntOffY;
     const int w = std::max(1, item->data(0, kSizeWRole).toInt());
@@ -1111,6 +1168,23 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, 
                 bodyLines << QString("    ppu::WriteFromBufferToNameTable(0x%1, %2, 0);")
                                  .arg(static_cast<uint>(nesNtAddr(x + startCol, y + row)), 4, 16, QLatin1Char('0'))
                                  .arg(sourceArgs);
+            } else if (variadic) {
+                // Re-derive the box's own VIEWPORT_TX/TY-based placement
+                // expression at runtime (see emitPosComponent) instead of
+                // baking the value it happened to resolve to in the editor --
+                // otherwise this row's arrow-anchor (SingleChoice's own
+                // `_options[i]`, itself expression-driven) and its drawn text
+                // only line up at whatever viewport size was open in uitk
+                // when this was exported.
+                const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
+                const QString yExpr = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
+                const int xOff = startCol + ntOffX;
+                const int yOff = row + ntOffY;
+                const QString xFinal = xOff ? QString("(%1 + %2)").arg(xExpr).arg(xOff) : xExpr;
+                const QString yFinal = yOff ? QString("(%1 + %2)").arg(yExpr).arg(yOff) : yExpr;
+                bodyLines << QString("    ppu::WriteFromBufferToNameTable("
+                                      "vec2<u16>{static_cast<u16>(%1), static_cast<u16>(%2)}, %3, 0);")
+                                 .arg(xFinal, yFinal, sourceArgs);
             } else {
                 bodyLines << QString("    ppu::WriteFromBufferToNameTable(vec2<u16>{%1, %2}, %3, 0);")
                                  .arg(x + startCol)
@@ -1131,7 +1205,8 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, 
 // own plain-string fallback. Unlike genCtTextBoxBody's rows, this always
 // covers the full box, not just whatever rows the current text wraps to, so
 // switching to shorter text later doesn't leave stale tiles behind.
-QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes,
+QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
+                               QTreeWidgetItem* rootItem, const QString& target, const QString& region,
                                const QString& charmapFn) {
     const int x = item->data(0, kPosXRole).toInt() + ntOffX;
     const int y = item->data(0, kPosYRole).toInt() + ntOffY;
@@ -1146,6 +1221,19 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
             bodyLines << QString("    ppu::WriteRepeatedToNameTable(0x%1, %2, %3, 0);")
                              .arg(static_cast<uint>(nesNtAddr(x, y + row)), 4, 16, QLatin1Char('0'))
                              .arg(tileExpr)
+                             .arg(w);
+        } else if (variadic) {
+            // Same reasoning as genCtTextBoxBody's own variadic branch: this
+            // has to erase exactly where the current Draw_ call landed, which
+            // only holds if both re-derive the same expression at runtime.
+            const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
+            const QString yExpr = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
+            const QString xFinal = ntOffX ? QString("(%1 + %2)").arg(xExpr).arg(ntOffX) : xExpr;
+            const int yOff = row + ntOffY;
+            const QString yFinal = yOff ? QString("(%1 + %2)").arg(yExpr).arg(yOff) : yExpr;
+            bodyLines << QString("    ppu::WriteRepeatedToNameTable("
+                                  "vec2<u16>{static_cast<u16>(%1), static_cast<u16>(%2)}, %3, %4, 0);")
+                             .arg(xFinal, yFinal, tileExpr)
                              .arg(w);
         } else {
             bodyLines << QString("    ppu::WriteRepeatedToNameTable(vec2<u16>{%1, %2}, %3, %4, 0);")
@@ -1312,6 +1400,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     // on a scene, even though nothing in this file's output references it
     // anymore.
     const bool isNes = (target == QLatin1String("NES"));
+    const bool variadic = kVariadicTargets.contains(target);
     const QString bssPrefixTok = (isNes && !bssPrefix.trimmed().isEmpty()) ? (bssPrefix.trimmed() + " ") : QString();
     const QString dataPrefixTok =
         (isNes && !dataPrefix.trimmed().isEmpty()) ? (dataPrefix.trimmed() + " ") : QString();
@@ -1363,14 +1452,16 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             // compose with a placement attribute -- once a body gets
             // duplicated into every caller, there's no single out-of-line
             // copy left for a section attribute to pin anywhere.
-            const CtTextBoxGen gen = genCtTextBoxBody(item, name, ntOffX, ntOffY, isNes, dataPrefixTok, charmapFn);
+            const CtTextBoxGen gen = genCtTextBoxBody(item, name, ntOffX, ntOffY, isNes, variadic, rootItem, target,
+                                                        region, dataPrefixTok, charmapFn);
             if (!gen.rootDecls.isEmpty()) {
                 hppDecls << gen.rootDecls;
             }
             hppDecls << QString("inline AI void Draw_%1() {\n%2\n}\n").arg(name, gen.body);
 
             if (item->data(0, kProvideErasingRole).toBool()) {
-                const QString eraseBody = genCtTextBoxEraseBody(item, ntOffX, ntOffY, isNes, charmapFn);
+                const QString eraseBody = genCtTextBoxEraseBody(item, ntOffX, ntOffY, isNes, variadic, rootItem,
+                                                                  target, region, charmapFn);
                 hppDecls << QString("inline AI void Erase_%1() {\n%2\n}\n").arg(name, eraseBody);
             }
         } else {  // rtTextBox
