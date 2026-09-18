@@ -17,19 +17,26 @@ namespace ui::text {
         Right
     };
 
+    // One word-wrapped row: addr points into the source buffer at the
+    // row's first byte, size is the row's length in bytes, splitter
+    // excluded.
+    struct textBuffer {
+        u8* addr;
+        u8 size;
+    };
 
     /*
      *  Same wrapping rule as Draw, but instead of writing rows to the
      *  nametable it records where each row would have started and how
      *  long it is.
      *
-     *  Returns a heap-allocated array of box.y buffer<u8*> entries --
+     *  Returns a heap-allocated array of box.y textBuffer entries --
      *  one per row, caller owns it (delete[] once done). addr points
      *  into buff at that row's first byte, size is the row's length in
      *  bytes, splitter excluded. Rows left unused because the buffer
      *  ran out first are zeroed (addr == nullptr, size == 0).
      */
-    NI buffer<u8*>* Make(const u8* buff, u8 sBuff, vec2<u8> box, u8 splitter);
+    NI textBuffer* Make(const u8* buff, u8 sBuff, vec2<u8> box, u8 splitter);
 
     /*
      *  Draws a Make() result: writes chunks[row] to nametable row
@@ -45,7 +52,7 @@ namespace ui::text {
      *  walks rows by a plain +32 add -- see the address overload below if
      *  even that one division doesn't belong on the caller's hot path.
      */
-    AI void Draw(const buffer<u8*>* chunks, vec2<u16> pos, vec2<u8> box, Alignment align);
+    AI void Draw(const textBuffer* chunks, vec2<u16> pos, vec2<u8> box, Alignment align);
 
     /*
      *  Address overload of Draw(): @p address is row 0's nametable address
@@ -68,7 +75,7 @@ namespace ui::text {
      *  always_inline needs to accept a body under LTO -- see ::AI's own
      *  comment in technology.hpp.
      */
-    AI inline void Draw(const buffer<u8*>* rows, const u16 address, const vec2<u8> box, const Alignment align) {
+    AI inline void Draw(const textBuffer* rows, const u16 address, const vec2<u8> box, const Alignment align) {
         u16 rowAddr = address;
         for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
             u16 useAddr;
@@ -92,7 +99,7 @@ namespace ui::text {
     }
 
     AI inline void Clear(
-        const buffer<u8*>* rows, const u16 address, const vec2<u8> box, const Alignment align, const u8 clear
+        const textBuffer* rows, const u16 address, const vec2<u8> box, const Alignment align, const u8 clear
     ) {
         u16 rowAddr = address;
         for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
@@ -116,7 +123,7 @@ namespace ui::text {
         }
     }
 
-    AI inline void Draw(const buffer<u8*>* chunks, const vec2<u16> pos, const vec2<u8> box, const Alignment align) {
+    AI inline void Draw(const textBuffer* chunks, const vec2<u16> pos, const vec2<u8> box, const Alignment align) {
         Draw(chunks, ppu::CartesianToAddress(pos), box, align);
     }
 }

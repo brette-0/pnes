@@ -1366,7 +1366,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             const QString splitterArg = charmapFn.isEmpty()
                                              ? QString("'%1'").arg(cCharEscape(splitter))
                                              : QString("%1('%2')").arg(charmapFn, cCharEscape(splitter));
-            hppDecls << QString("inline AI buffer<u8*>* %1(const u8* buff, const u8 sBuff) {\n"
+            hppDecls << QString("inline AI ui::text::textBuffer* %1(const u8* buff, const u8 sBuff) {\n"
                                  "    return ui::text::Make(buff, sBuff, vec2<u8>{%2, %3}, %4);\n"
                                  "}\n")
                              .arg(name)

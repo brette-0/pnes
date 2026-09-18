@@ -10,12 +10,6 @@
 #include <intsh>
 using namespace br0::intsh;
 
-template <typename T>
-struct buffer {
-    T addr;
-    u8 size;
-};
-
 template <typename t>
 concept addable = requires (t a, t b) {
     a + b;

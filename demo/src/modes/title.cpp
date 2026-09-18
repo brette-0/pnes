@@ -24,7 +24,7 @@ namespace title {
 #endif
     static ui::choice::SingleChoice* pMenu = nullptr;
     static ui::choice::SingleChoice* pMainMenu = nullptr;
-    static buffer<u8*>* pMenuChunks = nullptr;
+    static ui::text::textBuffer* pMenuChunks = nullptr;
     static u16 menuAddr;
     // Arrow-slot address per menu option -- SingleChoice no longer knows
     // where (or whether) its options are drawn, so title.cpp is the one
@@ -33,7 +33,7 @@ namespace title {
     static u16 menuOptionAddr[kMenuOptions];
 
     static ui::choice::SingleChoice* pPlayMode = nullptr;
-    static buffer<u8*>* pPlayModeChunks = nullptr;
+    static ui::text::textBuffer* pPlayModeChunks = nullptr;
     static vec2<u16> playModePos;
     static u16 playModeAddr;
     static u16 playModeOptionAddr[kPlayModeOptions];
@@ -55,15 +55,16 @@ namespace title {
     // tile left of that option's text -- where the caller draws its own
     // selection arrow, since this makes no draw call for it.
     //
-    // Returns a heap-allocated array of nOptions buffer<u8*> entries --
-    // same row-per-entry shape ui::text::Make returns -- caller owns it
-    // (delete[] once done) and can hand it straight to ui::text::Draw.
-    static buffer<u8*>* MakeOptionBoxes(
+    // Returns a heap-allocated array of nOptions ui::text::textBuffer
+    // entries -- same row-per-entry shape ui::text::Make returns -- caller
+    // owns it (delete[] once done) and can hand it straight to
+    // ui::text::Draw.
+    static ui::text::textBuffer* MakeOptionBoxes(
         const u8* buff, const u8 sBuff, const vec2<u16> pos, const u8 boxWidth,
         const u8 wordSplitter, const u8 optionSplitter,
         u16* const optionAddr, const u8 nOptions
     ) {
-        const auto rows = new buffer<u8*>[nOptions];
+        const auto rows = new ui::text::textBuffer[nOptions];
         const u16 arrowCol = pos.x - 2;
         u8 cursor = 0;
 
@@ -153,7 +154,7 @@ namespace title {
         // Make()'s result is heap-allocated and caller-owned (see
         // singlechoice.hpp's own comment on Make()), and pMenuChunks is a
         // file-static that just gets silently overwritten on re-entry
-        // otherwise, leaking a fresh buffer<u8*>[kMenuOptions] every single
+        // otherwise, leaking a fresh ui::text::textBuffer[kMenuOptions] every single
         // time. Safe on the very first call too: pMenuChunks starts null,
         // and delete[] on a null pointer is a no-op.
         delete[] pMenuChunks;

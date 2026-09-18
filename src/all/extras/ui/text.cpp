@@ -19,8 +19,8 @@ local.cmake.example has a worked example."
 #define UI_BANK MODULE_PLACEMENT(PLATFORM_NES_UI_SECTION) MINSIZE
 
 namespace ui::text {
-    UI_BANK buffer<u8*>* Make(const u8* buff, const u8 sBuff, const vec2<u8> box, const u8 splitter) {
-        const auto rows = new buffer<u8 *>[box.y]();
+    UI_BANK textBuffer* Make(const u8* buff, const u8 sBuff, const vec2<u8> box, const u8 splitter) {
+        const auto rows = new textBuffer[box.y]();
 
         u8 cursor = 0;
         u8 last   = 0;
