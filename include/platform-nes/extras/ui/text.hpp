@@ -68,15 +68,9 @@ namespace ui::text {
      *  always_inline needs to accept a body under LTO -- see ::AI's own
      *  comment in technology.hpp.
      */
-    AI void Draw(const buffer<u8*>* rows, u16 address, vec2<u8> box, Alignment align);
-
-
     AI inline void Draw(const buffer<u8*>* rows, const u16 address, const vec2<u8> box, const Alignment align) {
-        ppu::WriteFromBufferToNameTable(address, rows[0].addr, rows[0].size, 0);
         u16 rowAddr = address;
-        for (u8 i = 1; i < box.y; i++) {
-            rowAddr += video::viewport_tx();
-
+        for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
             u16 useAddr;
             switch (align) {
                 case Left:
@@ -94,6 +88,31 @@ namespace ui::text {
             }
 
             ppu::WriteFromBufferToNameTable(useAddr, rows[i].addr, rows[i].size, 0);
+        }
+    }
+
+    AI inline void Clear(
+        const buffer<u8*>* rows, const u16 address, const vec2<u8> box, const Alignment align, const u8 clear
+    ) {
+        u16 rowAddr = address;
+        for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
+            u16 useAddr;
+            switch (align) {
+                case Left:
+                default:
+                    useAddr = rowAddr;
+                    break;
+
+                case Right:
+                    useAddr = rowAddr + (box.x - rows[i].size);
+                    break;
+
+                case Centre:
+                    useAddr = rowAddr + (box.x - rows[i].size) / 2;
+                    break;
+            }
+
+            ppu::WriteRepeatedToNameTable(useAddr, clear, rows[i].size, 0);
         }
     }
 
