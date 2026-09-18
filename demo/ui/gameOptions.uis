@@ -1,0 +1,12 @@
+{
+    "bss_prefix": "",
+    "charmap": "",
+    "data_prefix": "",
+    "linker_prefix": "",
+    "nametable": 0,
+    "nodes": [
+    ],
+    "region": "NTSC",
+    "target": "NES",
+    "version": 1
+}

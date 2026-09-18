@@ -49,4 +49,52 @@ namespace ui::text {
 
         return rows;
     }
+
+    UI_BANK void Draw(const textBuffer* rows, const u16 address, const vec2<u8> box, const Alignment align) {
+        u16 rowAddr = address;
+        for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
+            u16 useAddr;
+            switch (align) {
+                case Left:
+                default:
+                    useAddr = rowAddr;
+                    break;
+
+                case Right:
+                    useAddr = rowAddr + (box.x - rows[i].size);
+                    break;
+
+                case Centre:
+                    useAddr = rowAddr + (box.x - rows[i].size) / 2;
+                    break;
+            }
+
+            ppu::WriteFromBufferToNameTable(useAddr, rows[i].addr, rows[i].size, 0);
+        }
+    }
+
+    UI_BANK void Clear(
+        const textBuffer* rows, const u16 address, const vec2<u8> box, const Alignment align, const u8 clear
+    ) {
+        u16 rowAddr = address;
+        for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
+            u16 useAddr;
+            switch (align) {
+                case Left:
+                default:
+                    useAddr = rowAddr;
+                    break;
+
+                case Right:
+                    useAddr = rowAddr + (box.x - rows[i].size);
+                    break;
+
+                case Centre:
+                    useAddr = rowAddr + (box.x - rows[i].size) / 2;
+                    break;
+            }
+
+            ppu::WriteRepeatedToNameTable(useAddr, clear, rows[i].size, 0);
+        }
+    }
 }

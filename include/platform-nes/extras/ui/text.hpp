@@ -66,62 +66,19 @@ namespace ui::text {
      *  callers whose box could cross that boundary need the vec2 overload,
      *  which still gets it right via CartesianToAddress.
      *
-     *  Both overloads are defined here (not in text.cpp), and both take an
-     *  explicit `inline` alongside ::AI: as free functions (not class
-     *  members, which are implicitly inline when defined in-class) included
-     *  by more than one .cpp, they'd otherwise be an ODR violation -- each
-     *  including TU would emit its own external-linkage definition. `inline`
-     *  gives them vague (COMDAT) linkage instead, which is also what GCC's
-     *  always_inline needs to accept a body under LTO -- see ::AI's own
-     *  comment in technology.hpp.
+     *  Both overloads are declared here but DEFINED in text.cpp under
+     *  ::UI_BANK, not header-inline: a section attribute only pins an
+     *  out-of-line, externally-linked definition, and an `inline`/::AI
+     *  body has no such copy for the section to pin (::AI and section
+     *  placement are mutually exclusive -- see technology.hpp). Giving
+     *  this overload deterministic bank placement means giving up the
+     *  header-inline/COMDAT trick the vec2 overload below still uses.
      */
-    AI inline void Draw(const textBuffer* rows, const u16 address, const vec2<u8> box, const Alignment align) {
-        u16 rowAddr = address;
-        for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
-            u16 useAddr;
-            switch (align) {
-                case Left:
-                default:
-                    useAddr = rowAddr;
-                    break;
+    NI void Draw(const textBuffer* rows, u16 address, vec2<u8> box, Alignment align);
 
-                case Right:
-                    useAddr = rowAddr + (box.x - rows[i].size);
-                    break;
-
-                case Centre:
-                    useAddr = rowAddr + (box.x - rows[i].size) / 2;
-                    break;
-            }
-
-            ppu::WriteFromBufferToNameTable(useAddr, rows[i].addr, rows[i].size, 0);
-        }
-    }
-
-    AI inline void Clear(
-        const textBuffer* rows, const u16 address, const vec2<u8> box, const Alignment align, const u8 clear
-    ) {
-        u16 rowAddr = address;
-        for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
-            u16 useAddr;
-            switch (align) {
-                case Left:
-                default:
-                    useAddr = rowAddr;
-                    break;
-
-                case Right:
-                    useAddr = rowAddr + (box.x - rows[i].size);
-                    break;
-
-                case Centre:
-                    useAddr = rowAddr + (box.x - rows[i].size) / 2;
-                    break;
-            }
-
-            ppu::WriteRepeatedToNameTable(useAddr, clear, rows[i].size, 0);
-        }
-    }
+    NI void Clear(
+        const textBuffer* rows, u16 address, vec2<u8> box, Alignment align, u8 clear
+    );
 
     AI inline void Draw(const textBuffer* chunks, const vec2<u16> pos, const vec2<u8> box, const Alignment align) {
         Draw(chunks, ppu::CartesianToAddress(pos), box, align);

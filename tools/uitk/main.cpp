@@ -55,9 +55,13 @@
 #include <QSet>
 #include <QHash>
 #include <QBrush>
+#include <QTabWidget>
+#include <QStackedWidget>
 #include <map>
 #include <optional>
 #include <utility>
+#include <vector>
+#include <memory>
 #include <cstdio>
 
 namespace {
@@ -1706,7 +1710,7 @@ private:
 };
 
 struct Sidebar {
-    QDockWidget* dock;
+    QWidget* content;
     QTreeWidget* tree;
     QLineEdit* xEdit;
     QLineEdit* yEdit;
@@ -1720,42 +1724,31 @@ struct Sidebar {
     std::function<bool(const QString&)> loadScene;
     std::function<bool()> hasUnresolvedErrors;
     std::function<bool(const QString&, const QString&)> exportOneTarget;
+
+    // Exposed so a global File menu (built once, outside createSidebar) can
+    // act on whichever tab happens to be active -- see TabManager/
+    // createFileMenu in main().
+    std::function<bool()> save;
+    std::function<bool()> saveAs;
+    std::function<bool()> confirmDiscard;
+
+    // What TabManager shows as this scene's tab label: "Untitled"/the
+    // saved file's name, "*"-suffixed while dirty -- the same text that used
+    // to go straight into the (single, scene-wide) window title.
+    std::function<QString()> displayName;
 };
 
 // `maxTilesX`/`maxTilesY` bound the fields to whatever will actually fit on
 // the detected monitor at the current tile scale -- see the call site in
 // main() for how those are derived. `tilePx` is that same scale, needed here
 // (not just by the canvas) so VIEWPORT_PX/VIEWPORT_PY can be computed.
-Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY, double tilePx) {
-    auto* dock = new QDockWidget("Sidebar", parent);
-    dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
-    dock->setFixedWidth(widthPx);
-
-    // NoDockWidgetFeatures means there's no user-facing way to close/hide
-    // this dock, so any time it goes invisible it's a Qt layout glitch, not
-    // a legitimate state -- most commonly triggered by the window resizes in
-    // lockWindowToContents(), which can transiently unmap the dock via a
-    // *deferred* Qt layout event. Reacting synchronously to that (as
-    // lockWindowToContents also tries) can lose the race against the
-    // deferred hide; queuing the re-show instead runs it after any pending
-    // layout events have already fired, so it always wins.
-    QObject::connect(dock, &QDockWidget::visibilityChanged, dock, [dock](bool visible) {
-        if (!visible) {
-            QTimer::singleShot(0, dock, [dock] { dock->setVisible(true); });
-        }
-    });
-
-    // `parent` is always the UitkMainWindow constructed in main().
-    auto* window = static_cast<UitkMainWindow*>(parent);
-
-    // The sidebar's required height isn't fixed -- the properties panel
-    // appears/disappears with selection, and nodes get added to the tree --
-    // so the window (locked to a fixed size elsewhere) needs to be re-fit
-    // any time that happens, not just when the viewport's tile counts
-    // change.
-    window->installEventFilter(new LayoutChangeNotifier([window] { lockWindowToContents(window); }, window));
-
-    auto* content = new QWidget(dock);
+// `onTitleChanged` is invoked whenever this scene's name or dirty state might
+// have changed -- the caller (TabManager, or runCliExport's no-op) is what
+// actually decides where that's displayed (a tab label, in TabManager's
+// case).
+Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, double tilePx,
+                       std::function<void()> onTitleChanged) {
+    auto* content = new QWidget();
     auto* layout = new QVBoxLayout(content);
 
     // Node tree (Unity-style scene hierarchy), origin top of sidebar.
@@ -1923,15 +1916,25 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         return currentPath->isEmpty() ? QStringLiteral("scene") : QFileInfo(*currentPath).completeBaseName();
     };
 
-    auto updateTitle = [window, currentPath, dirty, rootItem, tree, sceneName] {
+    // What this scene's tab should be labeled -- distinct from sceneName()
+    // above (which always names the exported namespace, "scene" default and
+    // all): "Untitled" before the first save, the saved file's name after,
+    // "*"-suffixed whenever there are unsaved changes.
+    auto displayName = [currentPath, dirty] {
         const QString name =
             currentPath->isEmpty() ? QStringLiteral("Untitled") : QFileInfo(*currentPath).fileName();
-        window->setWindowTitle(QString("uitk - %1%2").arg(name, *dirty ? "*" : ""));
+        return name + (*dirty ? QStringLiteral("*") : QString());
+    };
+
+    auto updateTitle = [rootItem, tree, sceneName, onTitleChanged] {
         // Blocked so relabeling root doesn't itself re-trigger the
         // itemChanged handler below (which would mark the scene dirty and
         // call back into updateTitle for a purely cosmetic rename).
-        const QSignalBlocker blocker(tree);
-        rootItem->setText(0, sceneName());
+        {
+            const QSignalBlocker blocker(tree);
+            rootItem->setText(0, sceneName());
+        }
+        onTitleChanged();
     };
     updateTitle();
 
@@ -2007,29 +2010,6 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         }
         return choice == QMessageBox::Discard || doSave();
     };
-    window->confirmClose = confirmDiscard;
-
-    auto doNew = [rootItem, currentPath, dirty, loading, updateTitle, confirmDiscard, resolveAllPtr,
-                  nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit,
-                  charmapEdit] {
-        if (!confirmDiscard()) {
-            return;
-        }
-        *loading = true;
-        qDeleteAll(rootItem->takeChildren());
-        nametableCombo->setCurrentIndex(0);
-        targetCombo->setCurrentIndex(0);
-        regionCombo->setCurrentIndex(0);
-        linkerPrefixEdit->clear();
-        bssPrefixEdit->clear();
-        dataPrefixEdit->clear();
-        charmapEdit->clear();
-        *loading = false;
-        (*resolveAllPtr)();
-        currentPath->clear();
-        *dirty = false;
-        updateTitle();
-    };
 
     // Parses `path` and rebuilds the tree/combos from it wholesale -- the
     // guts of Open, factored out so the headless CLI export path (see
@@ -2076,31 +2056,6 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         updateTitle();
         return true;
     };
-
-    auto doOpen = [window, confirmDiscard, loadSceneFromFile] {
-        if (!confirmDiscard()) {
-            return;
-        }
-        const QString path = QFileDialog::getOpenFileName(window, "Open Scene", QString(), "UI Scene (*.uis)");
-        if (path.isEmpty()) {
-            return;
-        }
-        if (!loadSceneFromFile(path)) {
-            QMessageBox::warning(window, "Open Failed", "Could not read file:\n" + path);
-        }
-    };
-
-    auto* fileMenu = window->menuBar()->addMenu("&File");
-    auto addFileAction = [fileMenu](const QString& text, QKeySequence::StandardKey key, auto&& handler) {
-        QAction* action = fileMenu->addAction(text);
-        action->setShortcut(key);
-        QObject::connect(action, &QAction::triggered, handler);
-    };
-    addFileAction("New", QKeySequence::New, doNew);
-    addFileAction("Open...", QKeySequence::Open, doOpen);
-    fileMenu->addSeparator();
-    addFileAction("Save", QKeySequence::Save, doSave);
-    addFileAction("Save As...", QKeySequence::SaveAs, doSaveAs);
 
     // Refuses to export while any component can't currently be resolved --
     // exporting a scene with an unresolved position/size would just bake in
@@ -2173,46 +2128,6 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
         return hppOk && cppOk;
     };
 
-    auto doExportTarget = [window, hasUnresolvedErrors, exportOneTarget]() {
-        if (hasUnresolvedErrors()) {
-            QMessageBox::warning(window, "Export Failed",
-                                  "Cannot export: one or more components have unresolved properties. "
-                                  "Fix the errors flagged in the sidebar first.");
-            return;
-        }
-        bool ok = false;
-        const QString target =
-            QInputDialog::getItem(window, "Export Target", "Target:", kTargetNames, 0, false, &ok);
-        if (!ok) return;
-        const QString dir = QFileDialog::getExistingDirectory(window, "Export Target To (gen/ root)");
-        if (dir.isEmpty()) return;
-        if (!exportOneTarget(dir, target)) {
-            QMessageBox::warning(window, "Export Failed", "Could not write generated files to:\n" + dir);
-        }
-    };
-
-    auto doExportAll = [window, hasUnresolvedErrors, exportOneTarget]() {
-        if (hasUnresolvedErrors()) {
-            QMessageBox::warning(window, "Export Failed",
-                                  "Cannot export: one or more components have unresolved properties. "
-                                  "Fix the errors flagged in the sidebar first.");
-            return;
-        }
-        const QString dir = QFileDialog::getExistingDirectory(window, "Export All To (gen/ root)");
-        if (dir.isEmpty()) return;
-        QStringList failed;
-        for (const QString& target : kTargetNames) {
-            if (!exportOneTarget(dir, target)) failed << target;
-        }
-        if (!failed.isEmpty()) {
-            QMessageBox::warning(window, "Export Failed",
-                                  "Could not write generated files for:\n" + failed.join(", "));
-        }
-    };
-
-    fileMenu->addSeparator();
-    QObject::connect(fileMenu->addAction("Export Target..."), &QAction::triggered, doExportTarget);
-    QObject::connect(fileMenu->addAction("Export All..."), &QAction::triggered, doExportAll);
 
     // Persisted scene state, same as any tree edit -- but neither combo is a
     // tree item, so each needs its own dirty-marking hookup. Guarded by
@@ -3079,9 +2994,9 @@ Sidebar createSidebar(QWidget* parent, int widthPx, int maxTilesX, int maxTilesY
                       });
     updateGlobalSceneVisibility(tree->currentItem());
 
-    dock->setWidget(content);
-    return {dock, tree, xEdit, yEdit, targetCombo, regionCombo,
-             sceneName, loadSceneFromFile, hasUnresolvedErrors, exportOneTarget};
+    return {content, tree, xEdit, yEdit, targetCombo, regionCombo,
+             sceneName, loadSceneFromFile, hasUnresolvedErrors, exportOneTarget,
+             doSave, doSaveAs, confirmDiscard, displayName};
 }
 
 // Creates the viewport panel widget (not yet parented), sized to
@@ -3151,6 +3066,192 @@ ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidge
     return {grid, [sync] { (*sync)(); }};
 }
 
+// Owns the tabbed editor: one QTabWidget page (a scene's viewport grid) and
+// one QStackedWidget page (that same scene's sidebar content) per open
+// scene, added and removed together so their indices always stay aligned --
+// no separate bookkeeping needed to keep "tab 2" and "sidebar page 2"
+// pointing at the same scene. Everything here is what's genuinely per-scene
+// (see createSidebar); the dock/tab-widget chrome itself, and the
+// screen-derived sizing every tab shares, is constructed once in main() and
+// handed in.
+struct TabManager {
+    UitkMainWindow* window;
+    QTabWidget* tabs;
+    QStackedWidget* sidebarStack;
+    double tilePx;
+    int maxTilesX;
+    int maxTilesY;
+
+    std::vector<std::shared_ptr<Sidebar>> sidebars;
+    std::vector<std::shared_ptr<ViewportPanel>> viewports;
+
+    Sidebar* active() { return sidebars[tabs->currentIndex()].get(); }
+
+    // Adds a fresh, blank-scene tab, makes it current, and returns it --
+    // this *is* what "New" means now that New always opens a new tab rather
+    // than resetting the current one in place.
+    Sidebar* newTab() {
+        // Filled in below, once the Sidebar this callback belongs to
+        // actually exists -- createSidebar invokes it once synchronously
+        // during construction (before that's possible), which the null
+        // check below just no-ops.
+        auto sidebarBox = std::make_shared<std::shared_ptr<Sidebar>>();
+        Sidebar sidebar = createSidebar(window, maxTilesX, maxTilesY, tilePx, [this, sidebarBox] {
+            if (!*sidebarBox) return;
+            const int i = sidebarStack->indexOf((*sidebarBox)->content);
+            if (i < 0) return;
+            tabs->setTabText(i, (*sidebarBox)->displayName());
+        });
+        auto sidebarPtr = std::make_shared<Sidebar>(sidebar);
+        *sidebarBox = sidebarPtr;
+
+        auto viewportPtr = std::make_shared<ViewportPanel>(
+            createViewportPanel(window, tilePx, sidebar.tree, sidebar.xEdit, sidebar.yEdit, sidebar.targetCombo,
+                                 sidebar.regionCombo));
+
+        // Pushed before either widget is added below, so the currentChanged
+        // handler main() wires up (which addTab can trigger synchronously)
+        // always finds a matching entry for whatever index it's given.
+        sidebars.push_back(sidebarPtr);
+        viewports.push_back(viewportPtr);
+
+        sidebarStack->addWidget(sidebarPtr->content);
+        const int index = tabs->addTab(viewportPtr->grid, sidebarPtr->displayName());
+        tabs->setCurrentIndex(index);
+        return sidebarPtr.get();
+    }
+
+    // File > Open: always lands in a new tab, never replaces the current
+    // one. Closes that tab again on failure rather than leaving a blank
+    // scene behind for a file that didn't load.
+    void openTab() {
+        const QString path = QFileDialog::getOpenFileName(window, "Open Scene", QString(), "UI Scene (*.uis)");
+        if (path.isEmpty()) return;
+        const int index = tabs->count();
+        Sidebar* sidebar = newTab();
+        if (!sidebar->loadScene(path)) {
+            QMessageBox::warning(window, "Open Failed", "Could not read file:\n" + path);
+            removeTabAt(index);
+        }
+    }
+
+    // Closes tab `index` if it isn't the only one open and its scene isn't
+    // dirty (or the user confirms discarding/saving it) -- false either way
+    // means nothing was closed. Always keeping at least one tab open avoids
+    // an editor with nothing in it to show.
+    bool closeTabAt(int index) {
+        if (index < 0 || index >= static_cast<int>(sidebars.size())) return false;
+        if (sidebars.size() <= 1) return false;
+        if (!sidebars[index]->confirmDiscard()) return false;
+        removeTabAt(index);
+        return true;
+    }
+    bool closeActive() { return closeTabAt(tabs->currentIndex()); }
+
+    // Run when the window itself is closing -- every open scene gets the
+    // same unsaved-changes prompt Close Tab would give it, in tab order,
+    // stopping at the first Cancel.
+    bool confirmCloseAll() {
+        for (const auto& sidebar : sidebars) {
+            if (!sidebar->confirmDiscard()) return false;
+        }
+        return true;
+    }
+
+private:
+    // The actual removal, shared by closeTabAt (which gates it on
+    // confirmDiscard) and openTab's cleanup on a failed load (which doesn't
+    // need to, since a scene that never loaded was never dirtied). Signals
+    // are blocked around the two widget removals because tabs and
+    // sidebarStack briefly disagree on indices mid-removal -- Qt would
+    // otherwise fire currentChanged (see main()) with an index that's only
+    // valid for one of the two -- and the current tab's sidebar/viewport are
+    // instead explicitly re-synced afterward, once both are back in step.
+    void removeTabAt(int index) {
+        QWidget* grid = viewports[index]->grid;
+        QWidget* content = sidebars[index]->content;
+        {
+            const QSignalBlocker blocker(tabs);
+            tabs->removeTab(index);
+            sidebarStack->removeWidget(content);
+        }
+        grid->deleteLater();
+        content->deleteLater();
+        sidebars.erase(sidebars.begin() + index);
+        viewports.erase(viewports.begin() + index);
+
+        const int current = tabs->currentIndex();
+        if (current >= 0) {
+            sidebarStack->setCurrentIndex(current);
+            viewports[current]->sync();
+        }
+    }
+};
+
+// Builds the File menu once, against the real window -- every action
+// dispatches through `tabManager.active()` (or adds/removes a tab outright),
+// looked up fresh each time it's invoked rather than bound to one scene, so
+// it stays correct as the active tab changes.
+void createFileMenu(UitkMainWindow* window, TabManager& tabManager) {
+    auto* fileMenu = window->menuBar()->addMenu("&File");
+    auto addFileAction = [fileMenu](const QString& text, QKeySequence::StandardKey key, auto&& handler) {
+        QAction* action = fileMenu->addAction(text);
+        action->setShortcut(key);
+        QObject::connect(action, &QAction::triggered, handler);
+    };
+    addFileAction("New", QKeySequence::New, [&tabManager] { tabManager.newTab(); });
+    addFileAction("Open...", QKeySequence::Open, [&tabManager] { tabManager.openTab(); });
+    fileMenu->addSeparator();
+    addFileAction("Save", QKeySequence::Save, [&tabManager] { tabManager.active()->save(); });
+    addFileAction("Save As...", QKeySequence::SaveAs, [&tabManager] { tabManager.active()->saveAs(); });
+    addFileAction("Close Tab", QKeySequence::Close, [&tabManager] { tabManager.closeActive(); });
+
+    auto showExportFailed = [window] {
+        QMessageBox::warning(window, "Export Failed",
+                              "Cannot export: one or more components have unresolved properties. "
+                              "Fix the errors flagged in the sidebar first.");
+    };
+
+    auto doExportTarget = [window, &tabManager, showExportFailed] {
+        Sidebar* sidebar = tabManager.active();
+        if (sidebar->hasUnresolvedErrors()) {
+            showExportFailed();
+            return;
+        }
+        bool ok = false;
+        const QString target =
+            QInputDialog::getItem(window, "Export Target", "Target:", kTargetNames, 0, false, &ok);
+        if (!ok) return;
+        const QString dir = QFileDialog::getExistingDirectory(window, "Export Target To (gen/ root)");
+        if (dir.isEmpty()) return;
+        if (!sidebar->exportOneTarget(dir, target)) {
+            QMessageBox::warning(window, "Export Failed", "Could not write generated files to:\n" + dir);
+        }
+    };
+
+    auto doExportAll = [window, &tabManager, showExportFailed] {
+        Sidebar* sidebar = tabManager.active();
+        if (sidebar->hasUnresolvedErrors()) {
+            showExportFailed();
+            return;
+        }
+        const QString dir = QFileDialog::getExistingDirectory(window, "Export All To (gen/ root)");
+        if (dir.isEmpty()) return;
+        QStringList failed;
+        for (const QString& target : kTargetNames) {
+            if (!sidebar->exportOneTarget(dir, target)) failed << target;
+        }
+        if (!failed.isEmpty()) {
+            QMessageBox::warning(window, "Export Failed",
+                                  "Could not write generated files for:\n" + failed.join(", "));
+        }
+    };
+
+    fileMenu->addSeparator();
+    QObject::connect(fileMenu->addAction("Export Target..."), &QAction::triggered, doExportTarget);
+    QObject::connect(fileMenu->addAction("Export All..."), &QAction::triggered, doExportAll);
+}
+
 // Matches `target` against kTargetNames case-insensitively (a CLI caller
 // shouldn't have to get "NES" vs "nes" exactly right) and returns the
 // canonically-cased entry -- what exportOneTarget's own Target-name
@@ -3186,7 +3287,7 @@ int runCliExport(int argc, char** argv, bool exportAll, const QString& inputPath
     const int maxTilesY =
         std::max(1, static_cast<int>((available.height() - kWindowChromeMarginPx) / tilePx));
 
-    const Sidebar sidebar = createSidebar(&window, sidebarWidthPx, maxTilesX, maxTilesY, tilePx);
+    const Sidebar sidebar = createSidebar(&window, maxTilesX, maxTilesY, tilePx, [] {});
 
     if (!sidebar.loadScene(inputPath)) {
         std::fprintf(stderr, "uitk: could not read scene file: %s\n", qPrintable(inputPath));
@@ -3323,13 +3424,56 @@ int main(int argc, char** argv) {
     const int maxTilesY =
         std::max(1, static_cast<int>((available.height() - kWindowChromeMarginPx) / tilePx));
 
-    const Sidebar sidebar = createSidebar(&window, sidebarWidthPx, maxTilesX, maxTilesY, tilePx);
-    const ViewportPanel viewport =
-        createViewportPanel(&window, tilePx, sidebar.tree, sidebar.xEdit, sidebar.yEdit, sidebar.targetCombo,
-                             sidebar.regionCombo);
-    window.setCentralWidget(viewport.grid);
-    window.addDockWidget(Qt::RightDockWidgetArea, sidebar.dock);
-    viewport.sync();
+    // The dock is created once, shared by every scene tab -- its content is
+    // a QStackedWidget holding each tab's sidebar, index-aligned with the
+    // central QTabWidget (see TabManager). NoDockWidgetFeatures means
+    // there's no user-facing way to close/hide it, so any time it goes
+    // invisible it's a Qt layout glitch, not a legitimate state -- most
+    // commonly triggered by the window resizes in lockWindowToContents(),
+    // which can transiently unmap the dock via a *deferred* Qt layout
+    // event. Reacting synchronously to that (as lockWindowToContents also
+    // tries) can lose the race against the deferred hide; queuing the
+    // re-show instead runs it after any pending layout events have already
+    // fired, so it always wins.
+    auto* sidebarDock = new QDockWidget("Sidebar", &window);
+    sidebarDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    sidebarDock->setFixedWidth(sidebarWidthPx);
+    QObject::connect(sidebarDock, &QDockWidget::visibilityChanged, sidebarDock, [sidebarDock](bool visible) {
+        if (!visible) {
+            QTimer::singleShot(0, sidebarDock, [sidebarDock] { sidebarDock->setVisible(true); });
+        }
+    });
+    auto* sidebarStack = new QStackedWidget(sidebarDock);
+    sidebarDock->setWidget(sidebarStack);
+
+    auto* tabs = new QTabWidget(&window);
+    tabs->setTabsClosable(true);
+    window.setCentralWidget(tabs);
+    window.addDockWidget(Qt::RightDockWidgetArea, sidebarDock);
+
+    TabManager tabManager{&window, tabs, sidebarStack, tilePx, maxTilesX, maxTilesY};
+    createFileMenu(&window, tabManager);
+    window.confirmClose = [&tabManager] { return tabManager.confirmCloseAll(); };
+
+    // The sidebar's required height isn't fixed -- the properties panel
+    // appears/disappears with selection, and nodes get added to the tree --
+    // so the window (locked to a fixed size elsewhere) needs to be re-fit
+    // any time that happens, not just when the viewport's tile counts (or
+    // the active tab) change.
+    window.installEventFilter(new LayoutChangeNotifier([&window] { lockWindowToContents(&window); }, &window));
+
+    // Switching tabs shows that scene's sidebar and re-fits the window to
+    // its viewport size, same as changing Viewport X/Y already does for the
+    // scene that's active.
+    QObject::connect(tabs, &QTabWidget::currentChanged, &window, [&tabManager](int index) {
+        if (index < 0) return;
+        tabManager.sidebarStack->setCurrentIndex(index);
+        tabManager.viewports[index]->sync();
+    });
+    QObject::connect(tabs, &QTabWidget::tabCloseRequested, &window,
+                      [&tabManager](int index) { tabManager.closeTabAt(index); });
+
+    tabManager.newTab();
 
     window.show();
 
