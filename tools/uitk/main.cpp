@@ -457,29 +457,36 @@ QVector<QTreeWidgetItem*> singleChoiceMembers(const QTreeWidgetItem* scItem, con
 // A property's stored text is a small arithmetic expression over integer
 // literals, +/-/*//, parentheses, and identifiers of the form
 // `NodeName.pos.x`, `NodeName.pos.y`, `NodeName.size.x`, `NodeName.size.y`,
-// `NodeName.textSize` (referencing another component by its bare name, sans
-// the "[CT] "/"[RT] " prefix -- the same name that will identify it in
-// generated C++), plus the two bare globals VIEWPORT_TX/VIEWPORT_TY (the
-// viewport's configured size in tiles) and VIEWPORT_PX/VIEWPORT_PY (the same,
-// in pixels, at the current display's tile scale). `this` is accepted in
-// place of a name anywhere one of the above is legal (e.g. `this.textSize`,
-// `this.pos.x`) as a self-reference to whichever node the expression being
-// evaluated belongs to -- handled by substitution in resolveAllPtr's
-// resolveIdent, not here, since the parser has no notion of which node's
-// property it's parsing for. `.textSize` is the referenced textbox's text
-// length in characters (its *unwrapped* single-line width) -- e.g.
-// `sizeWExpr: "this.textSize"` auto-fits a box to its own label, or
+// `NodeName.textSize`, `NodeName.enabled` (referencing another component by
+// its bare name, sans the "[CT] "/"[RT] " prefix -- the same name that will
+// identify it in generated C++), plus the two bare globals
+// VIEWPORT_TX/VIEWPORT_TY (the viewport's configured size in tiles) and
+// VIEWPORT_PX/VIEWPORT_PY (the same, in pixels, at the current display's tile
+// scale). `this` is accepted in place of a name anywhere one of the above is
+// legal (e.g. `this.textSize`, `this.pos.x`) as a self-reference to whichever
+// node the expression being evaluated belongs to -- handled by substitution
+// in resolveAllPtr's resolveIdent, not here, since the parser has no notion
+// of which node's property it's parsing for. `.textSize` is the referenced
+// textbox's text length in characters (its *unwrapped* single-line width) --
+// e.g. `sizeWExpr: "this.textSize"` auto-fits a box to its own label, or
 // `posXExpr: "(VIEWPORT_TX - this.textSize) / 2"` centers one. It resolves
 // only against ctTextBox/rtTextBox nodes, same as pos/size, since only they
-// carry text. Node names are therefore constrained to be valid C++
-// identifiers and unique, since they're both the expression namespace here
-// and the symbol that later code generation will emit.
+// carry text. `.enabled` is 1 if the referenced node is currently visible on
+// the sidebar's selected Target/Region (0 if it, or an ancestor, hides on
+// either -- see isEffectivelyHidden), so a sibling can conditionally shift
+// its own placement around whatever this scene won't actually draw there --
+// e.g. `posYExpr: "Other.pos.y + Other.enabled * 8"` sits directly below
+// Other only where Other itself is shown. Node names are therefore
+// constrained to be valid C++ identifiers and unique, since they're both the
+// expression namespace here and the symbol that later code generation will
+// emit.
 struct ExprNode {
     enum class Kind { Number, Ident, Add, Sub, Mul, Div, Shl, Shr, Neg };
     Kind kind = Kind::Number;
     long long number = 0;
     QString identName;  // component base name, "this", or "VIEWPORT_{T,P}{X,Y}"
-    // 0=pos.x, 1=pos.y, 2=size.x, 3=size.y, 4=textSize; -1 for the bare globals
+    // 0=pos.x, 1=pos.y, 2=size.x, 3=size.y, 4=textSize, 5=enabled; -1 for the
+    // bare globals
     int identProp = -1;
     std::shared_ptr<ExprNode> a;
     std::shared_ptr<ExprNode> b;
@@ -643,6 +650,11 @@ private:
             if (parts.size() == 2 && parts.at(1) == QLatin1String("textSize")) {
                 node->identName = parts.at(0);
                 node->identProp = 4;
+                return node;
+            }
+            if (parts.size() == 2 && parts.at(1) == QLatin1String("enabled")) {
+                node->identName = parts.at(0);
+                node->identProp = 5;
                 return node;
             }
             ok = false;
@@ -1170,10 +1182,16 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     const bool variadic = kVariadicTargets.contains(target);
 
     // Cross-reference resolver for a member's position expression (e.g.
-    // `Other.pos.x`, `this.textSize`) -- these are never runtime-variable,
-    // only VIEWPORT_* is (see emitExprCpp), so they're baked to the
-    // already-resolved value every other geometry node's own codegen uses.
-    auto resolveBaked = [rootItem](const QTreeWidgetItem* self, const QString& rawName, int prop) -> long long {
+    // `Other.pos.x`, `this.textSize`, `Other.enabled`) -- these are never
+    // runtime-variable, only VIEWPORT_* is (see emitExprCpp), so they're
+    // baked to the already-resolved value every other geometry node's own
+    // codegen uses. `.enabled` (prop 5) is the one exception that isn't
+    // itself stored on the node -- it's recomputed here the same way
+    // resolveAllPtr's own resolveIdent does, against this export's actual
+    // target/region rather than whatever happened to be selected in the
+    // sidebar when the scene was last edited.
+    auto resolveBaked = [rootItem, target, region](const QTreeWidgetItem* self, const QString& rawName,
+                                                     int prop) -> long long {
         const QString wanted = (rawName == QLatin1String("this")) ? bareName(self) : rawName;
         for (QTreeWidgetItem* other : collectComponentItems(rootItem)) {
             if (bareName(other) != wanted) continue;
@@ -1183,6 +1201,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
                 case 2: return other->data(0, kSizeWRole).toInt();
                 case 3: return other->data(0, kSizeHRole).toInt();
                 case 4: return other->data(0, kTextContentRole).toString().length();
+                case 5: return isEffectivelyHidden(other, target, region) ? 0 : 1;
                 default: return 0;
             }
         }
@@ -2719,7 +2738,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // shown in red with an explanatory tooltip, rather than silently left
     // with a stale or wrong value.
     auto resolving = std::make_shared<bool>(false);
-    *resolveAllPtr = [window, rootItem, xEdit, yEdit, tilePx, resolving]() {
+    *resolveAllPtr = [window, rootItem, xEdit, yEdit, tilePx, resolving, targetCombo, regionCombo]() {
         if (*resolving) {
             // Re-entrant call: our own setData() calls below re-fire
             // itemChanged, which is also wired to call this function. The
@@ -2805,6 +2824,21 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                 return isComponentItem(it.value())
                            ? std::optional<long long>(it.value()->data(0, kTextContentRole).toString().length())
                            : std::nullopt;
+            }
+            // .enabled (prop 5) is 1/0 for whether the referenced node is
+            // currently visible on the sidebar's selected Target/Region --
+            // i.e. the same check isEffectivelyHidden() makes at export time
+            // to decide whether to skip a node entirely, but here as a value
+            // other expressions can build conditional placement on (e.g.
+            // `this.pos.x + (1 - Other.enabled) * 10`). Answered directly,
+            // like .textSize, rather than through the `resolved` fixed-point
+            // map -- it depends only on the node's own hide lists (plus its
+            // ancestors') and the combos below, never on another node's
+            // still-resolving pos/size.
+            if (prop == 5) {
+                return isEffectivelyHidden(it.value(), targetCombo->currentText(), regionCombo->currentText())
+                           ? 0
+                           : 1;
             }
             const auto found = resolved.find({it.value(), prop});
             return found != resolved.end() ? std::optional<long long>(found->second) : std::nullopt;
@@ -2956,6 +2990,17 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // referencing any of them needs a fresh resolution pass too.
     QObject::connect(xEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
     QObject::connect(yEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
+
+    // `.enabled` (see ExprNode/resolveIdent above) reads whichever
+    // Target/Region is currently selected, so anything referencing it needs
+    // a fresh resolution pass whenever either changes too -- a node's own
+    // Hide Targets/Hide Regions lists already trigger one via the tree's
+    // itemChanged signal (see resolveAllPtr's connection above), since
+    // those live on the tree item itself.
+    QObject::connect(targetCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                      [resolveAllPtr](int) { (*resolveAllPtr)(); });
+    QObject::connect(regionCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                      [resolveAllPtr](int) { (*resolveAllPtr)(); });
 
     auto* globalGroup = new QGroupBox("Global", content);
     auto* globalForm = new QFormLayout(globalGroup);

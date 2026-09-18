@@ -115,7 +115,9 @@ FetchContent_Declare(
 
 # ----------------------------------------------------------------------
 # uitk-export -- regenerates every demo/gen/title/<target>/title.hpp|.cpp
-# pair from demo/ui/title.uis by building and running tools/uitk (see
+# pair from demo/ui/title.uis, and every
+# demo/gen/playOptions/<target>/gameOptions.hpp|.cpp pair from
+# demo/ui/gameOptions.uis, by building and running tools/uitk (see
 # tools/uitk/README.md). Runs here, at CONFIGURE time -- deliberately, not
 # as a build-time target `demo` depends on: demo/gen/ is gitignored, never
 # committed, so every TARGET_PLATFORM branch's own
@@ -186,6 +188,7 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
     file(GLOB_RECURSE UITK_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tools/uitk/*.cpp)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                  ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
+                 ${CMAKE_SOURCE_DIR}/demo/ui/gameOptions.uis
                  ${UITK_SOURCES}
                  ${CMAKE_SOURCE_DIR}/tools/uitk/CMakeLists.txt)
 
@@ -210,20 +213,33 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
     if(NOT UITK_EXPORT_RESULT EQUAL 0)
         message(FATAL_ERROR "uitk: export failed (see output above).")
     endif()
-elseif(EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/title)
+    # demo/ui/gameOptions.uis -> demo/gen/playOptions/<target>/gameOptions.hpp|.cpp
+    # (output dir name matches title's precedent above; the generated
+    # filename itself is taken from the .uis basename, "gameOptions", same
+    # as title.uis -> title.hpp).
+    execute_process(
+            COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
+                    --input ${CMAKE_SOURCE_DIR}/demo/ui/gameOptions.uis
+                    --output ${CMAKE_SOURCE_DIR}/demo/gen/playOptions
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            RESULT_VARIABLE UITK_EXPORT_RESULT)
+    if(NOT UITK_EXPORT_RESULT EQUAL 0)
+        message(FATAL_ERROR "uitk: export failed (see output above).")
+    endif()
+elseif(EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/title AND EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/playOptions)
     message(WARNING
-        "Qt Widgets not found; using whatever's already under demo/gen/title/ "
-        "instead of regenerating it from demo/ui/title.uis (e.g. a "
+        "Qt Widgets not found; using whatever's already under demo/gen/ "
+        "instead of regenerating it from demo/ui/*.uis (e.g. a "
         "downloaded demo-gen CI artifact, or an earlier Qt-equipped local "
         "export). Install Qt6 (or Qt5) to keep it in sync here after "
-        "editing demo/ui/title.uis locally.")
+        "editing demo/ui/title.uis or demo/ui/gameOptions.uis locally.")
 else()
     message(FATAL_ERROR
-        "Qt Widgets not found, and demo/gen/title/ doesn't exist -- nothing "
-        "to fall back to. Install Qt6 (or Qt5) so this configure step can "
-        "generate it from demo/ui/title.uis, or populate demo/gen/title/ "
-        "yourself first (e.g. download codegen-check's demo-gen CI "
-        "artifact).")
+        "Qt Widgets not found, and demo/gen/title/ or demo/gen/playOptions/ "
+        "doesn't exist -- nothing to fall back to. Install Qt6 (or Qt5) so "
+        "this configure step can generate them from demo/ui/*.uis, or "
+        "populate demo/gen/ yourself first (e.g. download codegen-check's "
+        "demo-gen CI artifact).")
 endif()
 
 # ----------------------------------------------------------------------

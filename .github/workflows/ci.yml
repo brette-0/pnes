@@ -37,7 +37,8 @@
 #   only -- there is no local equivalent on a Linux box.
 #
 #   Every platform job needs codegen-check (below), which builds tools/uitk
-#   (needs Qt) and exports demo/gen/*/title.hpp|.cpp from demo/ui/title.uis --
+#   (needs Qt) and exports demo/gen/*/title.hpp|.cpp from demo/ui/title.uis
+#   and demo/gen/*/gameOptions.hpp|.cpp from demo/ui/gameOptions.uis --
 #   demo/gen/ is gitignored, so every other job downloads codegen-check's
 #   demo-gen artifact instead of regenerating it (or having a committed copy
 #   to fall back to). Reproduce it locally with:
@@ -59,8 +60,9 @@ concurrency:
 
 jobs:
   # Gates every platform build below: builds tools/uitk (needs Qt) and
-  # exports demo/gen/*/title.hpp|.cpp from demo/ui/title.uis, then publishes
-  # the result as the demo-gen artifact every other job downloads. demo/gen/
+  # exports demo/gen/*/title.hpp|.cpp from demo/ui/title.uis plus
+  # demo/gen/*/gameOptions.hpp|.cpp from demo/ui/gameOptions.uis, then
+  # publishes the result as the demo-gen artifact every other job downloads. demo/gen/
   # is gitignored -- there's nothing committed to fall back to and nothing to
   # diff against -- so this is the only job that ever builds/runs uitk
   # itself (most of the other jobs' Docker images/runners don't have Qt at
@@ -90,6 +92,12 @@ jobs:
           tools/uitk/build/ci/uitk --export-all \
             --input demo/ui/title.uis \
             --output demo/gen/title
+
+      - name: Export demo/gen/*/gameOptions.hpp|.cpp
+        run: |
+          tools/uitk/build/ci/uitk --export-all \
+            --input demo/ui/gameOptions.uis \
+            --output demo/gen/playOptions
 
       - uses: actions/upload-artifact@v7
         with:

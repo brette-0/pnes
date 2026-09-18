@@ -1,12 +1,115 @@
 {
-    "bss_prefix": "",
-    "charmap": "",
-    "data_prefix": "",
-    "linker_prefix": "",
-    "nametable": 0,
+    "bss_prefix": "SYSMEM",
+    "charmap": "generic",
+    "data_prefix": "TITLE_DATA",
+    "linker_prefix": "TITLE",
+    "nametable": 3,
     "nodes": [
+        {
+            "children": [
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] SinglePlayer",
+                    "posXExpr": "VIEWPORT_TX - this.size.x - 1",
+                    "posYExpr": "1",
+                    "provideErasing": false,
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "12",
+                    "splitter": " ",
+                    "text": "SINGLEPLAYER"
+                },
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                        "GBA",
+                        "GCN",
+                        "DS",
+                        "DSI",
+                        "Wii",
+                        "Wii U",
+                        "3DS",
+                        "Switch",
+                        "PSP",
+                        "PC"
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] Multiplayer",
+                    "posXExpr": "SinglePlayer.pos.x",
+                    "posYExpr": "SinglePlayer.pos.y + 1",
+                    "provideErasing": false,
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "11",
+                    "splitter": " ",
+                    "text": "MULTIPLAYER"
+                },
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                        "NES",
+                        "GBA",
+                        "DS",
+                        "DSI",
+                        "3DS"
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] LocalMultiplayer",
+                    "posXExpr": "SinglePlayer.pos.x",
+                    "posYExpr": "SinglePlayer.pos.y + 1",
+                    "provideErasing": false,
+                    "sizeHExpr": "2",
+                    "sizeWExpr": "11",
+                    "splitter": " ",
+                    "text": "LOCAL MULTIPLAYER"
+                },
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                        "NES"
+                    ],
+                    "kind": "ctTextBox",
+                    "name": "[CT] LANMultiplayer",
+                    "posXExpr": "SinglePlayer.pos.x",
+                    "posYExpr": "SinglePlayer.pos.y + 1 + (2 * LocalMultiplayer.enabled)",
+                    "provideErasing": false,
+                    "sizeHExpr": "2",
+                    "sizeWExpr": "11",
+                    "splitter": " ",
+                    "text": "LAN MULTIPLAYER"
+                }
+            ],
+            "defaultOption": 0,
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "singlechoice",
+            "name": "[SC] gameOptions"
+        }
     ],
     "region": "NTSC",
-    "target": "NES",
+    "target": "Wii",
     "version": 1
 }
