@@ -1135,7 +1135,8 @@ QString emitPosComponent(const QTreeWidgetItem* item, int exprRole, int literalR
 // never is.
 CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, int ntOffX, int ntOffY, bool isNes,
                                bool variadic, QTreeWidgetItem* rootItem, const QString& target,
-                               const QString& region, const QString& dataPrefixTok, const QString& charmapFn) {
+                               const QString& region, const QString& dataPrefixTok, const QString& charmapFn,
+                               const QString& ntOffXExpr, const QString& ntOffYExpr) {
     const int x = item->data(0, kPosXRole).toInt() + ntOffX;
     const int y = item->data(0, kPosYRole).toInt() + ntOffY;
     const int w = std::max(1, item->data(0, kSizeWRole).toInt());
@@ -1181,13 +1182,16 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, 
                 // otherwise this row's arrow-anchor (SingleChoice's own
                 // `_options[i]`, itself expression-driven) and its drawn text
                 // only line up at whatever viewport size was open in uitk
-                // when this was exported.
+                // when this was exported. ntOffXExpr/ntOffYExpr (not the
+                // fixed ntOffX/ntOffY ints -- see generateCode's own comment
+                // on them) keep the nametable-quadrant term itself runtime-
+                // resolved too, for the same reason.
                 const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
                 const QString yExpr = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
-                const int xOff = startCol + ntOffX;
-                const int yOff = row + ntOffY;
-                const QString xFinal = xOff ? QString("(%1 + %2)").arg(xExpr).arg(xOff) : xExpr;
-                const QString yFinal = yOff ? QString("(%1 + %2)").arg(yExpr).arg(yOff) : yExpr;
+                QString xFinal = startCol ? QString("(%1 + %2)").arg(xExpr).arg(startCol) : xExpr;
+                QString yFinal = row ? QString("(%1 + %2)").arg(yExpr).arg(row) : yExpr;
+                if (ntOffXExpr != QLatin1String("0")) xFinal = QString("(%1 + %2)").arg(xFinal, ntOffXExpr);
+                if (ntOffYExpr != QLatin1String("0")) yFinal = QString("(%1 + %2)").arg(yFinal, ntOffYExpr);
                 bodyLines << QString("    ppu::WriteFromBufferToNameTable("
                                       "vec2<u16>{static_cast<u16>(%1), static_cast<u16>(%2)}, %3, 0);")
                                  .arg(xFinal, yFinal, sourceArgs);
@@ -1213,7 +1217,7 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, 
 // switching to shorter text later doesn't leave stale tiles behind.
 QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                                QTreeWidgetItem* rootItem, const QString& target, const QString& region,
-                               const QString& charmapFn) {
+                               const QString& charmapFn, const QString& ntOffXExpr, const QString& ntOffYExpr) {
     const int x = item->data(0, kPosXRole).toInt() + ntOffX;
     const int y = item->data(0, kPosYRole).toInt() + ntOffY;
     const int w = std::max(1, item->data(0, kSizeWRole).toInt());
@@ -1231,12 +1235,14 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
         } else if (variadic) {
             // Same reasoning as genCtTextBoxBody's own variadic branch: this
             // has to erase exactly where the current Draw_ call landed, which
-            // only holds if both re-derive the same expression at runtime.
+            // only holds if both re-derive the same expression at runtime --
+            // ntOffXExpr/ntOffYExpr included.
             const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
             const QString yExpr = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
-            const QString xFinal = ntOffX ? QString("(%1 + %2)").arg(xExpr).arg(ntOffX) : xExpr;
-            const int yOff = row + ntOffY;
-            const QString yFinal = yOff ? QString("(%1 + %2)").arg(yExpr).arg(yOff) : yExpr;
+            QString xFinal = xExpr;
+            QString yFinal = row ? QString("(%1 + %2)").arg(yExpr).arg(row) : yExpr;
+            if (ntOffXExpr != QLatin1String("0")) xFinal = QString("(%1 + %2)").arg(xFinal, ntOffXExpr);
+            if (ntOffYExpr != QLatin1String("0")) yFinal = QString("(%1 + %2)").arg(yFinal, ntOffYExpr);
             bodyLines << QString("    ppu::WriteRepeatedToNameTable("
                                   "vec2<u16>{static_cast<u16>(%1), static_cast<u16>(%2)}, %3, %4, 0);")
                              .arg(xFinal, yFinal, tileExpr)
@@ -1265,7 +1271,8 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
 // generateCode) -- it places the instance's own mutable storage, and, on a
 // variadic target, its mutable options array.
 QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, const QString& target,
-                             const QString& region, int ntOffX, int ntOffY, const QString& bssPrefixTok) {
+                             const QString& region, const QString& bssPrefixTok,
+                             const QString& ntOffXExpr, const QString& ntOffYExpr) {
     const QVector<QTreeWidgetItem*> members = singleChoiceMembers(scItem, target, region);
     if (members.isEmpty()) {
         return QString();
@@ -1349,8 +1356,13 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
                 okX ? emitExprCpp(xAst, resolveFor) : QString::number(member->data(0, kPosXRole).toInt());
             const QString yCpp =
                 okY ? emitExprCpp(yAst, resolveFor) : QString::number(member->data(0, kPosYRole).toInt());
-            const QString xFinal = ntOffX ? QString("(%1 + %2)").arg(xCpp).arg(ntOffX) : xCpp;
-            const QString yFinal = ntOffY ? QString("(%1 + %2)").arg(yCpp).arg(ntOffY) : yCpp;
+            // ntOffXExpr/ntOffYExpr, not the fixed ntOffX/ntOffY ints -- see
+            // generateCode's own comment on why a variadic target's
+            // nametable-quadrant term has to stay runtime-resolved too.
+            const QString xFinal =
+                ntOffXExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(xCpp, ntOffXExpr) : xCpp;
+            const QString yFinal =
+                ntOffYExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(yCpp, ntOffYExpr) : yCpp;
             makeBody << QString("    %1_options[%2] = vec2<u16>{static_cast<u16>(%3), static_cast<u16>(%4)};")
                             .arg(name)
                             .arg(i)
@@ -1399,6 +1411,26 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     // anymore.
     const bool isNes = (target == QLatin1String("NES"));
     const bool variadic = kVariadicTargets.contains(target);
+    // Runtime counterpart of ntOffX/ntOffY, for a variadic target's own
+    // Draw_/Erase_/Make_ bodies (genCtTextBoxBody/genCtTextBoxEraseBody/
+    // genSingleChoiceDecl): on a variadic target one nametable quadrant is
+    // that target's own runtime viewport width/height -- floored at the
+    // NES-native 32x30 minimum, matching ::emu::ComputeNtGeometry
+    // (src/emu/emu.hpp) and ::CartesianToAddress's internal xy_to_nt_addr
+    // (src/emu/ppu.cpp) -- NOT the fixed kNametableQuadW/H literal ntOffX/
+    // ntOffY themselves bake in, which is only correct for a target whose
+    // panel really is a fixed 32x30 (NES, and every non-variadic target
+    // here). Baking that same fixed literal into a variadic target's
+    // generated expression is exactly the "assumes 32 tiles" bug this
+    // exists to avoid -- see title.cpp's own kMenuNT for the hand-written
+    // version of the identical fix. "0" (not emitted as a call at all) when
+    // this scene's nametable index doesn't need an offset on that axis.
+    const QString ntOffXExpr = !(nametable & 1)             ? QStringLiteral("0")
+                                : variadic                    ? QStringLiteral("(video::viewport_tx() < 32 ? 32 : video::viewport_tx())")
+                                                               : QString::number(kNametableQuadW);
+    const QString ntOffYExpr = !((nametable >> 1) & 1)      ? QStringLiteral("0")
+                                : variadic                    ? QStringLiteral("(video::viewport_ty() < 30 ? 30 : video::viewport_ty())")
+                                                               : QString::number(kNametableQuadH);
     const QString bssPrefixTok = (isNes && !bssPrefix.trimmed().isEmpty()) ? (bssPrefix.trimmed() + " ") : QString();
     const QString dataPrefixTok =
         (isNes && !dataPrefix.trimmed().isEmpty()) ? (dataPrefix.trimmed() + " ") : QString();
@@ -1451,7 +1483,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             // duplicated into every caller, there's no single out-of-line
             // copy left for a section attribute to pin anywhere.
             const CtTextBoxGen gen = genCtTextBoxBody(item, name, ntOffX, ntOffY, isNes, variadic, rootItem, target,
-                                                        region, dataPrefixTok, charmapFn);
+                                                        region, dataPrefixTok, charmapFn, ntOffXExpr, ntOffYExpr);
             if (!gen.rootDecls.isEmpty()) {
                 hppDecls << gen.rootDecls;
             }
@@ -1459,7 +1491,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
 
             if (item->data(0, kProvideErasingRole).toBool()) {
                 const QString eraseBody = genCtTextBoxEraseBody(item, ntOffX, ntOffY, isNes, variadic, rootItem,
-                                                                  target, region, charmapFn);
+                                                                  target, region, charmapFn, ntOffXExpr, ntOffYExpr);
                 hppDecls << QString("inline AI void Erase_%1() {\n%2\n}\n").arg(name, eraseBody);
             }
         } else {  // rtTextBox
@@ -1490,7 +1522,8 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
 
     for (QTreeWidgetItem* scItem : collectSingleChoiceItems(rootItem)) {
         if (isEffectivelyHidden(scItem, target, region)) continue;
-        const QString decl = genSingleChoiceDecl(scItem, rootItem, target, region, ntOffX, ntOffY, bssPrefixTok);
+        const QString decl =
+            genSingleChoiceDecl(scItem, rootItem, target, region, bssPrefixTok, ntOffXExpr, ntOffYExpr);
         if (!decl.isEmpty()) {
             hppDecls << decl;
             usesSingleChoice = true;

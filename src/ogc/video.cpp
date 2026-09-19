@@ -242,12 +242,13 @@ static inline void quad(const int ax, const int ay, const int sx, const int sy,
 // scroll. Background colour-0 is transparent so behind-sprites / backdrop show.
 static void draw_bg_band(const int y0, const int y1, const u16 xs, const u16 ys) {
     const int vpw      = video::viewport_px();
-    const int nt_cols  = vpw < 512 ? 2 : (vpw + 255) / 256;
-    const int world_w  = nt_cols * 256;
-    // Vertical counterpart to world_w/nt_cols -- see ppu.cpp's GenerateFrame
-    // (src/emu/ppu.cpp), which folds ppu_y through the identical
-    // ppu::nametableRows-derived height for the same reason.
-    const int world_h  = static_cast<int>(ppu::nametableRows) * 240;
+    // Shared with the SDL/desktop core (::emu::ComputeNtGeometry,
+    // src/emu/emu.hpp) so this backend's read side stays byte-for-byte
+    // consistent with the one write side (::ppu::CartesianToAddress's
+    // internal xy_to_nt_addr/xy_to_at_addr, src/emu/ppu.cpp).
+    const emu::NtGeometry geo = emu::ComputeNtGeometry();
+    const int world_w  = geo.worldW;
+    const int world_h  = geo.worldH;
     const int atlas0   = (ppu::PPUCTRL & ppu::ctrl::BG_ADDR) ? 256 : 0;
 
     bg_count[0] = bg_count[1] = bg_count[2] = bg_count[3] = 0;
@@ -259,22 +260,22 @@ static void draw_bg_band(const int y0, const int y1, const u16 xs, const u16 ys)
         const int world_y = static_cast<int>(ys) + (syt - y0);
         const int wym       = ((world_y % world_h) + world_h) % world_h;
         const int trow      = wym / 8;
-        const int local_row = trow % 30;
-        const int nt_row    = trow / 30;
-        const int at_roff   = (local_row >> 2) * 8;
+        const int local_row = trow % geo.tileH;
+        const int nt_row    = trow / geo.tileH;
+        const int at_roff   = (local_row >> 2) * geo.atW;
         const int at_rbits  = ((local_row >> 1) & 1) * 4;
-        const int row32     = local_row * 32;
+        const int row32     = local_row * geo.tileW;
 
         for (int sxt = sx0; sxt < vpw; sxt += 8) {
             const int world_x = static_cast<int>(xs) + sxt;
             const int wxm       = ((world_x % world_w) + world_w) % world_w;
             const int tcol      = wxm / 8;
-            const int local_col = tcol % 32;
-            const int nt_col    = tcol / 32;
-            const int nt_off    = (nt_col + nt_row * nt_cols) * 0x400;
+            const int local_col = tcol % geo.tileW;
+            const int nt_col    = tcol / geo.tileW;
+            const int nt_off    = (nt_col + nt_row * geo.gridW) * geo.pageBytes;
 
             const u8 tile_id = ppu::ReadNametable(static_cast<u16>(nt_off + row32 + local_col));
-            const u8 attr    = ppu::ReadNametable(static_cast<u16>(nt_off + 0x3C0 + at_roff + (local_col >> 2)));
+            const u8 attr    = ppu::ReadNametable(static_cast<u16>(nt_off + geo.ntBytes + at_roff + (local_col >> 2)));
             const int pal    = (attr >> (((local_col >> 1) & 1) * 2 + at_rbits)) & 3;
 
             const int ti = atlas0 + tile_id;
@@ -659,10 +660,11 @@ void irq::init() {
     efbH = rmode->efbHeight;
     fbW  = rmode->fbWidth;
 
-    // video::vram_bytes() (video.hpp) sizes this to the NES-hardware minimum
-    // (2 pages/0x800 bytes) when ogc_world_tx resolves to 32 or less (e.g. a
-    // tiny/unusual TV mode), or double the banks a wide TV's viewport needs
-    // otherwise (see nt_cols in draw_bg_band below).
+    // video::vram_bytes() (video.hpp) sizes this for ::ppu::nametableCount
+    // physical, viewport-sized nametables -- the NES-hardware-equivalent 2
+    // pages/0x800 bytes when ogc_world_tx resolves to 32 or less (e.g. a
+    // tiny/unusual TV mode), scaling up with a wider TV's viewport (see
+    // ::emu::ComputeNtGeometry in draw_bg_band below).
     emu::InitMemory(video::vram_bytes());
 
     // --- GX-NATIVE resources ----------------------------------------------

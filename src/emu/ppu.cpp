@@ -54,16 +54,18 @@ __attribute__((weak)) u32 ppu::ResolveTile(const u16 tileVMA) {
     return tileVMA;
 }
 
-/* Weak default ::ppu::nametableRows: every board answers nametable/attribute
- * reads from ::VideoRAM's own single row unless a mapper says otherwise --
- * see this symbol's own doc comment (video.hpp). Same idiom as audio.hpp's
+/* Weak default ::ppu::nametableCount: every ordinary board (switchable H/V
+ * mirroring, e.g. MMC3) provides exactly 2 physical nametables -- see this
+ * symbol's own doc comment (video.hpp). Same idiom as audio.hpp's
  * ::sfxs/::nSfx (src/SDL3/audio.cpp). */
-__attribute__((weak)) extern const u8 ppu::nametableRows = 1;
+__attribute__((weak)) extern const u8 ppu::nametableCount = 2;
 
 /* Weak default ::ppu::ReadNametable/::WriteNametable: every nametable/
- * attribute VRAM access funnels through these two -- see ::ppu::ReadNametable's
- * own doc comment (video.hpp) for the weak/strong relationship a mapper with
- * its own cart-routed storage (e.g. MMC3 four-screen) overrides. */
+ * attribute VRAM access funnels through these two -- correct for every board,
+ * since ::video::vram_bytes() already sizes ::VideoRAM for every page
+ * ::ppu::nametableCount claims (see that symbol's own doc comment, video.hpp).
+ * A board could still supply a strong override if it ever needed to answer
+ * from somewhere else. */
 __attribute__((weak)) u8 ppu::ReadNametable(const u16 logical) {
     return VideoRAM[logical];
 }
@@ -71,10 +73,6 @@ __attribute__((weak)) u8 ppu::ReadNametable(const u16 logical) {
 __attribute__((weak)) void ppu::WriteNametable(const u16 logical, const u8 value) {
     VideoRAM[logical] = value;
 }
-
-/* Weak default ::ppu::InitCartVRAM: a board with no cart-routed nametable
- * storage has nothing to allocate. See its own doc comment (video.hpp). */
-__attribute__((weak)) void ppu::InitCartVRAM() {}
 
 static constexpr u32 nes_rgb[64] = {
     0xFF626262, 0xFF012090, 0xFF1B0CA4, 0xFF3B009E,
@@ -167,15 +165,18 @@ void GenerateFrame(u32 *fb, const int stride) {
     const int vpw = video::viewport_px();
     const int vph = video::viewport_py();
 
-    const int nt_cols  = vpw < 512 ? 2 : (vpw + 255) / 256;
-    const int world_w  = nt_cols * 256;
-    /* How many stacked 240px-tall nametable rows the linked board provides
-     * storage for (::ppu::nametableRows -- 1 for every board except MMC3
-     * four-screen). Folding ppu_y through this instead of a hardcoded 240 is
-     * what lets the background walk reach a second row at all; bounding it to
-     * exactly what the linked board says exists is what keeps that walk from
-     * ever deriving an address into storage that board never allocated. */
-    const int world_h  = static_cast<int>(ppu::nametableRows) * 240;
+    /* Nametable/attribute geometry for the linked board: ::ppu::nametableCount
+     * physical, viewport-sized nametables, gridded by mirroring -- see
+     * ::emu::ComputeNtGeometry's own doc comment (emu.hpp). Folding ppu_y/
+     * xScroll through geo.worldH/geo.worldW instead of a hardcoded 240/256 is
+     * what lets the background walk reach every nametable the linked board
+     * actually provides, exactly the way real mirroring wiring would alias
+     * an out-of-range logical address back onto real storage, instead of
+     * silently wrapping into (or worse, past) a smaller world than the board
+     * has. */
+    const emu::NtGeometry geo = emu::ComputeNtGeometry();
+    const int world_w  = geo.worldW;
+    const int world_h  = geo.worldH;
     const int spr_base = (ppu::PPUCTRL & ppu::ctrl::SPRITE_ADDR) ? 0x1000 : 0x0000;
     const int spr_h    = (ppu::PPUCTRL & ppu::ctrl::SPRITE_SIZE) ? 16 : 8;
 
@@ -223,8 +224,8 @@ void GenerateFrame(u32 *fb, const int stride) {
              * added to px inside the loop for the horizontal scan offset. */
             const int wy        = ppu_y % world_h;
             const int tile_row  = wy / 8;
-            const int local_row = tile_row % 30;
-            const int nt_row    = tile_row / 30;
+            const int local_row = tile_row % geo.tileH;
+            const int nt_row    = tile_row / geo.tileH;
             const int fine_y    = wy & 7;
 
             /* Background tile-walk state, advanced incrementally across the
@@ -237,23 +238,23 @@ void GenerateFrame(u32 *fb, const int stride) {
              * each 8-pixel boundary via load_tile(). */
             const bool bg_on    = ppu::PPUMASK & ppu::mask::BG;
             const bool bg_left  = ppu::PPUMASK & 0x02;
-            const int  row32    = local_row * 32;
-            const int  at_roff  = (local_row >> 2) * 8;          // (local_row / 4) * 8
+            const int  row32    = local_row * geo.tileW;
+            const int  at_roff  = (local_row >> 2) * geo.atW;    // (local_row / 4) * atW
             const int  at_rbits = ((local_row >> 1) & 1) * 4;
-            const int  ntrow_b  = nt_row * nt_cols;
+            const int  ntrow_b  = nt_row * geo.gridW;
             const int  chr_tbl  = (ppu::PPUCTRL & ppu::ctrl::BG_ADDR) ? 0x1000 : 0;
 
             const int  wx0      = (static_cast<int>(xScroll) + seg_start) % world_w;
             const int  tcol0    = wx0 >> 3;
             int        fine_x   = wx0 & 7;
-            int        local_col = tcol0 % 32;
-            int        nt_col    = tcol0 / 32;
+            int        local_col = tcol0 % geo.tileW;
+            int        nt_col    = tcol0 / geo.tileW;
 
             u8 plane0 = 0, plane1 = 0, tile_pal = 0;
             auto load_tile = [&]() {
-                const int nt_off = (nt_col + ntrow_b) * 0x400;
+                const int nt_off = (nt_col + ntrow_b) * geo.pageBytes;
                 const u8 tile_id = ppu::ReadNametable(static_cast<u16>(nt_off + row32 + local_col));
-                const u8 attr    = ppu::ReadNametable(static_cast<u16>(nt_off + 0x3C0 + at_roff + (local_col >> 2)));
+                const u8 attr    = ppu::ReadNametable(static_cast<u16>(nt_off + geo.ntBytes + at_roff + (local_col >> 2)));
                 tile_pal = (attr >> (((local_col >> 1) & 1) * 2 + at_rbits)) & 3;
                 const int chr_base = chr_tbl + tile_id * 16 + fine_y;
                 const u32 chr_lma  = ppu::ResolveTile(static_cast<u16>(chr_base));
@@ -338,9 +339,9 @@ void GenerateFrame(u32 *fb, const int stride) {
                  * nametable edge and nt_col at the world edge. */
                 if (++fine_x == 8) {
                     fine_x = 0;
-                    if (++local_col == 32) {
+                    if (++local_col == geo.tileW) {
                         local_col = 0;
-                        if (++nt_col == nt_cols) nt_col = 0;
+                        if (++nt_col == geo.gridW) nt_col = 0;
                     }
                     if (bg_on) load_tile();
                 }
@@ -372,7 +373,6 @@ void GenerateFrame(u32 *fb, const int stride) {
 void InitMemory(const unsigned vram_bytes) {
     paletteRAM = static_cast<u8 *>(malloc(32));
     VideoRAM   = static_cast<u8 *>(malloc(vram_bytes));
-    ppu::InitCartVRAM();
 }
 
 /* Raster-timeline walk for the GX backend. Same IRQ-dispatch logic as
@@ -430,25 +430,43 @@ const oam::sprite_t* OamShadow() { return oamShadow; }
 
 #pragma endregion
 
+// Every one of these four functions addresses the exact same nametable/
+// attribute layout ::emu::GenerateFrame reads from -- ::emu::ComputeNtGeometry
+// (emu.hpp) is the single shared source of that layout, so the write side
+// (these) and the read side can never drift apart the way the old
+// viewport-width-derived nt_cols/hardcoded-0x400 scheme used to (see
+// ::ppu::nametableCount's own doc comment, video.hpp, for why a logical
+// address past one nametable's own tiles is expected -- e.g. a vertical-
+// mirroring reveal trick -- and must land on a real, readable page instead of
+// silently addressing storage no board actually provides).
 inline static u16 xy_to_nt_addr(u16 x, u16 y) {
-    const u16 nt_cols = (video::viewport_tx() < 64 ? 2 : (video::viewport_tx() + 31) / 32);
-    const u16 nt_h = (x / 32) % nt_cols;
-    const u16 nt_v = y / 30;
-    const u16 col  = x % 32;
-    const u16 row  = y % 30;
+    const emu::NtGeometry geo = emu::ComputeNtGeometry();
+    // Both axes wrap modulo the grid's own size here -- exactly the alias a
+    // real board's mirroring wiring gives for free: a caller placing content
+    // at, say, y == one nametable's height (deliberately past what's on
+    // screen, to be revealed by a later scroll -- see ::ppu::nametableCount's
+    // own doc comment, video.hpp) lands back on a REAL page the grid actually
+    // has, exactly the row/column it would alias to on real hardware, instead
+    // of indexing a page number past ::ppu::nametableCount that no board
+    // provides.
+    const u16 nt_h = static_cast<u16>((x / geo.tileW) % geo.gridW);
+    const u16 nt_v = static_cast<u16>((y / geo.tileH) % geo.gridH);
+    const u16 col  = static_cast<u16>(x % geo.tileW);
+    const u16 row  = static_cast<u16>(y % geo.tileH);
 
-    return (nt_h + nt_v * nt_cols) * 0x400 + row * 32 + col;
+    return static_cast<u16>((nt_h + nt_v * geo.gridW) * geo.pageBytes + row * geo.tileW + col);
 }
 
 inline static u16 xy_to_at_addr(u16 x, u16 y) {
-    const u16 nt_cols = (video::viewport_tx() < 64 ? 2 : (video::viewport_tx() + 31) / 32);
-    const u16 nt_h = (x / 32) % nt_cols;
-    const u16 nt_v = y / 30;
-    const u16 col  = x % 32;
-    const u16 row  = y % 30;
+    const emu::NtGeometry geo = emu::ComputeNtGeometry();
+    // See xy_to_nt_addr above: both axes wrap modulo the grid's own size.
+    const u16 nt_h = static_cast<u16>((x / geo.tileW) % geo.gridW);
+    const u16 nt_v = static_cast<u16>((y / geo.tileH) % geo.gridH);
+    const u16 col  = static_cast<u16>(x % geo.tileW);
+    const u16 row  = static_cast<u16>(y % geo.tileH);
 
-    return (nt_h + nt_v * nt_cols) * 0x400
-         + 0x3C0 + (row / 4) * 8 + (col / 4);
+    return static_cast<u16>((nt_h + nt_v * geo.gridW) * geo.pageBytes
+         + geo.ntBytes + (row / 4) * geo.atW + (col / 4));
 }
 
 // Inverse of xy_to_nt_addr: recovers an (x,y) the multi-byte writers' own
@@ -456,18 +474,18 @@ inline static u16 xy_to_at_addr(u16 x, u16 y) {
 // caller precomputed via CartesianToAddress. Native division is cheap here
 // (unlike the 6502 NES backend, where CartesianToAddress's cost is the whole
 // reason an address overload exists) -- so rather than re-deriving a
-// division-free page-wrap scheme (fragile: it would have to assume nt_cols
-// stays 2, which isn't guaranteed on a resizable LANDSCAPE window), this just
-// reconstructs the coordinate the existing, already-wraparound-safe pos-based
-// implementation needs, and defers to it unchanged.
+// division-free page-wrap scheme (fragile: it would have to assume the grid
+// stays a fixed shape, which isn't guaranteed on a resizable LANDSCAPE
+// window), this just reconstructs the coordinate the existing, already-
+// wraparound-safe pos-based implementation needs, and defers to it unchanged.
 inline static void nt_addr_to_xy(const u16 address, u16& x, u16& y) {
-    const u16 nt_cols   = (video::viewport_tx() < 64 ? 2 : (video::viewport_tx() + 31) / 32);
-    const u16 pageIndex = address >> 10;
-    const u16 nt_h      = pageIndex % nt_cols;
-    const u16 nt_v       = pageIndex / nt_cols;
-    const u16 local      = address & 0x3FF;
-    x = static_cast<u16>(nt_h * 32 + (local & 0x1F));
-    y = static_cast<u16>(nt_v * 30 + (local >> 5));
+    const emu::NtGeometry geo = emu::ComputeNtGeometry();
+    const u16 pageIndex = static_cast<u16>(address / geo.pageBytes);
+    const u16 nt_h       = static_cast<u16>(pageIndex % geo.gridW);
+    const u16 nt_v       = static_cast<u16>(pageIndex / geo.gridW);
+    const u16 local      = static_cast<u16>(address % geo.pageBytes);
+    x = static_cast<u16>(nt_h * geo.tileW + local % geo.tileW);
+    y = static_cast<u16>(nt_v * geo.tileH + local / geo.tileW);
 }
 
 // Attribute counterpart of ::nt_addr_to_xy. An attribute address only encodes
@@ -476,13 +494,13 @@ inline static void nt_addr_to_xy(const u16 address, u16& x, u16& y) {
 // corner of that 4x4 block, which is fine: xy_to_at_addr(x,y) depends only on
 // x/4 and y/4, so any (x,y) inside the block round-trips to the same address.
 inline static void at_addr_to_xy(const u16 address, u16& x, u16& y) {
-    const u16 nt_cols   = (video::viewport_tx() < 64 ? 2 : (video::viewport_tx() + 31) / 32);
-    const u16 pageIndex = address >> 10;
-    const u16 nt_h      = pageIndex % nt_cols;
-    const u16 nt_v       = pageIndex / nt_cols;
-    const u16 local      = static_cast<u16>((address & 0x3FF) - 0x3C0);
-    x = static_cast<u16>(nt_h * 32 + (local & 0x7) * 4);
-    y = static_cast<u16>(nt_v * 30 + (local >> 3) * 4);
+    const emu::NtGeometry geo = emu::ComputeNtGeometry();
+    const u16 pageIndex = static_cast<u16>(address / geo.pageBytes);
+    const u16 nt_h       = static_cast<u16>(pageIndex % geo.gridW);
+    const u16 nt_v       = static_cast<u16>(pageIndex / geo.gridW);
+    const u16 local      = static_cast<u16>(address % geo.pageBytes - geo.ntBytes);
+    x = static_cast<u16>(nt_h * geo.tileW + (local % geo.atW) * 4);
+    y = static_cast<u16>(nt_v * geo.tileH + (local / geo.atW) * 4);
 }
 
 namespace ppu {
@@ -492,26 +510,22 @@ void EnableRendering(u8 ppuCtrl_, u8 ppuMask_) {
     ppu::PPUCTRL = ppuCtrl_;
 }
 
-/* Weak default ::ppu::Flush: walks only "row 0" (::video::nametable_row_bytes()
- * worth of pages) -- correct for an ordinary mirrored board, where those 2
- * physical pages alias to cover all 4 logical nametables. A four-screen
- * board's row 1 (::mmc3::cartVRAM) is genuinely separate storage this never
- * reaches; its own mapper TU supplies a strong override that walks every
- * physical page instead -- see src/emu/mappers/mmc3.cpp's own comment. */
+/* Weak default ::ppu::Flush: walks every physical nametable
+ * (::ppu::nametableCount of them, see that symbol's own doc comment) --
+ * correct for every board, since they all now live in the one flat
+ * ::VideoRAM allocation (::video::vram_bytes() already sizes it for all of
+ * them). */
 __attribute__((weak))
 void Flush(const u8 nt, const u8 at) {
-    // The page count tracks the nametable addressing used by GenerateFrame /
-    // xy_to_nt_addr: a single virtual-pixel width of <512 maps to two pages,
-    // otherwise one page per 256 px column. viewport_px() replaces the SDL
-    // backend's old mode->w/scale so this stays free of any display API.
-    const u16 vpw = video::viewport_px();
-    for (u16 page = 0; vpw < 512 ? page < 2 : page < vpw; page++) {
-        for (u16 i = 0; i < 0x3c0; i++) {
-            ppu::WriteNametable(static_cast<u16>(page * 0x400 + i), nt);
+    const emu::NtGeometry geo = emu::ComputeNtGeometry();
+    const int pageCount = static_cast<int>(ppu::nametableCount);
+    for (int page = 0; page < pageCount; page++) {
+        const int base = page * geo.pageBytes;
+        for (int i = 0; i < geo.ntBytes; i++) {
+            ppu::WriteNametable(static_cast<u16>(base + i), nt);
         }
-
-        for (u16 i = 0; i < 0x40; i++) {
-            ppu::WriteNametable(static_cast<u16>(page * 0x400 + 0x3c0 + i), at);
+        for (int i = 0; i < geo.atBytes; i++) {
+            ppu::WriteNametable(static_cast<u16>(base + geo.ntBytes + i), at);
         }
     }
 }
@@ -641,16 +655,17 @@ void WriteFromBufferToAttributeTable(
     // Horizontal (polarity 0) runs can cross an nt_h page on any viewport
     // wider than 32 tiles (OGC/Switch/WiiU/PSP), so those need the full
     // page-aware address recomputed per cell -- see WriteFromBufferToNameTable
-    // above. Vertical (polarity 1) runs never cross a page: every backend's
-    // viewport is <=30 tiles tall (one page), so nt_v is always 0 -- walking
-    // the flat 8-byte row-bucket stride off one base address is correct and
-    // avoids reintroducing xy_to_at_addr's y%30 wraparound, which trips
-    // incorrectly for a run whose start row isn't itself a multiple of 4
-    // (e.g. level.cpp's ground column starts at y=2).
+    // above. Vertical (polarity 1) runs never cross a page: a nametable's
+    // height is always exactly the viewport's own (::emu::ComputeNtGeometry),
+    // so nt_v is always 0 -- walking the flat row-bucket stride off one base
+    // address is correct and avoids reintroducing xy_to_at_addr's y%tileH
+    // wraparound, which trips incorrectly for a run whose start row isn't
+    // itself a multiple of 4 (e.g. level.cpp's ground column starts at y=2).
     if (polarity) {
         const u16 offset = xy_to_at_addr(x, y);
+        const u16 atStride = emu::ComputeNtGeometry().atW;
         for (u8 i = 0; i < sBuffer; i++) {
-            ppu::WriteNametable(static_cast<u16>(offset + i * 8), source[i]);
+            ppu::WriteNametable(static_cast<u16>(offset + i * atStride), source[i]);
         }
     } else {
         for (u8 i = 0; i < sBuffer; i++) {
@@ -676,8 +691,9 @@ void WriteRepeatedToAttributeTable(
     // off one base address; horizontal recomputes the page-aware address per cell.
     if (polarity) {
         const u16 offset = xy_to_at_addr(x, y);
+        const u16 atStride = emu::ComputeNtGeometry().atW;
         for (u8 i = 0; i < amt; i++) {
-            ppu::WriteNametable(static_cast<u16>(offset + i * 8), value);
+            ppu::WriteNametable(static_cast<u16>(offset + i * atStride), value);
         }
         return;
     }
@@ -716,8 +732,9 @@ void WriteFromProviderToAttributeTable(
     // horizontal recomputes the page-aware address per cell.
     if (polarity) {
         const u16 offset = xy_to_at_addr(x, y);
+        const u16 atStride = emu::ComputeNtGeometry().atW;
         for (Idx i = 0; i < amt; ++i) {
-            ppu::WriteNametable(static_cast<u16>(offset + i * 8), fn(i));
+            ppu::WriteNametable(static_cast<u16>(offset + i * atStride), fn(i));
         }
         return;
     }

@@ -157,33 +157,6 @@ public:
      */
     static u32 GetTileLMA(u16 tileVMA);
 
-#if ALTERNATIVE_NAMETABLE == 1
-    /**
-     * @brief Backing storage for this module's strong ::ppu::ReadNametable/
-     *        ::ppu::WriteNametable overrides (src/emu/mappers/mmc3.cpp) --
-     *        the software stand-in for the extra 2 KiB VRAM chip a real
-     *        four-screen MMC3 board carries. Sized and allocated by the
-     *        strong ::ppu::InitCartVRAM override, once, from
-     *        ::emu::InitMemory.
-     *
-     * Only declared under ALTERNATIVE_NAMETABLE == 1: a board without this
-     * wiring never routes anywhere but the console's own ::VideoRAM (the
-     * weak ::ppu::ReadNametable/::WriteNametable defaults already do that),
-     * so it has nothing to back. Public for the same free-function reason as
-     * ::GetTileLMA, above -- not part of this class's intended user-facing
-     * API.
-     */
-    static u8* cartVRAM;
-
-    /// Byte length of one nametable row (::video::nametable_row_bytes(),
-    /// NOT ::VideoRAM's own allocated size -- see ::ppu::InitCartVRAM's own
-    /// doc comment, video.hpp, for why those can differ): everything below
-    /// this logical offset answers from ::VideoRAM, everything at or above
-    /// it answers from ::cartVRAM (offset by this same amount). Set
-    /// alongside ::cartVRAM by ::ppu::InitCartVRAM.
-    static unsigned cartVRAMRowBytes;
-#endif
-
     /**
      * @brief Sets the emu-side CHR mode bit (see ::shape).
      *

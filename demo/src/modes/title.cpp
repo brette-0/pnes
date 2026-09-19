@@ -118,7 +118,20 @@ namespace title {
     static void nmi_handler_drawPlayMode();
     static void nmi_handler_drawMenu();
 
-    constexpr u16 kMenuNT = 32;
+    // Column where the menu/play-mode nametable begins, and that nametable's
+    // own width -- always the same value (one nametable's width to the right
+    // of nametable A puts you at the start of nametable B), computed at
+    // runtime rather than a compile-time constant: a real console's nametable
+    // is a fixed 32 tiles, but a variadic display (LANDSCAPE desktop's
+    // runtime window, OGC's runtime TV width, ...) has no such hardware
+    // constraint -- its nametable is just its own viewport, whatever size
+    // that renders at (see ::emu::ComputeNtGeometry's own doc comment,
+    // src/emu/emu.hpp). Floored at 32 for a target whose viewport is instead
+    // a CROP of a still-32-wide background (GBA/NDS/DSi). Set once, below, at
+    // the top of main() -- before ApplySplit() (which also reads kMenuNT) can
+    // ever run.
+    static u16 kMenuNT;
+    static u16 kMenuNTWidth;
     constexpr u16 kBottomRightNT = 30;
 
     static u8 SplitRow() {
@@ -134,6 +147,8 @@ namespace title {
 
 
     TITLE NI void main() {
+        kMenuNT = kMenuNTWidth = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
+
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);
         pIRQ = irq_handler;
         pNMI = nmi_handler;
@@ -160,7 +175,7 @@ namespace title {
         DrawLevelPreview();
         InitTitleScreen();
 
-        const u16 menuCol = kMenuNT + (viewport_mx() << 1) - 1 - kMenuBoxWidth;
+        const u16 menuCol = kMenuNT + kMenuNTWidth - 1 - kMenuBoxWidth;
         menuOption = 0;
         const vec2<u16> menuPos{menuCol, static_cast<u16>(kBottomRightNT + 1)};
         const auto menuChunks = MakeOptionBoxes(
@@ -182,7 +197,7 @@ namespace title {
         menuClearAddr = ppu::CartesianToAddress({static_cast<u16>(menuCol - 2), static_cast<u16>(kBottomRightNT + 1)});
         menuAddr = ppu::CartesianToAddress({menuCol, static_cast<u16>(kBottomRightNT + 1)});
 
-        const u16 playModeCol = kMenuNT + (viewport_mx() << 1) - 1 - kPlayModeBoxWidth;
+        const u16 playModeCol = kMenuNT + kMenuNTWidth - 1 - kPlayModeBoxWidth;
         playModeOption = 0;
         playModePos = {playModeCol, static_cast<u16>(kBottomRightNT + 1)};
         // Same leak, same fix -- see pMenuChunks's own comment above.

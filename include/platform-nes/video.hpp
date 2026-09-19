@@ -533,19 +533,23 @@ namespace ppu {
 
     /**
      * @brief Reads one byte of nametable/attribute VRAM at a flattened
-     *        logical offset -- the same 12-bit-and-up value
-     *        ::CartesianToAddress / the internal xy_to_nt_addr / xy_to_at_addr
-     *        already compute: 0x000-0x3FF per real NES nametable quadrant, in
-     *        $2000/$2400/$2800/$2C00 order, however many quadrants the linked
-     *        board's ::nametableRows spans.
+     *        logical offset -- the same value ::CartesianToAddress / the
+     *        internal xy_to_nt_addr / xy_to_at_addr already compute: one
+     *        ::video::nametable_plane_bytes()-sized page per physical
+     *        nametable, ::ppu::nametableCount pages total, all inside the one
+     *        flat ::VideoRAM allocation (see ::nametableCount's own comment
+     *        for how a logical (x,y) maps onto a page).
      *
-     * Weak default is `VideoRAM[logical]`. A board routing part of that space to
-     * cartridge-side storage -- e.g. a four-screen board's extra 2 KiB chip
-     * answering $2800/$2C00 -- supplies a strong definition, same relationship
-     * as ::ResolveTile.
+     * Weak default is `VideoRAM[logical]`, correct for every board: unlike
+     * real NES hardware (a fixed 2 KiB on the console plus, on some board
+     * wirings, a separate cartridge-side chip), nothing here needs routing to
+     * a second buffer -- ::vram_bytes() already sizes ::VideoRAM for every
+     * page ::nametableCount claims. A board could still supply a strong
+     * definition (same relationship as ::ResolveTile) if it ever needed to
+     * answer from somewhere else, but none currently do.
      *
      * @param logical Flattened nametable/attribute offset.
-     * @return        The byte at that offset, from whichever storage answers it.
+     * @return        The byte at that offset.
      */
     u8 ReadNametable(u16 logical);
 
@@ -560,41 +564,46 @@ namespace ppu {
     void WriteNametable(u16 logical, u8 value);
 
     /**
-     * @brief How many stacked 240px-tall nametable "rows" the linked board
-     *        provides storage for -- 1 for every board that only ever
-     *        occupies the console's own ::VideoRAM (every board today except
-     *        MMC3 four-screen, which is 2: ::VideoRAM's row plus its own
-     *        cartridge VRAM's row, routed through ::ReadNametable/
-     *        ::WriteNametable).
+     * @brief How many physical nametables the linked mapper provides -- a
+     *        board property, fixed at link time, independent of viewport size
+     *        or the runtime mirroring switch: 2 for an ordinary
+     *        switchable-mirroring board (e.g. MMC3), 4 for a four-screen
+     *        board (a real extra cartridge VRAM chip, no aliasing needed), 1
+     *        for a fixed single-screen board.
      *
-     * The vertical scroll walk and the native-2D tilemap bakes need this to know
-     * how far the background may wrap before folding back to row 0; without it a
-     * one-row board could derive an address into storage it never allocated.
+     * This is the off-NES equivalent of what real NES mirroring wiring gives
+     * for free: on hardware, $2000/$2400/$2800/$2C00 always exist as logical
+     * addresses, and mirroring is just which of those alias the same physical
+     * chip. Off-NES, every backend (the per-pixel SDL core and each
+     * native-tilemap backend) derives the SAME arrangement from this value
+     * together with the runtime ::mirroring flag: a 2-nametable board grids as
+     * 2-wide/1-tall when ::mirroring is vertical (false) or 1-wide/2-tall when
+     * horizontal (true); a 4-nametable board always grids 2x2, ::mirroring
+     * playing no part (matching a real four-screen board's own $A000 write
+     * being meaningless -- each quadrant already has fixed, dedicated
+     * storage). Each nametable in that grid matches this viewport's own size
+     * (floored at the NES-native 32x30 minimum -- see
+     * ::emu::ComputeNtGeometry's own doc comment, emu.hpp, for why: real
+     * hardware only forces exactly 32x30 for a target whose viewport crops a
+     * fixed background, e.g. GBA/NDS/DSi -- everything else's viewport
+     * already IS the addressable world, whatever size it runtime-renders at).
      *
-     * Weak default `1`; a board needing more supplies a strong definition, same
-     * relationship as ::ResolveTile.
+     * Weak default `2`; a board needing a different count supplies a strong
+     * definition, same relationship as ::ResolveTile.
      */
-    extern const u8 nametableRows;
-
-    /**
-     * @brief A prompt, not an instruction: called once, right after ::VideoRAM
-     *        is allocated.
-     *
-     * A board routing part of nametable space to cartridge-side storage (see
-     * ::ReadNametable) allocates it here, sized via
-     * ::video::nametable_row_bytes() -- the same per-row page count the render
-     * walk and the nametable-write API agree on, so the routed row's boundary
-     * lines up with where those callers stop treating an offset as row 0.
-     *
-     * NOT sized from ::video::vram_bytes(): that rounds up more aggressively,
-     * and sizing from it leaves a row-1 boundary mismatch on any viewport wider
-     * than native, routing row-1 addresses into ::VideoRAM's unwritten tail.
-     *
-     * Weak default: no-op. Same relationship as ::ResolveTile.
-     */
-    void InitCartVRAM();
+    extern const u8 nametableCount;
 #endif
 }
+#ifndef TARGET_NES
+/**
+ * @brief Desktop shadow of MMC3's $A000 mirroring bit: false = vertical,
+ *        true = horizontal. Forward-declared here (full doc comment below,
+ *        near ::VideoRAM) so ::video::nametable_grid_w()/::nametable_grid_h()
+ *        can read it -- those are declared inside `namespace video`, further
+ *        down this file, ahead of ::mirroring's own declaration otherwise.
+ */
+extern bool mirroring;
+#endif
 #if !defined(TARGET_NES) && !defined(TARGET_OGC) && !defined(TARGET_CTR) && !defined(TARGET_NX) && !defined(TARGET_WIIU) && !defined(TARGET_PSP) && !defined(TARGET_NDS) && !defined(TARGET_GBA)
 /** @brief Current desktop display mode (window + refresh info). SDL backend only. */
 extern const SDL_DisplayMode* mode;
@@ -729,16 +738,17 @@ namespace video {
     // the only way to guarantee there is none.
     //
     // Height CANNOT similarly follow the panel to 272px (34 tiles): the shared
-    // core's vertical walk (emu::GenerateFrame in src/emu/ppu.cpp) wraps at
-    // world_h = ppu::nametableRows * 240 -- 240px for every board except
-    // MMC3 four-screen. Unlike the horizontal axis (nt_cols dynamically widens
-    // world_w for any viewport up to 512px wide), there is no equivalent
-    // vertical extension: a viewport taller than that wrap boundary walks back
-    // into row 0 of the nametable partway down the screen, which reads as the
-    // image mirroring/tearing near the bottom -- not a rendering bug, a
-    // request for pixels the nametable doesn't have. This is exactly why every
-    // OTHER backend, without exception, keeps its viewport at or under the
-    // NES's native 30 tiles; the PSP branch has to as well. The result is a
+    // core's vertical walk (emu::GenerateFrame in src/emu/ppu.cpp, via
+    // ::emu::ComputeNtGeometry) wraps at world_h = geo.gridH * viewport_py() --
+    // gridH follows the linked mapper's own ::ppu::nametableCount and current
+    // mirroring (2/1/1 tall for an ordinary vertically/horizontally-mirrored
+    // board, 2 for four-screen), never taller than that grid, so a viewport
+    // taller than what the grid actually provides walks back into row 0 of a
+    // nametable partway down the screen, which reads as the image mirroring/
+    // tearing near the bottom -- not a rendering bug, a request for pixels no
+    // nametable in the grid has. This is exactly why every OTHER backend,
+    // without exception, keeps its viewport at or under the NES's native 30
+    // tiles; the PSP branch has to as well. The result is a
     // clean 480x240 render letterboxed inside 480x272 (16px black bars top and
     // bottom, filled once at init -- see src/psp/video.cpp) rather than either
     // scaling into distortion or rendering into a boundary the core doesn't
@@ -772,44 +782,56 @@ namespace video {
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
 #endif
 
-    /** @brief Nametable VRAM size in bytes required for this run.
+#ifndef TARGET_NES
+    /**
+     * @brief How many nametables wide/tall the addressable background world
+     *        grids as -- purely the linked mapper's ::ppu::nametableCount and
+     *        the current runtime ::mirroring, exactly the alias real
+     *        mirroring wiring gives for free: 2-wide/1-tall when ::mirroring
+     *        is vertical (false), 1-wide/2-tall when horizontal (true), or
+     *        always 2x2 for a 4-nametable board (::mirroring playing no part,
+     *        matching a real four-screen board's own $A000 write being
+     *        meaningless -- each quadrant already has fixed, dedicated
+     *        storage).
      *
-     * Mirrors the NES hardware's own fixed 2-nametable VRAM. A single
-     * viewport's worth of tiles needs ceil(tx/32) * ceil(ty/30) banks (0x400
-     * bytes each, one real NES nametable per bank); this always allocates
-     * exactly TWO such copies -- one for what's on screen, one headroom bank
-     * to scroll ahead into -- the same double-buffering the NES itself always
-     * has. A viewport at or under the NES's own 32x30 resolves to the
-     * hardware's stock 2 banks / 0x800 bytes; a larger-than-native viewport
-     * (wider in LANDSCAPE, taller in PORTRAIT) scales up proportionally, but
-     * is still always exactly double -- never a continuously-growing amount.
+     * No viewport-width term here: unlike the old NES-fixed-32-wide-nametable
+     * scheme (which needed extra nametable-sized slices just to cover a wider
+     * viewport), each nametable already matches this viewport's own size
+     * (::nametable_plane_bytes() below) -- one nametable already covers the
+     * whole screen, exactly the way a real 2-nametable vertically-mirrored
+     * NES board already gives a full screen of scroll-ahead lookahead without
+     * needing a third nametable.
      */
-    constexpr unsigned vram_bytes() {
-        const unsigned banks_x = (static_cast<unsigned>(viewport_tx()) + 31) / 32;
-        const unsigned banks_y = (static_cast<unsigned>(viewport_ty()) + 29) / 30;
-        return 2u * banks_x * banks_y * 0x400u;
+    constexpr u16 nametable_grid_w() {
+        return static_cast<u16>(ppu::nametableCount >= 4 ? 2 : (ppu::nametableCount >= 2 ? (mirroring ? 1 : 2) : 1));
+    }
+    constexpr u16 nametable_grid_h() {
+        return static_cast<u16>(ppu::nametableCount >= 4 ? 2 : (ppu::nametableCount >= 2 ? (mirroring ? 2 : 1) : 1));
     }
 
     /**
-     * @brief Bytes of nametable/attribute storage one 240px-tall row spans,
-     *        for a board whose nametable "rows" are counted with
-     *        ::ppu::nametableRows -- the boundary the emu PPU's own render
-     *        walk (src/emu/ppu.cpp's ::emu::GenerateFrame) and the
-     *        nametable-write API (::ppu::CartesianToAddress's internal
-     *        xy_to_nt_addr) already agree divides row 0 from row 1.
-     *
-     * NOT ::vram_bytes(): that sizes the ::VideoRAM allocation, rounding width
-     * up to whole 32-tile banks and doubling for scroll lookahead. This mirrors
-     * the render walk's pixel-width threshold instead, so it can land below
-     * ::vram_bytes() on a viewport wider than native but short of double-wide.
-     * ::ppu::InitCartVRAM must size against this one: the other leaves a gap
-     * between where row 0 ends and where cart storage starts answering.
+     * @brief Bytes one physical nametable occupies: a tile plane (one byte
+     *        per tile, ::viewport_tx() * ::viewport_ty() -- floored at the
+     *        NES-native 32x30 minimum, see ::emu::ComputeNtGeometry's own doc
+     *        comment, emu.hpp, for why) plus its attribute plane (one byte
+     *        per 4x4-tile block).
      */
-    constexpr unsigned nametable_row_bytes() {
-        const unsigned vpw = viewport_px();
-        const unsigned nt_cols = vpw < 512 ? 2u : (vpw + 255u) / 256u;
-        return nt_cols * 0x400u;
+    constexpr unsigned nametable_plane_bytes() {
+        const unsigned tx = viewport_tx() < 32 ? 32u : viewport_tx();
+        const unsigned ty = viewport_ty() < 30 ? 30u : viewport_ty();
+        const unsigned at_w = (tx + 3) / 4, at_h = (ty + 3) / 4;
+        return tx * ty + at_w * at_h;
     }
+
+    /** @brief Nametable VRAM size in bytes required for this run.
+     *
+     * ::nametable_grid_w() * ::nametable_grid_h() physical nametables, each
+     * ::nametable_plane_bytes().
+     */
+    constexpr unsigned vram_bytes() {
+        return static_cast<unsigned>(nametable_grid_w()) * nametable_grid_h() * nametable_plane_bytes();
+    }
+#endif
 }
 
 

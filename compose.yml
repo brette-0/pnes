@@ -89,6 +89,16 @@ services:
         # local.cmake.example: TITLE co-locates with the cold bank like UI's
         # above, SYSMEM mirrors mmc3.hpp's own ::SYSMEM (.sysmem, onboard
         # system RAM).
+        # ALTERNATIVE_NAMETABLE=1: this demo's own board wiring, not a generic
+        # engine default (local.cmake.example leaves it unset/commented --
+        # most real MMC3 boards are ordinary 2-nametable, so it's genuinely
+        # per-board). This demo's title screen deliberately writes its
+        # menu/logo past row 30 -- off-screen storage revealed by the raster
+        # split -- which needs a real fourth quadrant to land in; ordinary
+        # 2-way mirroring only ever provides 2 physical nametables, aliasing
+        # that write back onto rows the level-preview background already
+        # occupies. Same gitignored-local.cmake-only story as TOPLEVEL_LD
+        # above, so CI needs it passed explicitly too.
         cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" \
           -DCMAKE_TOOLCHAIN_FILE="$$LLVM_MOS_SDK/lib/cmake/llvm-mos-sdk/llvm-mos-toolchain.cmake" \
           -DCMAKE_PREFIX_PATH="$$LLVM_MOS_SDK" \
@@ -96,7 +106,8 @@ services:
           -DPLATFORM_NES_AUDIO_SECTION=.prg_rom_audio \
           -DPLATFORM_NES_UI_SECTION=.prg_rom_cold \
           -DTITLE=.prg_rom_cold \
-          -DSYSMEM=.sysmem
+          -DSYSMEM=.sysmem \
+          -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo.nes"
 
@@ -119,7 +130,11 @@ services:
         set -euo pipefail
         # Dedicated build dir (see build-nes) so the container never clashes
         # with an IDE-configured cmake-build-linux-* tree on the host mount.
-        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        # ALTERNATIVE_NAMETABLE=1 -- see build-nes's own comment on it above:
+        # this demo's board wiring (four real nametables), not an engine
+        # default, needed by every backend that renders this same title
+        # screen, not just NES.
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo"
 
@@ -147,7 +162,7 @@ services:
       - -c
       - |
         set -euo pipefail
-        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo.dol"
 
@@ -168,7 +183,7 @@ services:
       - -c
       - |
         set -euo pipefail
-        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo.dol"
 
@@ -195,7 +210,7 @@ services:
       - -c
       - |
         set -euo pipefail
-        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo.3dsx"
 
@@ -222,7 +237,7 @@ services:
       - -c
       - |
         set -euo pipefail
-        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo.nro"
 
@@ -255,7 +270,7 @@ services:
       - -c
       - |
         set -euo pipefail
-        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         # Also assemble the installable-title path: demo-wup emits the unpacked
         # code/content/meta tree and, when WIIU_COMMON_KEY is set, packs a WUP.
@@ -288,7 +303,7 @@ services:
       - -c
       - |
         set -euo pipefail
-        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo.nds"
 
@@ -313,6 +328,6 @@ services:
       - -c
       - |
         set -euo pipefail
-        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo.nds"

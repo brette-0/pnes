@@ -91,8 +91,8 @@ static constexpr int SCREEN_H    = 160;          // visible scanlines
 static constexpr unsigned LINES_TOTAL = 228;     // total scanlines (160 visible + 68 vblank)
 static constexpr int MAP_COLS    = 64;           // 512px / 8
 // g_map_shadow's own row capacity: sized for the WORST case (a four-screen
-// board's two stacked 240px nametable rows, ::ppu::nametableRows == 2) --
-// 512px / 8 x2. An ordinary (::ppu::nametableRows == 1) board only ever
+// board's two stacked 240px nametable rows, ::ppu::nametableCount == 4) --
+// 512px / 8 x2. An ordinary (::ppu::nametableCount == 2) board only ever
 // fills/DMAs the first half (build_map's own activeRows, below); the
 // unused second half costs a fixed ~4 KB of IWRAM but keeps this file free
 // of any board-specific #if (see mmc3.hpp's own comment on
@@ -242,11 +242,16 @@ IWRAM_CODE void build_palettes() {
 // comment for why it can't be one combined period across both halves.
 //
 // activeRows -- not the fixed MAP_ROWS capacity -- bounds the loop: an
-// ordinary single-row board (::ppu::nametableRows == 1) only ever fills the
-// first 32 GBA tile-rows (one screenblock-row), the same footprint and cost
-// this loop always had before four-screen support existed, and never calls
-// ::ppu::ReadNametable with an offset past what that board's VideoRAM
-// actually covers.
+// ordinary 2-nametable board (::emu::NtGeometry::gridH == 1) only ever fills
+// the first 32 GBA tile-rows (one screenblock-row), the same footprint and
+// cost this loop always had before four-screen support existed, and never
+// calls ::ppu::ReadNametable with an offset past what that board's VideoRAM
+// actually covers. geo.tileW/tileH are always exactly the NES-native 32/30 --
+// never GBA's own 30x20 viewport (see TARGET_GBA's own viewport_tx()/
+// viewport_ty() doc comments, video.hpp) -- so this stays exactly the
+// screenblock-shaped walk it always was; ::emu::ComputeNtGeometry (emu.hpp)
+// is just the one shared place that shape (and ::ppu::nametableCount's grid)
+// now comes from, instead of this file's own copy of the formula.
 //
 // IWRAM_CODE: this is the backend's per-frame hot spot -- up to 64x64 = 4096
 // entries on a four-screen board (2048 on an ordinary one), each with two
@@ -256,42 +261,43 @@ IWRAM_CODE void build_palettes() {
 // zero-waitstate IWRAM (with VideoRAM/g_map_shadow also in IWRAM) is the
 // single biggest lever against dropped frames on this backend.
 IWRAM_CODE void build_map() {
-    const int atlas0     = (ppu::PPUCTRL & ppu::ctrl::BG_ADDR) ? 256 : 0;
-    const int activeRows = 32 * static_cast<int>(ppu::nametableRows);
+    const int atlas0 = (ppu::PPUCTRL & ppu::ctrl::BG_ADDR) ? 256 : 0;
+    const emu::NtGeometry geo = emu::ComputeNtGeometry();
+    const int activeRows = 32 * geo.gridH;
 
     for (int row = 0; row < activeRows; row++) {
-        // Each 32-row screenblock-half is an independent 30-periodic content
-        // stream -- NOT one continuous period spanning both halves. Physical
-        // screenblock placement is fixed at 32-row boundaries (hardware
-        // fact); NES nametable content repeats every 30 rows (hardware fact
-        // too); those two periods don't divide evenly into each other, so
-        // deriving nt_row from a combined modulus across the full 64-row
-        // span (e.g. `row % 60`) desyncs partway through the second half --
-        // confirmed as a real, reproduced bug (screenblock 2/3 content
-        // landing 2 rows short of where it belongs, "mirroring" the tail of
-        // screenblock 0/1's own row-30/31 wraparound into it instead).
-        // row >> 5 alone gives which screenblock-half (and therefore which
-        // nt_row) a physical row belongs to, always exactly at the 32-row
-        // boundary; local_row's own `% 30` wrap then reproduces, within
-        // THAT half alone, the same 2-row scroll-lookahead duplication an
-        // ordinary single-row board already relies on (rows 30/31 restating
-        // rows 0/1) -- this is also, by construction, byte-for-byte the
-        // original single-row formula whenever ::ppu::nametableRows == 1
-        // (activeRows == 32, so nt_row is always 0).
+        // Each 32-row screenblock-half is an independent tileH-periodic
+        // content stream -- NOT one continuous period spanning both halves.
+        // Physical screenblock placement is fixed at 32-row boundaries
+        // (hardware fact); NES nametable content repeats every tileH (30)
+        // rows (hardware fact too); those two periods don't divide evenly
+        // into each other, so deriving nt_row from a combined modulus across
+        // the full 64-row span (e.g. `row % 60`) desyncs partway through the
+        // second half -- confirmed as a real, reproduced bug (screenblock 2/3
+        // content landing 2 rows short of where it belongs, "mirroring" the
+        // tail of screenblock 0/1's own row-30/31 wraparound into it
+        // instead). row >> 5 alone gives which screenblock-half (and
+        // therefore which nt_row) a physical row belongs to, always exactly
+        // at the 32-row boundary; local_row's own `% tileH` wrap then
+        // reproduces, within THAT half alone, the same 2-row scroll-
+        // lookahead duplication an ordinary single-row board already relies
+        // on (rows 30/31 restating rows 0/1) -- this is also, by
+        // construction, byte-for-byte the original single-row formula
+        // whenever geo.gridH == 1 (activeRows == 32, so nt_row is always 0).
         const int nt_row    = row >> 5;
         const int row_in_sb = row & 31;
-        const int local_row = row_in_sb % 30;
-        const int row32     = local_row * 32;
-        const int at_roff   = (local_row >> 2) * 8;
+        const int local_row = row_in_sb % geo.tileH;
+        const int row32     = local_row * geo.tileW;
+        const int at_roff   = (local_row >> 2) * geo.atW;
         const int at_rbits  = ((local_row >> 1) & 1) * 4;
 
         for (int col = 0; col < MAP_COLS; col++) {
             const int nt_col    = col >> 5;          // 0 or 1 (which nametable)
             const int local_col = col & 31;
-            const int nt_off    = (nt_col + nt_row * 2) * 0x400;
+            const int nt_off    = (nt_col + nt_row * geo.gridW) * geo.pageBytes;
 
             const u8  tile_id = ppu::ReadNametable(static_cast<u16>(nt_off + row32 + local_col));
-            const u8  attr    = ppu::ReadNametable(static_cast<u16>(nt_off + 0x3C0 + at_roff + (local_col >> 2)));
+            const u8  attr    = ppu::ReadNametable(static_cast<u16>(nt_off + geo.ntBytes + at_roff + (local_col >> 2)));
             const int pal     = (attr >> (((local_col >> 1) & 1) * 2 + at_rbits)) & 3;
 
             const u16 entry = static_cast<u16>((atlas0 + tile_id) | (pal << 12));
@@ -495,13 +501,13 @@ void irq::init() {
 
     // BG0: 16-colour tiles in charblock 0, map in screenblock 8 (right after
     // the 16 KB tile atlas). Map size follows the linked board's own
-    // ::ppu::nametableRows (video.hpp): 512x256 (two horizontal NES
-    // nametables, one row) for an ordinary board, 512x512 (four screenblocks,
-    // a four-screen board's second stacked row) otherwise -- see
-    // build_map's own comment for how activeRows keeps an ordinary board's
-    // per-frame cost identical to before this was possible at all.
+    // ::ppu::nametableCount (video.hpp): 512x256 (two horizontal NES
+    // nametables, one row) for an ordinary (2-nametable) board, 512x512 (four
+    // screenblocks, a four-screen board's second stacked row) otherwise --
+    // see build_map's own comment for how activeRows keeps an ordinary
+    // board's per-frame cost identical to before this was possible at all.
     REG_BG0CNT = static_cast<u16>(PRIO_BG | BGCNT_CHARBASE(0) | BGCNT_MAPBASE(8)
-        | (ppu::nametableRows > 1 ? BGCNT_512x512 : BGCNT_512x256));
+        | (ppu::nametableCount > 2 ? BGCNT_512x512 : BGCNT_512x256));
 
     // Expand the CHR ROM to 4bpp and upload it to both BG and OBJ tile VRAM.
     // With 1D OBJ mapping an 8x8 16-colour tile is exactly one 32-byte slot, so

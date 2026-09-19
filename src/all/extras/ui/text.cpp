@@ -50,9 +50,21 @@ namespace ui::text {
         return rows;
     }
 
+    // rowAddr steps by one nametable row per iteration. One nametable is this
+    // target's own viewport width, floored at the NES-native 32 minimum
+    // (matching ::emu::ComputeNtGeometry, src/emu/emu.hpp, and
+    // ::CartesianToAddress's own internal xy_to_nt_addr, src/emu/ppu.cpp --
+    // NOT a bare video::viewport_tx() call, since a target whose viewport is
+    // narrower than 32 crops a still-32-wide background rather than shrinking
+    // it (GBA/NDS/DSi -- see TARGET_GBA's own viewport_tx() doc comment,
+    // video.hpp), so the row stride there still has to be 32, not less).
+    // Stepping by the wrong width jumps the flat address past the row
+    // boundary xy_to_nt_addr expects, landing on the wrong row *and* column
+    // once decoded back through it.
     UI_BANK void Draw(const textBuffer* rows, const u16 address, const vec2<u8> box, const Alignment align) {
+        const u16 rowWidth = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
         u16 rowAddr = address;
-        for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
+        for (u8 i = 0; i < box.y; i++, rowAddr += rowWidth) {
             u16 useAddr;
             switch (align) {
                 case Left:
@@ -73,11 +85,13 @@ namespace ui::text {
         }
     }
 
+    // See Draw's own comment above: same row stride, same reason.
     UI_BANK void Clear(
         const textBuffer* rows, const u16 address, const vec2<u8> box, const Alignment align, const u8 clear
     ) {
+        const u16 rowWidth = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
         u16 rowAddr = address;
-        for (u8 i = 0; i < box.y; i++, rowAddr += video::viewport_tx()) {
+        for (u8 i = 0; i < box.y; i++, rowAddr += rowWidth) {
             u16 useAddr;
             switch (align) {
                 case Left:

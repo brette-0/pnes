@@ -23,9 +23,8 @@
  * ::ppu::ResolveTile the emu PPU calls unconditionally for every tile fetch
  * -- see that function's own doc comment (video.hpp) for why this always
  * wins over the emu PPU's own weak default with no runtime dispatch, and
- * ALTERNATIVE_NAMETABLE == 1 (four-screen)'s own comments below for the
- * matching ::ppu::ReadNametable/::WriteNametable/::nametableRows/
- * ::InitCartVRAM/::ppu::Flush overrides.
+ * ALTERNATIVE_NAMETABLE == 1 (four-screen)'s own comment below for the
+ * matching ::ppu::nametableCount override.
  */
 #include <platform-nes/mappers/mmc3.hpp>
 #include <platform-nes/video.hpp>
@@ -160,95 +159,20 @@ u32 ppu::ResolveTile(const u16 tileVMA) {
 
 #if ALTERNATIVE_NAMETABLE == 1
 /**
- * @brief Four-screen nametable/attribute VRAM routing -- strong overrides of
- * ::ppu::InitCartVRAM/::ppu::nametableRows/::ppu::ReadNametable/
- * ::ppu::WriteNametable (see each function's own doc comment, video.hpp),
- * only compiled in when this board build carries the extra 2 KiB cartridge
- * VRAM chip (mmc3.hpp's own comment on ALTERNATIVE_NAMETABLE). A board built
- * without it never defines these symbols at all, so the emu PPU's weak
- * defaults (plain ::VideoRAM access, ::nametableRows == 1) stand unchanged --
- * see mmc3.hpp's own comment on why that's also correct for MMC3's ordinary
- * runtime H/V mirroring switch (::SetMirroring), which a real four-screen
- * board's $A000 write is simply meaningless against (each quadrant already
- * has fixed, dedicated storage), so nothing needs to special-case that call.
+ * @brief Four-screen nametable count -- a real extra 2 KiB cartridge VRAM
+ * chip, giving 4 genuinely distinct physical nametables with no mirroring
+ * aliasing at all (mmc3.hpp's own comment on ALTERNATIVE_NAMETABLE), only
+ * compiled in when this board build carries that chip. A board built without
+ * it never defines this symbol, so the emu PPU's weak default
+ * (::ppu::nametableCount == 2) stands unchanged -- correct for MMC3's
+ * ordinary runtime H/V mirroring switch (::SetMirroring), ::emu::
+ * ComputeNtGeometry (src/emu/emu.hpp) grids either shape from the same
+ * ::VideoRAM allocation, so nothing else needs to special-case this board:
+ * ::video::vram_bytes() already sizes ::VideoRAM for all 4 pages, and the
+ * weak ::ppu::ReadNametable/::WriteNametable/::Flush defaults already walk
+ * whichever count is linked in. A real four-screen board's $A000 write is
+ * simply meaningless against this (each quadrant already has fixed,
+ * dedicated storage), so ::SetMirroring needs no special-casing either.
  */
-
-u8*      mmc3::cartVRAM         = nullptr;
-unsigned mmc3::cartVRAMRowBytes = 0;
-
-/**
- * @brief Allocates ::cartVRAM, sized via ::video::nametable_row_bytes() --
- * NOT the @p vram_bytes ::emu::InitMemory happened to allocate ::VideoRAM
- * with (see that function's own doc comment, video.hpp, for why those two
- * can differ). Zeroed (calloc, not malloc): unlike ::VideoRAM, nothing ever
- * writes default content into this row (::ppu::Flush only ever touches row
- * 0), and the demo's own scroll writes can legitimately carry the render
- * walk across the row-0/row-1 boundary well before any game populates row 1
- * -- e.g. a mid-frame HUD-split scroll write that starts a fixed few rows
- * above the bottom of the screen crosses it on every frame, exactly as a
- * real four-screen board's own coarse-Y-wrap-toggles-nametable-select
- * hardware behavior would. calloc keeps that always-real crossing showing a
- * deterministic blank tile instead of whatever this process's heap
- * allocator happened to leave there. Never freed: lives for the process's
- * whole run, same as ::VideoRAM itself (see ::emu::InitMemory).
- */
-void ppu::InitCartVRAM() {
-    mmc3::cartVRAMRowBytes = video::nametable_row_bytes();
-    mmc3::cartVRAM         = static_cast<u8 *>(calloc(mmc3::cartVRAMRowBytes, 1));
-}
-
-extern const u8 ppu::nametableRows = 2;
-
-/**
- * @brief @p logical below ::cartVRAMRowBytes answers from ::VideoRAM (row 0,
- * unchanged from the weak default); at or above it answers from ::cartVRAM
- * (row 1), offset back down to a 0-based index into that buffer. A stored
- * byte-length comparison, not a fixed bitmask against @p logical: the cart
- * row always mirrors row 0's own (viewport-dependent) page count, so this
- * stays correct regardless of how many horizontal pages a given viewport
- * needs.
- */
-u8 ppu::ReadNametable(const u16 logical) {
-    return logical < mmc3::cartVRAMRowBytes
-        ? VideoRAM[logical]
-        : mmc3::cartVRAM[logical - mmc3::cartVRAMRowBytes];
-}
-
-void ppu::WriteNametable(const u16 logical, const u8 value) {
-    if (logical < mmc3::cartVRAMRowBytes) VideoRAM[logical] = value;
-    else mmc3::cartVRAM[logical - mmc3::cartVRAMRowBytes] = value;
-}
-
-/**
- * @brief Strong override of ::ppu::Flush for the four-screen board.
- *
- * The weak default (src/emu/ppu.cpp) only walks ::video::nametable_row_bytes()
- * worth of pages -- "row 0" (::VideoRAM), correct for an ordinary mirrored
- * board where 2 physical pages alias to cover all 4 logical nametables. A
- * four-screen board has no such mirroring: row 1 (::mmc3::cartVRAM) is
- * genuinely separate physical storage and never gets touched by the weak
- * default at all, so anything placed there (e.g. this demo's title/menu
- * text, which ::title.cpp's own comment says deliberately lands in the
- * "bottom-right" quadrant -- nt_v==1, row 1) keeps whatever attribute bytes
- * ::ppu::InitCartVRAM's calloc left (0x00, palette 0) instead of the
- * palette ::Flush's caller asked for. Same page-order convention as this
- * file's own logical addressing (page = nt_h + nt_v*nt_cols, see
- * xy_to_nt_addr, src/emu/ppu.cpp) and matches the real NES-side strong
- * override (src/nes/mappers/mmc3.cpp) walking every physical page instead
- * of relying on mirroring.
- */
-void ppu::Flush(const u8 nt, const u8 at) {
-    const unsigned vpw     = video::viewport_px();
-    const u16      nt_cols = static_cast<u16>(vpw < 512 ? 2 : (vpw + 255) / 256);
-    const u16      pages   = static_cast<u16>(nt_cols * ppu::nametableRows);
-
-    for (u16 page = 0; page < pages; page++) {
-        for (u16 i = 0; i < 0x3c0; i++) {
-            ppu::WriteNametable(static_cast<u16>(page * 0x400 + i), nt);
-        }
-        for (u16 i = 0; i < 0x40; i++) {
-            ppu::WriteNametable(static_cast<u16>(page * 0x400 + 0x3c0 + i), at);
-        }
-    }
-}
+extern const u8 ppu::nametableCount = 4;
 #endif
