@@ -11,9 +11,9 @@
 // with no ODR/LTO trouble.
 CHARMAP(generic,                            // default char map
     if (_c == ' ') return (u8)(chrHUDWhitespace_tile);      // dedicated blank tile
-    // '\n': option-boundary marker for ui::choice::SingleChoice, never drawn
-    // as a tile (SingleChoice's parser consumes it while splitting options,
-    // same as it never draws the wordSplitter byte). 0 is verified distinct
+    // '\n': option-boundary marker for a single-choice menu (see title.cpp's
+    // MakeOptionBoxes), never drawn as a tile (consumed while splitting
+    // options, same as it never draws the wordSplitter byte). 0 is verified distinct
     // from every real glyph this charmap produces -- digits/letters start at
     // chrFont_tile (17) and run to chrFont_tile+0x23 (52), and
     // chrHUDWhitespace_tile is 54; nothing here ever returns 0.

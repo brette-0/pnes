@@ -16,7 +16,7 @@ namespace ui::button {
 
         // Writes the tile for the current state at pos -- separate from
         // construction so it can run wherever it's actually safe to poke
-        // the PPU, same Make/Draw split as text::Draw and SingleChoice.
+        // the PPU, same Make/Draw split as text::Draw.
         // Defined here, not in tickbox.cpp: ::AI promises the body is
         // copied into every caller, which under GCC + LTO requires the body
         // to be visible at each call site -- see ::AI's own comment in

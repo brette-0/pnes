@@ -23,8 +23,8 @@ namespace ui::slider {
 
         // Writes the tile for the current selectedPosition -- separate
         // from construction so it can run wherever it's actually safe to
-        // poke the PPU, same Make/Draw split as text::Draw and
-        // SingleChoice. Slider body is presumed already drawn, not the
+        // poke the PPU, same Make/Draw split as text::Draw. Slider body is
+        // presumed already drawn, not the
         // slider piece itself -- does not edit attributes, as we presume
         // an attribute has 16x16 finity.
         AI auto Draw() -> void;

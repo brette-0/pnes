@@ -943,11 +943,11 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
 // make/draw together, or decide call order for the caller -- codegen only
 // emits the wrappers; when and in what order a scene's components actually
 // get placed/drawn is up to the game code that calls them. We also never
-// emit a draw callback for a SingleChoice: per its own header comment,
-// drawing the chosen option is "entirely the caller's job, via plain
-// ui::text::Make/Draw" -- codegen's job for one is only to emit the
-// ui::choice::SingleChoice instance itself, its options' positions, and the
-// Make_ function that constructs it (see genSingleChoice below).
+// emit a draw callback for a SingleChoice: drawing the chosen option is
+// entirely the caller's job, via plain ui::text::Make/Draw -- codegen's job
+// for one is only to emit its plain `<name>_option`/`<name>_nOptions`
+// variables, its options' positions, and the Make_/Pass_ functions that
+// initialize/update them (see genSingleChoiceDecl below).
 //
 // Every generated declaration lives inside `namespace gen::<sceneName>`, so
 // two scenes can freely reuse the same component names without colliding.
@@ -965,6 +965,12 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
 // Make_) since it has multiple members computed at once; a ctTextBox has only
 // the one position, so its Draw_/Erase_ body just re-evaluates the expression
 // inline every call.
+//
+// Everything a SingleChoice actually needs at runtime -- the running
+// `<name>_option` index, the fixed `<name>_nOptions` count, and Make_/Pass_
+// to initialize/step it -- lives in `gen::<sceneName>` as plain namespace-
+// scope variables and free functions. No wrapper type/instance is emitted:
+// there's nothing left for one to own once geometry moved to the caller.
 
 // Fixed nametable quadrant size, mirroring src/nes/video.cpp's xy_to_nt_addr
 // (32 tiles wide, 30 tall per quadrant) -- the addressing scheme every
@@ -1247,13 +1253,13 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
 }
 
 // Emits one SingleChoice node's declarations: its options' positions
-// (`<name>_options`), its instance storage + reference (`<name>`), and the
-// Make_ function that constructs it -- see the generateCode doc comment
-// above for why the shape differs between a fixed and a variadic target.
-// Everything lives header-only (`inline`), same reasoning as rtTextBox's own
-// wrapper: it has to be safely includable from more than one TU. Returns
-// empty for a SingleChoice with no (visible) options -- nothing to
-// construct.
+// (`<name>_options`), its plain `<name>_option`/`<name>_nOptions`
+// variables, and the Make_/Pass_ functions that initialize/step them --
+// see the generateCode doc comment above for why the shape differs between
+// a fixed and a variadic target. Everything lives header-only (`inline`),
+// same reasoning as rtTextBox's own wrapper: it has to be safely includable
+// from more than one TU. Returns empty for a SingleChoice with no (visible)
+// options -- nothing to construct.
 //
 // `bssPrefixTok` is already empty on every target but NES (see
 // generateCode) -- it places the instance's own mutable storage, and, on a
@@ -1311,39 +1317,19 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
         // `atomic` (technology.hpp: volatile on NES, true atomic elsewhere)
         // because this is non-local mutable memory an aggressively-LTO'd,
         // multithreaded target could otherwise cache/reorder/tear across
-        // Make_'s writes and a reader elsewhere -- unlike SingleChoice's own
-        // `option` field (already atomic inside ui::choice::SingleChoice
-        // itself), nothing else protects this array.
+        // Make_'s writes and a reader elsewhere -- unlike `<name>_option`
+        // below (already atomic itself), nothing else protects this array.
         lines << QString("%1inline atomic vec2<u16> %2_options[%3];").arg(bssPrefixTok, name).arg(nOptions);
     }
 
-    // ui::choice::SingleChoice has no default constructor (and its real
-    // constructor isn't constexpr), so it can't be declared directly at
-    // namespace scope without a dynamic pre-main initializer -- exactly what
-    // an explicit Make_ step is meant to avoid. Instead: raw, correctly-
-    // aligned storage (no constructor runs, so it's legitimately placeable
-    // via bssPrefixTok) plus a reference alias, constructed in place by
-    // Make_ below via placement-new -- no heap involved.
-    //
-    // Deliberately NOT `atomic` (unlike the mutable `_options` array above):
-    // the storage bytes are never touched directly -- only through the
-    // instance reference below, whose own `.option` field is already
-    // `atomic` inside ui::choice::SingleChoice itself -- and a `volatile`
-    // byte array couldn't be reinterpret_cast to the non-volatile instance
-    // reference below anyway (that would silently drop volatile, which
-    // reinterpret_cast refuses; only const_cast may do that). The one
-    // non-local mutable field this instance actually exposes is already
-    // protected at its source.
-    // alignas must come first: `<attribute> alignas(...) inline` fails to
-    // parse at namespace scope (clang: "an attribute list cannot appear
-    // here") on both host clang and mos-nes-clang++, but
-    // `alignas(...) <attribute> inline` is fine -- global scope doesn't
-    // trigger it either way, but every generated decl here lives in
-    // namespace gen::<scene>, so it matters.
-    lines << QString("alignas(ui::choice::SingleChoice) %1inline u8 %2_storage[sizeof(ui::choice::SingleChoice)];")
-                 .arg(bssPrefixTok, name);
-    lines << QString("inline ui::choice::SingleChoice& %1 = reinterpret_cast<ui::choice::SingleChoice&>(%1_storage);")
-                 .arg(name);
+    // The running option index -- `atomic` (technology.hpp: volatile on NES,
+    // true atomic elsewhere) because it's read from wherever the caller's
+    // Pass_ result matters (often a draw path outside the code that last
+    // called Pass_ itself), same reasoning as the mutable `_options` array
+    // above. `nOptions` never changes once generated, so it's a plain
+    // compile-time constant instead.
+    lines << QString("%1inline atomic u8 %2_option = %3;").arg(bssPrefixTok, name).arg(defaultOption);
+    lines << QString("inline constexpr u8 %1_nOptions = %2;").arg(name).arg(nOptions);
 
     QStringList makeBody;
     if (variadic) {
@@ -1371,9 +1357,21 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
                             .arg(xFinal, yFinal);
         }
     }
-    makeBody << QString("    new (&%1) ui::choice::SingleChoice(%2, %3);").arg(name).arg(nOptions).arg(defaultOption);
+    makeBody << QString("    %1_option = %2;").arg(name).arg(defaultOption);
 
     lines << QString("inline AI void Make_%1() {\n%2\n}").arg(name, makeBody.join("\n"));
+
+    // Clamps `<name>_option` against input::UP/DOWN -- same clamp logic
+    // ui::choice::SingleChoice::Pass used to carry as a template member;
+    // there's nothing here left to specialize on vertical vs. horizontal
+    // (both directions moved the option the same way), so it's just one
+    // plain function.
+    lines << QString(
+                 "inline AI void Pass_%1(const u8 inputs) {\n"
+                 "    if      (inputs & input::UP)   { if (%1_option != 0) %1_option -= 1; }\n"
+                 "    else if (inputs & input::DOWN) { if (%1_option != %1_nOptions - 1) %1_option += 1; }\n"
+                 "}")
+                 .arg(name);
 
     return lines.join("\n") + "\n";
 }
@@ -1502,7 +1500,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     QStringList hppIncludes{"#include <intsh>", "#include <platform-nes/types.hpp>", "#include <platform-nes/video.hpp>",
                              "#include <platform-nes/extras/ui/text.hpp>"};
     if (usesSingleChoice) {
-        hppIncludes << "#include <new>" << "#include <platform-nes/extras/ui/singlechoice.hpp>";
+        hppIncludes << "#include <platform-nes/input.hpp>";  // input::UP / input::DOWN, for Pass_
     }
 
     QString charmapNote;

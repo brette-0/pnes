@@ -18,7 +18,6 @@
 #include "level.hpp"
 #include "level/levels.hpp"
 #include "platform-nes/mappers/mmc3.hpp"
-#include "platform-nes/extras/ui/singlechoice.hpp"
 #include "platform-nes/extras/ui/text.hpp"
 
 namespace title {
@@ -32,17 +31,29 @@ namespace title {
     constexpr u8 kPlayModeOptions  = 3;
     constexpr u8 kPlayModeBoxWidth = 17;   // "LOCAL MULTIPLAYER"
 #endif
-    static ui::choice::SingleChoice* pMenu = nullptr;
-    static ui::choice::SingleChoice* pMainMenu = nullptr;
+    // Plain option index + count per menu (no wrapper type -- see uitk's own
+    // generated SingleChoice shape, gen::<scene>'s `<name>_option`/
+    // `<name>_nOptions`). `atomic` (technology.hpp: volatile on NES, true
+    // atomic elsewhere): each is written from the main loop below and read
+    // from its own nmi_handler_draw* handler.
+    static atomic u8 menuOption = 0;
+    static atomic u8 playModeOption = 0;
+
+    // Whichever of menuOption/playModeOption is the currently-active menu,
+    // plus its option count -- swapped in lockstep whenever the active menu
+    // changes between the main menu and the play-mode submenu. Null means no
+    // menu is active yet (before main()'s own setup below completes).
+    static atomic u8* pOption = nullptr;
+    static u8 activeNOptions = 0;
+
     static ui::text::textBuffer* pMenuChunks = nullptr;
     static u16 menuAddr;
-    // Arrow-slot address per menu option -- SingleChoice no longer knows
-    // where (or whether) its options are drawn, so title.cpp is the one
-    // that lays the text boxes out and remembers where the arrow for each
-    // option goes. Indexed the same way optionAddr used to be, by option.
+    // Arrow-slot address per menu option -- nothing here knows where (or
+    // whether) its options are drawn, so title.cpp is the one that lays the
+    // text boxes out and remembers where the arrow for each option goes.
+    // Indexed the same way optionAddr used to be, by option.
     static u16 menuOptionAddr[kMenuOptions];
 
-    static ui::choice::SingleChoice* pPlayMode = nullptr;
     static ui::text::textBuffer* pPlayModeChunks = nullptr;
     static vec2<u16> playModePos;
     static u16 playModeAddr;
@@ -50,10 +61,9 @@ namespace title {
     static u16 menuClearAddr;
     static u16 playModeClearAddr;
 
-    // Arrow-slot addresses for whichever SingleChoice pMenu currently
-    // points at -- tracked alongside pMenu itself, swapped in lockstep
-    // whenever pMenu switches between the main menu and the play-mode
-    // submenu.
+    // Arrow-slot addresses for whichever menu pOption currently points at --
+    // tracked alongside pOption itself, swapped in lockstep whenever pOption
+    // switches between the main menu and the play-mode submenu.
     static const u16* pOptionAddr = nullptr;
 
     // Splits buff into nOptions single-row text boxes on optionSplitter,
@@ -151,29 +161,29 @@ namespace title {
         InitTitleScreen();
 
         const u16 menuCol = kMenuNT + (viewport_mx() << 1) - 1 - kMenuBoxWidth;
-        ui::choice::SingleChoice menu(kMenuOptions, 0);
+        menuOption = 0;
         const vec2<u16> menuPos{menuCol, static_cast<u16>(kBottomRightNT + 1)};
         const auto menuChunks = MakeOptionBoxes(
             SIZED_OBJ(msg_menu), menuPos, kMenuBoxWidth,
             chrHUDWhitespace_tile, 0, menuOptionAddr, kMenuOptions
         );
         ui::text::Draw(menuChunks, menuPos, vec2<u8>{kMenuBoxWidth, kMenuOptions}, ui::text::Left);
-        QueueSelectorDraw(menuOptionAddr[menu.option]);
+        QueueSelectorDraw(menuOptionAddr[menuOption]);
 
         // Free whatever a PREVIOUS visit to the title screen left behind --
-        // Make()'s result is heap-allocated and caller-owned (see
-        // singlechoice.hpp's own comment on Make()), and pMenuChunks is a
-        // file-static that just gets silently overwritten on re-entry
-        // otherwise, leaking a fresh ui::text::textBuffer[kMenuOptions] every single
-        // time. Safe on the very first call too: pMenuChunks starts null,
-        // and delete[] on a null pointer is a no-op.
+        // MakeOptionBoxes's result is heap-allocated and caller-owned (see
+        // its own comment above), and pMenuChunks is a file-static that just
+        // gets silently overwritten on re-entry otherwise, leaking a fresh
+        // ui::text::textBuffer[kMenuOptions] every single time. Safe on the
+        // very first call too: pMenuChunks starts null, and delete[] on a
+        // null pointer is a no-op.
         delete[] pMenuChunks;
         pMenuChunks = menuChunks;
         menuClearAddr = ppu::CartesianToAddress({static_cast<u16>(menuCol - 2), static_cast<u16>(kBottomRightNT + 1)});
         menuAddr = ppu::CartesianToAddress({menuCol, static_cast<u16>(kBottomRightNT + 1)});
 
         const u16 playModeCol = kMenuNT + (viewport_mx() << 1) - 1 - kPlayModeBoxWidth;
-        ui::choice::SingleChoice playMode(kPlayModeOptions, 0);
+        playModeOption = 0;
         playModePos = {playModeCol, static_cast<u16>(kBottomRightNT + 1)};
         // Same leak, same fix -- see pMenuChunks's own comment above.
         delete[] pPlayModeChunks;
@@ -183,9 +193,8 @@ namespace title {
         );
 
         playModeClearAddr = ppu::CartesianToAddress({static_cast<u16>(playModeCol - 2), static_cast<u16>(kBottomRightNT + 1)});
-        pPlayMode = &playMode;
-        pMenu = &menu;
-        pMainMenu = &menu;
+        pOption = &menuOption;
+        activeNOptions = kMenuOptions;
         pOptionAddr = menuOptionAddr;
 
         ppu::SetScroll({0, 0xff});
@@ -200,11 +209,12 @@ namespace title {
             const u8 pressed = inputs & static_cast<u8>(~prevInputs); // strobe: only the frame a button goes down
             prevInputs = inputs;
 
-            if (pMenu) {
-                const u8 lastOption = pMenu->option;
-                pMenu->Pass<true>(pressed);
+            if (pOption) {
+                const u8 lastOption = *pOption;
+                if      (pressed & input::UP)   { if (*pOption != 0) *pOption -= 1; }
+                else if (pressed & input::DOWN) { if (*pOption != activeNOptions - 1) *pOption += 1; }
 
-                if (const u8 newOption  = pMenu->option; newOption != lastOption) {
+                if (const u8 newOption = *pOption; newOption != lastOption) {
                     // 3, 4 hold the new arrow of last write (ie, current)
                     // making that addr the upcoming clear is the goal
                     scratchpad[1] = scratchpad[3];
@@ -218,21 +228,22 @@ namespace title {
             }
 
             if (pressed & input::A) {
-                if (pMenu == pPlayMode) {
+                if (pOption == &playModeOption) {
 #ifdef PLAYER2_SUPPORTED
-                    level::multiplayer = pPlayMode->option != 0;
+                    level::multiplayer = playModeOption != 0;
 #endif
                     ppu::PPUMASK = 0;
                     gameMode = eGameModes::Level;
                     return;
                 }
 
-                switch (menu.option) {
+                switch (menuOption) {
                     case NewGame:
                     case Continue:
                         playModeAddr = ppu::CartesianToAddress(playModePos);
                         pNMI  = nmi_handler_drawPlayMode;
-                        pMenu = pPlayMode;
+                        pOption = &playModeOption;
+                        activeNOptions = kPlayModeOptions;
                         pOptionAddr = playModeOptionAddr;
                         break;
 
@@ -249,9 +260,10 @@ namespace title {
                 }
             }
 
-            if (pressed & input::B && pMenu == pPlayMode) {
+            if (pressed & input::B && pOption == &playModeOption) {
                 pNMI = nmi_handler_drawMenu;
-                pMenu = pMainMenu;
+                pOption = &menuOption;
+                activeNOptions = kMenuOptions;
                 pOptionAddr = menuOptionAddr;
             }
 
@@ -285,7 +297,7 @@ namespace title {
         }
 
         ui::text::Draw(pPlayModeChunks, playModeAddr, vec2<u8>{kPlayModeBoxWidth, kPlayModeOptions}, ui::text::Left);
-        QueueSelectorDraw(playModeOptionAddr[pPlayMode->option]);
+        QueueSelectorDraw(playModeOptionAddr[playModeOption]);
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
         ArmSplitIRQ();
@@ -301,7 +313,7 @@ namespace title {
         }
 
         ui::text::Draw(pMenuChunks, menuAddr, vec2<u8>{kMenuBoxWidth, kMenuOptions}, ui::text::Left);
-        QueueSelectorDraw(menuOptionAddr[pMainMenu->option]);
+        QueueSelectorDraw(menuOptionAddr[menuOption]);
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
         ArmSplitIRQ();
