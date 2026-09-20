@@ -112,6 +112,7 @@ u32 g_chr_built_gen = ~0u;
 // the live g_* copies. They are swapped during VBlank so the ISR never reads a
 // half-written table (no tearing of the raster split).
 u16          sh_h[SCREEN_H], sh_v[SCREEN_H];
+u16          s_sprite_voff;   // unwrapped scroll of the band holding the last line
 volatile u16 g_h[SCREEN_H],  g_v[SCREEN_H];
 
 // 0xAARRGGBB -> DS BGR555 (X1BGR5; the unused top bit stays 0).
@@ -256,7 +257,7 @@ void build_sprites() {
     // (here only the software sprite-0 split marker) get pushed off the top and
     // hidden, which is harmless: the DS split is band-driven, not real sprite-0
     // hardware detection.
-    const int voff = static_cast<int>(sh_v[SCREEN_H - 1]);
+    const int voff = static_cast<int>(s_sprite_voff);
 
     for (int s = 0; s < OAM_SPRITES; s++) {
         const oam::sprite_t& o = oam[s];
@@ -289,13 +290,33 @@ void build_sprites() {
 // the NES PPU auto-increments world Y 1:1 with the screen, so a single DS
 // vertical scroll value (ys - y0) covers the whole band; the horizontal scroll
 // is constant (xs). The HBlank ISR later programs these per scanline.
+//
+// World Y is wrapped at the nametable grid's own height (::emu::NtGeometry::
+// worldH -- 240 for an ordinary board), exactly as the core renderer does
+// (GenerateFrame's `ppu_y % world_h`). The DS's BG is 256 rows tall with rows
+// 30/31 only restating 0/1 (see build_map), so raw hardware wrap at 256 is
+// NOT the same thing: a band that starts at world Y 240 -- the title screen's
+// menu band, which relies on Y wrapping onto nametable row 0 -- would land on
+// those two duplicate rows instead of the top of the nametable. A band that
+// never reaches worldH (all of gameplay) takes the `phys == w` path, so its
+// table entries are byte-for-byte what they were before wrapping existed.
+//
+// s_sprite_voff keeps the UNWRAPPED band scroll: build_sprites' window offset
+// is the frame's scroll, not a per-line wrapped position.
 void band_emit(int y0, int y1, u16 xs, u16 ys) {
-    const u16 v = static_cast<u16>(static_cast<int>(ys) - y0);
-    int a = y0 < 0 ? 0 : y0;
-    int b = y1 > SCREEN_H ? SCREEN_H : y1;
+    const int worldH = emu::ComputeNtGeometry().worldH;
+    const int a = y0 < 0 ? 0 : y0;
+    const int b = y1 > SCREEN_H ? SCREEN_H : y1;
+
+    if (a <= SCREEN_H - 1 && b > SCREEN_H - 1)
+        s_sprite_voff = static_cast<u16>(static_cast<int>(ys) - y0);
+
     for (int sy = a; sy < b; sy++) {
+        const int w    = (static_cast<int>(ys) + (sy - y0)) % worldH;
+        // Each 240-row nametable row starts on a 256-row screenblock boundary.
+        const int phys = (w / 240) * 256 + (w % 240);
         sh_h[sy] = xs;
-        sh_v[sy] = v;
+        sh_v[sy] = static_cast<u16>((phys - sy) & 0x1FF);
     }
 }
 
@@ -329,13 +350,14 @@ void WaitForPresent() {
 
     // Default the scroll table so disabled / empty scanlines are well-defined.
     for (int i = 0; i < SCREEN_H; i++) { sh_h[i] = 0; sh_v[i] = 0; }
+    s_sprite_voff = 0;
 
     if (bg) build_map();
 
     // Walk the IRQ timeline (fires the game's scanline logic, incl. the sprite-0
     // split) and record each band's scroll. Done even when BG is off so the
     // handlers still run -- exactly like the GX/3DS backends.
-    emu::GenerateBands(bg ? band_emit : band_noop);
+    emu::GenerateBands(bg ? band_emit : band_noop, true);
 
     if (spr) build_sprites();
     else for (int s = 0; s < OAM_SPRITES; s++) oamClearSprite(&oamMain, s);

@@ -9,6 +9,9 @@
 // platform branch sets to its own demo/gen/*/<dir> name, so this one line
 // covers every target without a per-target #if ladder.
 #include STRCAT(../../gen/title/GEN_TARGET_DIR/title.hpp)
+// gen::gameOptions -- demo/ui/gameOptions.uis, same per-target directory scheme
+// (gen/playOptions/<GEN_TARGET_DIR>/gameOptions.hpp).
+#include STRCAT(../../gen/playOptions/GEN_TARGET_DIR/gameOptions.hpp)
 #include "../main.hpp"
 #include "../banks.hpp"
 #include "../graphics/colours.hpp"
@@ -21,86 +24,43 @@
 #include "platform-nes/extras/ui/text.hpp"
 
 namespace title {
-    constexpr u8 kMenuOptions   = static_cast<u8>(End + 1);
-    constexpr u8 kMenuBoxWidth  = 8;
+    // Both menus are generated (demo/ui/title.uis, demo/ui/gameOptions.uis) --
+    // which options exist on this target, where they sit and how many there
+    // are all come from gen::title / gen::gameOptions, not from anything
+    // hand-written here. title.uis lists NewGame, Continue, Options (and Quit
+    // on PC) in that order, so an option's index IS its titleOptions value;
+    // this fails the build if the scene and the enum ever drift apart.
+    static_assert(gen::title::TitleOptions_nOptions == End + 1,
+                  "title.uis and title.hpp's titleOptions enum disagree on the menu's options");
 
-#if defined(TARGET_NES)
-    constexpr u8 kPlayModeOptions  = 2;
-    constexpr u8 kPlayModeBoxWidth = 12;   // "MULTIPLAYER"
-#else
-    constexpr u8 kPlayModeOptions  = 3;
-    constexpr u8 kPlayModeBoxWidth = 17;   // "LOCAL MULTIPLAYER"
-#endif
-    // Plain option index + count per menu (no wrapper type -- see uitk's own
-    // generated SingleChoice shape, gen::<scene>'s `<name>_option`/
-    // `<name>_nOptions`). `atomic` (technology.hpp: volatile on NES, true
-    // atomic elsewhere): each is written from the main loop below and read
-    // from its own nmi_handler_draw* handler.
-    static atomic u8 menuOption = 0;
-    static atomic u8 playModeOption = 0;
+    // Which of the two menus currently owns the selector arrow. Written from
+    // the main loop, read from the nmi_handler_draw* handlers (hence
+    // `atomic`, technology.hpp: volatile on NES, true atomic elsewhere).
+    static atomic bool playModeActive = false;
 
-    // Whichever of menuOption/playModeOption is the currently-active menu,
-    // plus its option count -- swapped in lockstep whenever the active menu
-    // changes between the main menu and the play-mode submenu. Null means no
-    // menu is active yet (before main()'s own setup below completes).
-    static atomic u8* pOption = nullptr;
-    static u8 activeNOptions = 0;
+    // Nametable address of the arrow slot for option `i` of a generated
+    // SingleChoice: two tiles left of that option's anchor. Reads .x/.y
+    // individually -- `_options` is `atomic` (volatile) on a variadic target,
+    // and a volatile vec2 can't be copied whole.
+    template <typename Options>
+    static u16 ArrowAddr(const Options& options, const u8 i) {
+        return ppu::CartesianToAddress({static_cast<u16>(options[i].x - 2), static_cast<u16>(options[i].y)});
+    }
 
-    static ui::text::textBuffer* pMenuChunks = nullptr;
-    static u16 menuAddr;
-    // Arrow-slot address per menu option -- nothing here knows where (or
-    // whether) its options are drawn, so title.cpp is the one that lays the
-    // text boxes out and remembers where the arrow for each option goes.
-    // Indexed the same way optionAddr used to be, by option.
-    static u16 menuOptionAddr[kMenuOptions];
+    static u8 ActiveOption() {
+        return playModeActive ? gen::gameOptions::gameOptions_option : gen::title::TitleOptions_option;
+    }
 
-    static ui::text::textBuffer* pPlayModeChunks = nullptr;
-    static vec2<u16> playModePos;
-    static u16 playModeAddr;
-    static u16 playModeOptionAddr[kPlayModeOptions];
-    static u16 menuClearAddr;
-    static u16 playModeClearAddr;
+    static u16 TitleArrowAddr() {
+        return ArrowAddr(gen::title::TitleOptions_options, gen::title::TitleOptions_option);
+    }
 
-    // Arrow-slot addresses for whichever menu pOption currently points at --
-    // tracked alongside pOption itself, swapped in lockstep whenever pOption
-    // switches between the main menu and the play-mode submenu.
-    static const u16* pOptionAddr = nullptr;
+    static u16 PlayModeArrowAddr() {
+        return ArrowAddr(gen::gameOptions::gameOptions_options, gen::gameOptions::gameOptions_option);
+    }
 
-    // Splits buff into nOptions single-row text boxes on optionSplitter,
-    // stacking them downward from pos, and draws each one -- genuinely
-    // separate text boxes, same word-wrap rule as ui::text::Make (a word
-    // that doesn't fit box width is simply dropped, as every option here
-    // is sized to fit its box in one line). Also fills optionAddr[opt]
-    // (caller-owned, >= nOptions entries) with the nametable address one
-    // tile left of that option's text -- where the caller draws its own
-    // selection arrow, since this makes no draw call for it.
-    //
-    // Returns a heap-allocated array of nOptions ui::text::textBuffer
-    // entries -- same row-per-entry shape ui::text::Make returns -- caller
-    // owns it (delete[] once done) and can hand it straight to
-    // ui::text::Draw.
-    static ui::text::textBuffer* MakeOptionBoxes(
-        const u8* buff, const u8 sBuff, const vec2<u16> pos, const u8 boxWidth,
-        const u8 wordSplitter, const u8 optionSplitter,
-        u16* const optionAddr, const u8 nOptions
-    ) {
-        const auto rows = new ui::text::textBuffer[nOptions];
-        const u16 arrowCol = pos.x - 2;
-        u8 cursor = 0;
-
-        for (u8 opt = 0; opt < nOptions && cursor <= sBuff; opt++) {
-            u8 end = cursor;
-            while (end < sBuff && *(buff + end) != optionSplitter) end++;
-
-            const auto row = ui::text::Make(buff + cursor, end - cursor, {boxWidth, 1}, wordSplitter);
-            rows[opt] = row[0];
-            delete[] row;
-
-            optionAddr[opt] = ppu::CartesianToAddress({arrowCol, static_cast<u16>(pos.y + opt)});
-            cursor = (end < sBuff) ? end + 1 : end;
-        }
-
-        return rows;
+    static u16 ActiveArrowAddr() {
+        return playModeActive ? PlayModeArrowAddr() : TitleArrowAddr();
     }
 
     // Queues addr as both the clear and write address for the next
@@ -113,33 +73,65 @@ namespace title {
         scratchpad[0] = 1;
     }
 
+    // scratchpad[3..4] always holds the arrow's current tile (see
+    // SelectorUpdate/QueueSelectorDraw).
+    static u16 CurrentSelectorAddr() {
+        return static_cast<u16>(scratchpad[3] | (scratchpad[4] << 8));
+    }
+
+    // Moves the arrow: the tile it is on now becomes the next SelectorUpdate's
+    // clear, the new tile its draw.
+    static void MoveSelector(const u16 addr) {
+        scratchpad[1] = scratchpad[3];
+        scratchpad[2] = scratchpad[4];
+        scratchpad[3] = static_cast<u8>(addr & 0xff);
+        scratchpad[4] = static_cast<u8>(addr >> 8);
+        scratchpad[0] = 1;
+    }
+
     static oam::oam_t Clear(u16 _);
     static NI void DrawLevelPreview();
     static void nmi_handler_drawPlayMode();
     static void nmi_handler_drawMenu();
 
-    // Column where the menu/play-mode nametable begins, and that nametable's
-    // own width -- always the same value (one nametable's width to the right
-    // of nametable A puts you at the start of nametable B), computed at
-    // runtime rather than a compile-time constant: a real console's nametable
-    // is a fixed 32 tiles, but a variadic display (LANDSCAPE desktop's
-    // runtime window, OGC's runtime TV width, ...) has no such hardware
-    // constraint -- its nametable is just its own viewport, whatever size
-    // that renders at (see ::emu::ComputeNtGeometry's own doc comment,
-    // src/emu/emu.hpp). Floored at 32 for a target whose viewport is instead
-    // a CROP of a still-32-wide background (GBA/NDS/DSi). Set once, below, at
-    // the top of main() -- before ApplySplit() (which also reads kMenuNT) can
-    // ever run.
+    // Column where the menu/play-mode nametable begins: one nametable's width
+    // to the right of nametable A, computed at runtime rather than a
+    // compile-time constant: a real console's nametable is a fixed 32 tiles,
+    // but a variadic display (LANDSCAPE desktop's runtime window, OGC's
+    // runtime TV width, ...) has no such hardware constraint -- its nametable
+    // is just its own viewport, whatever size that renders at (see
+    // ::emu::ComputeNtGeometry's own doc comment, src/emu/emu.hpp). Floored
+    // at 32 for a target whose viewport is instead a CROP of a still-32-wide
+    // background (GBA/NDS/DSi). Set once, below, at the top of main() --
+    // before ApplySplit() (which reads it) can ever run. The menus' own
+    // columns come from the generated scenes, which resolve the same floor.
     static u16 kMenuNT;
-    static u16 kMenuNTWidth;
-    constexpr u16 kBottomRightNT = 30;
+
+    // Rows the menu band (everything below the split) is given. The NES lays
+    // it out as 30 - 24 = 6 rows, which is what the title/menu text (nametable
+    // rows 1-4) is sized for.
+    constexpr u8 kMenuBandRows = 6;
 
     static u8 SplitRow() {
+        // A cropping target's panel (DS/DSi 24 rows, GBA 20) is shorter than
+        // the NES's 30, but the menu still needs the same 6 rows -- scaling
+        // the split with the panel height instead gave the DS an 8-row band,
+        // i.e. ~4 empty rows under the UI.
+        if (video::viewport_ty() < 30) return static_cast<u8>(video::viewport_ty() - kMenuBandRows);
         return (((viewport_my() + 1) >> 1) - 2) << 2;
     }
 
+    // The preview band is scrolled so that its bottom edge lands exactly on
+    // the end of the nametable (world row 240), where Y wraps to row 0 of
+    // the menu nametable for the band below the split. That's the nametable's
+    // own height, NOT video::viewport_py(): the two are the same on the NES/PC
+    // (240), but a cropping target (DS/DSi 192px, GBA 160px) has a shorter
+    // panel over the same 30-row nametable -- using the panel height left the
+    // second band starting at world row 24 (DS) instead of row 0, so none of
+    // the menu/title text (nametable rows 1-4) was ever on screen.
     static u16 PreviewScrollY() {
-        return video::viewport_py() - (static_cast<u16>(SplitRow()) << 3);
+        const u16 ntHeight = video::viewport_py() < 240 ? 240 : video::viewport_py();
+        return ntHeight - (static_cast<u16>(SplitRow()) << 3);
     }
 
     constexpr u8 kSplitDelay = REGION ? 90 : 0;
@@ -147,7 +139,7 @@ namespace title {
 
 
     TITLE NI void main() {
-        kMenuNT = kMenuNTWidth = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
+        kMenuNT = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
 
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);
         pIRQ = irq_handler;
@@ -175,42 +167,15 @@ namespace title {
         DrawLevelPreview();
         InitTitleScreen();
 
-        const u16 menuCol = kMenuNT + kMenuNTWidth - 1 - kMenuBoxWidth;
-        menuOption = 0;
-        const vec2<u16> menuPos{menuCol, static_cast<u16>(kBottomRightNT + 1)};
-        const auto menuChunks = MakeOptionBoxes(
-            SIZED_OBJ(msg_menu), menuPos, kMenuBoxWidth,
-            chrHUDWhitespace_tile, 0, menuOptionAddr, kMenuOptions
-        );
-        ui::text::Draw(menuChunks, menuPos, vec2<u8>{kMenuBoxWidth, kMenuOptions}, ui::text::Left);
-        QueueSelectorDraw(menuOptionAddr[menuOption]);
+        // Make_ zeroes each menu's running option and, on a variadic target,
+        // resolves every option's anchor against the viewport THIS run has --
+        // so it has to run here rather than at static-init time.
+        gen::title::Make_TitleOptions();
+        gen::gameOptions::Make_gameOptions();
+        playModeActive = false;
 
-        // Free whatever a PREVIOUS visit to the title screen left behind --
-        // MakeOptionBoxes's result is heap-allocated and caller-owned (see
-        // its own comment above), and pMenuChunks is a file-static that just
-        // gets silently overwritten on re-entry otherwise, leaking a fresh
-        // ui::text::textBuffer[kMenuOptions] every single time. Safe on the
-        // very first call too: pMenuChunks starts null, and delete[] on a
-        // null pointer is a no-op.
-        delete[] pMenuChunks;
-        pMenuChunks = menuChunks;
-        menuClearAddr = ppu::CartesianToAddress({static_cast<u16>(menuCol - 2), static_cast<u16>(kBottomRightNT + 1)});
-        menuAddr = ppu::CartesianToAddress({menuCol, static_cast<u16>(kBottomRightNT + 1)});
-
-        const u16 playModeCol = kMenuNT + kMenuNTWidth - 1 - kPlayModeBoxWidth;
-        playModeOption = 0;
-        playModePos = {playModeCol, static_cast<u16>(kBottomRightNT + 1)};
-        // Same leak, same fix -- see pMenuChunks's own comment above.
-        delete[] pPlayModeChunks;
-        pPlayModeChunks = MakeOptionBoxes(
-            SIZED_OBJ(msg_playMode), playModePos, kPlayModeBoxWidth,
-            chrHUDWhitespace_tile, 0, playModeOptionAddr, kPlayModeOptions
-        );
-
-        playModeClearAddr = ppu::CartesianToAddress({static_cast<u16>(playModeCol - 2), static_cast<u16>(kBottomRightNT + 1)});
-        pOption = &menuOption;
-        activeNOptions = kMenuOptions;
-        pOptionAddr = menuOptionAddr;
+        gen::title::Draw_TitleOptions();
+        QueueSelectorDraw(TitleArrowAddr());
 
         ppu::SetScroll({0, 0xff});
         ppu::EnableRendering(ppu::ctrl::SPRITE_ADDR | ppu::ctrl::SPRITE_SIZE | ppu::ctrl::GEN_NMI, ppu::mask::BG_L | ppu::mask::SPRITE_L);
@@ -224,42 +189,27 @@ namespace title {
             const u8 pressed = inputs & static_cast<u8>(~prevInputs); // strobe: only the frame a button goes down
             prevInputs = inputs;
 
-            if (pOption) {
-                const u8 lastOption = *pOption;
-                if      (pressed & input::UP)   { if (*pOption != 0) *pOption -= 1; }
-                else if (pressed & input::DOWN) { if (*pOption != activeNOptions - 1) *pOption += 1; }
-
-                if (const u8 newOption = *pOption; newOption != lastOption) {
-                    // 3, 4 hold the new arrow of last write (ie, current)
-                    // making that addr the upcoming clear is the goal
-                    scratchpad[1] = scratchpad[3];
-                    scratchpad[2] = scratchpad[4];
-                    // write ppu addr of new arrow location for NMI into scratchpad
-                    const u16 newOptionAddr = pOptionAddr[newOption];
-                    scratchpad[3] = newOptionAddr &  0xff;
-                    scratchpad[4] = newOptionAddr >> 8;
-                    scratchpad[0] = 1;  // enable 'do update'
-                }
-            }
+            const u8 lastOption = ActiveOption();
+            if (playModeActive) gen::gameOptions::Pass_gameOptions(pressed);
+            else                gen::title::Pass_TitleOptions(pressed);
+            if (ActiveOption() != lastOption) MoveSelector(ActiveArrowAddr());
 
             if (pressed & input::A) {
-                if (pOption == &playModeOption) {
+                if (playModeActive) {
 #ifdef PLAYER2_SUPPORTED
-                    level::multiplayer = playModeOption != 0;
+                    level::multiplayer = gen::gameOptions::gameOptions_option != 0;
 #endif
                     ppu::PPUMASK = 0;
                     gameMode = eGameModes::Level;
                     return;
                 }
 
-                switch (menuOption) {
+                switch (gen::title::TitleOptions_option) {
                     case NewGame:
                     case Continue:
-                        playModeAddr = ppu::CartesianToAddress(playModePos);
-                        pNMI  = nmi_handler_drawPlayMode;
-                        pOption = &playModeOption;
-                        activeNOptions = kPlayModeOptions;
-                        pOptionAddr = playModeOptionAddr;
+                        // State first, NMI handler last: the handler reads it.
+                        playModeActive = true;
+                        pNMI = nmi_handler_drawPlayMode;
                         break;
 
                     case Options:
@@ -275,11 +225,9 @@ namespace title {
                 }
             }
 
-            if (pressed & input::B && pOption == &playModeOption) {
+            if (pressed & input::B && playModeActive) {
+                playModeActive = false;
                 pNMI = nmi_handler_drawMenu;
-                pOption = &menuOption;
-                activeNOptions = kMenuOptions;
-                pOptionAddr = menuOptionAddr;
             }
 
             video::WaitForPresent();
@@ -304,15 +252,15 @@ namespace title {
         ArmSplitIRQ();
     }
 
+    // Both swap handlers: wipe the old arrow first (its tile can sit inside
+    // the incoming menu's text, so clearing it after the redraw would punch a
+    // hole in it), swap the two menus' labels, then draw the arrow fresh --
+    // QueueSelectorDraw's clear-then-arrow onto one tile.
     static void nmi_handler_drawPlayMode() {
-        u16 clearAddr = menuClearAddr;
-        for (u8 row = 0; row < kMenuOptions; row++) {
-            ppu::WriteRepeatedToNameTable(clearAddr, chrHUDWhitespace_tile, kMenuBoxWidth + 2, 0);
-            clearAddr = static_cast<u16>(clearAddr + kMenuNTWidth);
-        }
-
-        ui::text::Draw(pPlayModeChunks, playModeAddr, vec2<u8>{kPlayModeBoxWidth, kPlayModeOptions}, ui::text::Left);
-        QueueSelectorDraw(playModeOptionAddr[playModeOption]);
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), chrHUDWhitespace_tile);
+        gen::title::Erase_TitleOptions();
+        gen::gameOptions::Draw_gameOptions();
+        QueueSelectorDraw(PlayModeArrowAddr());
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
         ArmSplitIRQ();
@@ -321,14 +269,10 @@ namespace title {
     }
 
     static void nmi_handler_drawMenu() {
-        u16 clearAddr = playModeClearAddr;
-        for (u8 row = 0; row < kPlayModeOptions; row++) {
-            ppu::WriteRepeatedToNameTable(clearAddr, chrHUDWhitespace_tile, kPlayModeBoxWidth + 2, 0);
-            clearAddr = static_cast<u16>(clearAddr + kMenuNTWidth);
-        }
-
-        ui::text::Draw(pMenuChunks, menuAddr, vec2<u8>{kMenuBoxWidth, kMenuOptions}, ui::text::Left);
-        QueueSelectorDraw(menuOptionAddr[menuOption]);
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), chrHUDWhitespace_tile);
+        gen::gameOptions::Erase_gameOptions();
+        gen::title::Draw_TitleOptions();
+        QueueSelectorDraw(TitleArrowAddr());
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
         ArmSplitIRQ();
@@ -343,7 +287,17 @@ namespace title {
     }
 
     static void ApplySplit() {
-        ppu::SetScroll({static_cast<u16>(kMenuNT << 3), static_cast<u16>(SplitRow() << 3)});
+        // The NES/PC/GX/3DS ports ignore this Y write (a plain mid-frame Y
+        // write is a no-op on real hardware) and the Y counter simply carries
+        // on from the frame's scroll to world row 240, which wraps onto the
+        // menu nametable's row 0. The DS/GBA backends honour the handler's Y
+        // (their gameplay follow camera needs that -- see ApplyHudSplit,
+        // level.cpp), so here it has to name that same row explicitly: 240,
+        // not the split row.
+        const u16 splitY = video::viewport_ty() < 30
+            ? static_cast<u16>(PreviewScrollY() + (static_cast<u16>(SplitRow()) << 3))
+            : static_cast<u16>(SplitRow() << 3);
+        ppu::SetScroll({static_cast<u16>(kMenuNT << 3), splitY});
     }
 
     void InitTitleScreen() {
@@ -391,7 +345,14 @@ namespace title {
         });
 
         const u16 groundNtRow = tyBase * 8 + (levelHeight - 2) * 16;
-        const i16 rawFeetY    = static_cast<i16>(groundNtRow) - 16 - static_cast<i16>(PreviewScrollY());
+        // On the NES/PC/etc. the sprite Y is plain screen space, so the band's
+        // scroll is subtracted here. The cropping backends (DS/DSi/GBA) instead
+        // subtract the frame's scroll from EVERY sprite themselves (their
+        // window transform -- see build_sprites in src/nds/video.cpp), so
+        // subtracting it here as well counted it twice and put Mary at the top
+        // of the screen; those targets want the un-scrolled Y.
+        const u16 spriteScroll = video::viewport_ty() < 30 ? 0 : PreviewScrollY();
+        const i16 rawFeetY    = static_cast<i16>(groundNtRow) - 16 - static_cast<i16>(spriteScroll);
         const auto feetY      = static_cast<oam::oam_t>(rawFeetY < 0 ? 0 : rawFeetY);
         OAMBuffer[0].y = feetY; OAMBuffer[1].y = feetY;
         OAMBuffer[0].x = 32;    OAMBuffer[1].x = 40;

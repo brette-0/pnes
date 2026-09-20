@@ -382,7 +382,7 @@ void InitMemory(const unsigned vram_bytes) {
  * fires each handler (running game logic, which may move the scroll), and
  * hands each band's scroll to the backend to render as a tilemap. See
  * emu.hpp for the band semantics. */
-void GenerateBands(const band_emit_fn emit) {
+void GenerateBands(const band_emit_fn emit, const bool honorHandlerY) {
     const int vph = video::viewport_py();
 
     int  band_start = 0;
@@ -395,7 +395,13 @@ void GenerateBands(const band_emit_fn emit) {
     // ppu_y), so the world row sourced at a band's first scanline is the
     // frame's Y plus that scanline. Passing fixed_ys alone restarted every
     // band after the first from the frame's top row.
-    const u16 fixed_ys = yScroll;
+    //
+    // ys_base is the offset such that world row = ys_base + scanline. It starts
+    // at the frame's latched Y and only ever moves when honorHandlerY is set
+    // (see emu.hpp): a backend whose game genuinely needs a handler's Y write
+    // to land mid-frame (the DS/GBA follow camera) re-anchors it to the
+    // handler's own Y at the scanline the handler fired on.
+    int ys_base = yScroll;
 
     for (int py = 0; py < vph; py++) {
         /* Fire the pending IRQ when its scanline is reached. We band at
@@ -412,13 +418,16 @@ void GenerateBands(const band_emit_fn emit) {
                 irq::irqPendingValid = false;   // stale — past without firing
             } else if (static_cast<int>(pos.y) == py) {
                 if (py > band_start) {
-                    emit(band_start, py, cur_xs, static_cast<u16>(fixed_ys + band_start));
+                    emit(band_start, py, cur_xs, static_cast<u16>(ys_base + band_start));
                     band_start = py;
                 }
                 /* Clear before calling so a re-arm from inside the handler
                  * survives the call. */
                 irq::irqPendingValid = false;
+                const u16 ys_before = yScroll;
                 if (irq::irqHandler) irq::irqHandler();
+                if (honorHandlerY && yScroll != ys_before)
+                    ys_base = static_cast<int>(yScroll) - py;
                 // X, unlike Y, reloads every scanline on real hardware --
                 // simply re-read fresh, no "did it change" bookkeeping needed.
                 cur_xs = xScroll;
@@ -426,7 +435,7 @@ void GenerateBands(const band_emit_fn emit) {
         }
     }
 
-    if (band_start < vph) emit(band_start, vph, cur_xs, static_cast<u16>(fixed_ys + band_start));
+    if (band_start < vph) emit(band_start, vph, cur_xs, static_cast<u16>(ys_base + band_start));
 }
 
 const oam::sprite_t* OamShadow() { return oamShadow; }

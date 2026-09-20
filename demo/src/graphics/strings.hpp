@@ -17,20 +17,5 @@ LEVEL_GRAPHICS inline constexpr auto msg_mary = ::tech::nes_str::encode<charmap_
 
 TITLE_DATA inline constexpr auto msg_title  = ::tech::nes_str::encode<charmap_generic>("SUPER MARY SISTERS");
 
-// Title menu, as one single-choice-menu buffer: '\n' (mapped to 0 in
-// charmap_generic, see charmaps.hpp) marks the boundary between options.
-// PC targets get a fourth, Quit option; consoles have no OS to quit back to.
-#if defined(TARGET_MACOS) || defined(TARGET_WINDOWS) || defined(TARGET_LINUX)
-TITLE_DATA inline constexpr auto msg_menu = ::tech::nes_str::encode<charmap_generic>("NEW GAME\nCONTINUE\nOPTIONS\nQUIT");
-#else
-TITLE_DATA inline constexpr auto msg_menu = ::tech::nes_str::encode<charmap_generic>("NEW GAME\nCONTINUE\nOPTIONS");
-#endif
-
-// Play-mode choice, same '\n'-as-boundary convention as msg_menu. NES has no
-// network stack to drive a LAN option -- other targets get it, plus the
-// distinction between local and networked multiplayer.
-#if defined(TARGET_NES)
-TITLE_DATA inline constexpr auto msg_playMode = ::tech::nes_str::encode<charmap_generic>("SINGLEPLAYER\nMULTIPLAYER");
-#else
-TITLE_DATA inline constexpr auto msg_playMode = ::tech::nes_str::encode<charmap_generic>("SINGLEPLAYER\nLOCAL MULTIPLAYER\nLAN MULTIPLAYER");
-#endif
+// The title menu and the play-mode menu are generated from demo/ui/title.uis
+// and demo/ui/gameOptions.uis (demo/gen/), not hand-written here.

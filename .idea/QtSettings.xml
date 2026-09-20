@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="QtSettings">
-    <option name="myCurrentProfile" value="nds-release" />
+    <option name="myCurrentProfile" value="ctr-release" />
     <option name="mySettingsPerProfile">
       <map>
         <entry key="ctr-debug">

@@ -715,10 +715,17 @@ std::optional<long long> evalExpr(
 // friends). Substituted 1:1 with the matching accessor so the emitted
 // arithmetic is exactly the formula the scene author typed. Every other
 // identifier -- a cross-reference to another node's own position/size/
-// textSize, or `this` -- is NOT runtime-variable (only the viewport itself
-// is), so those are baked to the already-resolved int `resolveIdent` hands
-// back, same as a fixed-panel target bakes everything.
-QString emitExprCpp(const ExprPtr& node, const std::function<long long(const QString&, int)>& resolveIdent) {
+// textSize, or `this` -- is baked to the already-resolved int `resolveIdent`
+// hands back, same as a fixed-panel target bakes everything -- EXCEPT where
+// `substituteIdent` returns an expression for it: a reference to another
+// node's *position* is only "not runtime-variable" if that node's own
+// position isn't itself VIEWPORT_*-driven, so the caller passes a hook that
+// splices the referenced node's own expression in instead (see
+// emitPosComponent). Baking it would leave the referrer at whatever column
+// the editor's viewport happened to resolve to, misaligned from the node it
+// is meant to follow at any other runtime viewport size.
+QString emitExprCpp(const ExprPtr& node, const std::function<long long(const QString&, int)>& resolveIdent,
+                     const std::function<std::optional<QString>(const QString&, int)>& substituteIdent = nullptr) {
     if (!node) return QStringLiteral("0");
     switch (node->kind) {
         case ExprNode::Kind::Number:
@@ -730,21 +737,30 @@ QString emitExprCpp(const ExprPtr& node, const std::function<long long(const QSt
                 if (node->identName == QLatin1String("VIEWPORT_PX")) return QStringLiteral("video::viewport_px()");
                 if (node->identName == QLatin1String("VIEWPORT_PY")) return QStringLiteral("video::viewport_py()");
             }
+            if (substituteIdent) {
+                if (const auto sub = substituteIdent(node->identName, node->identProp)) return *sub;
+            }
             return QString::number(resolveIdent(node->identName, node->identProp));
         case ExprNode::Kind::Neg:
-            return QString("-(%1)").arg(emitExprCpp(node->a, resolveIdent));
+            return QString("-(%1)").arg(emitExprCpp(node->a, resolveIdent, substituteIdent));
         case ExprNode::Kind::Add:
-            return QString("(%1 + %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+            return QString("(%1 + %2)").arg(emitExprCpp(node->a, resolveIdent, substituteIdent),
+                                            emitExprCpp(node->b, resolveIdent, substituteIdent));
         case ExprNode::Kind::Sub:
-            return QString("(%1 - %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+            return QString("(%1 - %2)").arg(emitExprCpp(node->a, resolveIdent, substituteIdent),
+                                            emitExprCpp(node->b, resolveIdent, substituteIdent));
         case ExprNode::Kind::Mul:
-            return QString("(%1 * %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+            return QString("(%1 * %2)").arg(emitExprCpp(node->a, resolveIdent, substituteIdent),
+                                            emitExprCpp(node->b, resolveIdent, substituteIdent));
         case ExprNode::Kind::Div:
-            return QString("(%1 / %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+            return QString("(%1 / %2)").arg(emitExprCpp(node->a, resolveIdent, substituteIdent),
+                                            emitExprCpp(node->b, resolveIdent, substituteIdent));
         case ExprNode::Kind::Shl:
-            return QString("(%1 << %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+            return QString("(%1 << %2)").arg(emitExprCpp(node->a, resolveIdent, substituteIdent),
+                                             emitExprCpp(node->b, resolveIdent, substituteIdent));
         case ExprNode::Kind::Shr:
-            return QString("(%1 >> %2)").arg(emitExprCpp(node->a, resolveIdent), emitExprCpp(node->b, resolveIdent));
+            return QString("(%1 >> %2)").arg(emitExprCpp(node->a, resolveIdent, substituteIdent),
+                                             emitExprCpp(node->b, resolveIdent, substituteIdent));
     }
     return QStringLiteral("0");
 }
@@ -943,11 +959,13 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
 // make/draw together, or decide call order for the caller -- codegen only
 // emits the wrappers; when and in what order a scene's components actually
 // get placed/drawn is up to the game code that calls them. We also never
-// emit a draw callback for a SingleChoice: drawing the chosen option is
-// entirely the caller's job, via plain ui::text::Make/Draw -- codegen's job
-// for one is only to emit its plain `<name>_option`/`<name>_nOptions`
-// variables, its options' positions, and the Make_/Pass_ functions that
-// initialize/update them (see genSingleChoiceDecl below).
+// draw a SingleChoice's *selection* (its arrow/cursor): that is entirely the
+// caller's job, from `<name>_option` and the option's `<name>_options[i]`
+// anchor -- codegen's job for one is only to emit its plain
+// `<name>_option`/`<name>_nOptions` variables, its options' positions, the
+// Make_/Pass_ functions that initialize/update them, and Draw_/Erase_<Name>
+// conveniences that just forward to each visible member's own Draw_/Erase_
+// (see genSingleChoiceDecl below).
 //
 // Every generated declaration lives inside `namespace gen::<sceneName>`, so
 // two scenes can freely reuse the same component names without colliding.
@@ -1088,7 +1106,7 @@ long long resolvePositionRef(QTreeWidgetItem* rootItem, const QString& target, c
 // SingleChoice's several members, so this re-evaluates inline in Draw_/
 // Erase_ rather than needing separate mutable storage populated by a Make_.
 QString emitPosComponent(const QTreeWidgetItem* item, int exprRole, int literalRole, bool variadic,
-                          QTreeWidgetItem* rootItem, const QString& target, const QString& region) {
+                          QTreeWidgetItem* rootItem, const QString& target, const QString& region, int depth = 0) {
     if (variadic) {
         QString src = item->data(0, exprRole).toString().trimmed();
         if (src.isEmpty()) src = QStringLiteral("0");
@@ -1098,7 +1116,27 @@ QString emitPosComponent(const QTreeWidgetItem* item, int exprRole, int literalR
             auto resolveFor = [rootItem, target, region, item](const QString& n, int p) {
                 return resolvePositionRef(rootItem, target, region, item, n, p);
             };
-            return emitExprCpp(ast, resolveFor);
+            // pos.x/pos.y of another node: splice in that node's own
+            // expression (parenthesized), recursively -- see emitExprCpp.
+            // Depth-capped so a reference cycle (A.pos.x = B.pos.x,
+            // B.pos.x = A.pos.x -- the editor's resolver just leaves those
+            // unresolved) falls back to the baked value instead of recursing
+            // forever.
+            auto substitute = [rootItem, target, region, item, depth](const QString& n,
+                                                                      int p) -> std::optional<QString> {
+                if ((p != 0 && p != 1) || depth >= 16) return std::nullopt;
+                const QString wanted = (n == QLatin1String("this")) ? bareName(item) : n;
+                for (QTreeWidgetItem* other : collectComponentItems(rootItem)) {
+                    if (bareName(other) != wanted) continue;
+                    return "(" +
+                           emitPosComponent(other, p == 0 ? kPosXExprRole : kPosYExprRole,
+                                            p == 0 ? kPosXRole : kPosYRole, true, rootItem, target, region,
+                                            depth + 1) +
+                           ")";
+                }
+                return std::nullopt;
+            };
+            return emitExprCpp(ast, resolveFor, substitute);
         }
     }
     return QString::number(item->data(0, literalRole).toInt());
@@ -1222,10 +1260,19 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
     const int y = item->data(0, kPosYRole).toInt() + ntOffY;
     const int w = std::max(1, item->data(0, kSizeWRole).toInt());
     const int h = std::max(1, item->data(0, kSizeHRole).toInt());
-    const QString tileExpr =
-        charmapFn.isEmpty() ? QStringLiteral("' '") : QString("%1(' ')").arg(charmapFn);
+    // With a charmap, the blank tile is bound to a local `constexpr` first
+    // rather than passed inline as `charmap_x(' ')`: an inline call in a plain
+    // argument position is only *allowed* to fold at compile time, and an
+    // unoptimised (-O0) build doesn't -- it emits a real call to the charmap
+    // function, whose fall-through for an unmapped character is a deliberate
+    // undefined reference (tech::nes_str::unmapped), so the whole demo then
+    // fails to link over a character that was never unmapped.
+    const QString tileExpr = charmapFn.isEmpty() ? QStringLiteral("' '") : QStringLiteral("blank");
 
     QStringList bodyLines;
+    if (!charmapFn.isEmpty()) {
+        bodyLines << QString("    constexpr auto blank = %1(' ');").arg(charmapFn);
+    }
     for (int row = 0; row < h; ++row) {
         if (isNes) {
             bodyLines << QString("    ppu::WriteRepeatedToNameTable(0x%1, %2, %3, 0);")
@@ -1271,7 +1318,7 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
 // generateCode) -- it places the instance's own mutable storage, and, on a
 // variadic target, its mutable options array.
 QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, const QString& target,
-                             const QString& region, const QString& bssPrefixTok,
+                             const QString& region, const QString& bssPrefixTok, const QString& dataPrefixTok,
                              const QString& ntOffXExpr, const QString& ntOffYExpr) {
     const QVector<QTreeWidgetItem*> members = singleChoiceMembers(scItem, target, region);
     if (members.isEmpty()) {
@@ -1281,33 +1328,6 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     const int nOptions = members.size();
     const int defaultOption = std::clamp(scItem->data(0, kDefaultOptionRole).toInt(), 0, nOptions - 1);
     const bool variadic = kVariadicTargets.contains(target);
-
-    // Cross-reference resolver for a member's position expression (e.g.
-    // `Other.pos.x`, `this.textSize`, `Other.enabled`) -- these are never
-    // runtime-variable, only VIEWPORT_* is (see emitExprCpp), so they're
-    // baked to the already-resolved value every other geometry node's own
-    // codegen uses. `.enabled` (prop 5) is the one exception that isn't
-    // itself stored on the node -- it's recomputed here the same way
-    // resolveAllPtr's own resolveIdent does, against this export's actual
-    // target/region rather than whatever happened to be selected in the
-    // sidebar when the scene was last edited.
-    auto resolveBaked = [rootItem, target, region](const QTreeWidgetItem* self, const QString& rawName,
-                                                     int prop) -> long long {
-        const QString wanted = (rawName == QLatin1String("this")) ? bareName(self) : rawName;
-        for (QTreeWidgetItem* other : collectComponentItems(rootItem)) {
-            if (bareName(other) != wanted) continue;
-            switch (prop) {
-                case 0: return other->data(0, kPosXRole).toInt();
-                case 1: return other->data(0, kPosYRole).toInt();
-                case 2: return other->data(0, kSizeWRole).toInt();
-                case 3: return other->data(0, kSizeHRole).toInt();
-                case 4: return other->data(0, kTextContentRole).toString().length();
-                case 5: return isEffectivelyHidden(other, target, region) ? 0 : 1;
-                default: return 0;
-            }
-        }
-        return 0;
-    };
 
     QStringList lines;
     lines << QString("// SingleChoice: %1").arg(name);
@@ -1327,6 +1347,28 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
         // Make_'s writes and a reader elsewhere -- unlike `<name>_option`
         // below (already atomic itself), nothing else protects this array.
         lines << QString("%1inline atomic vec2<u16> %2_options[%3];").arg(bssPrefixTok, name).arg(nOptions);
+    } else {
+        // Fixed panel: every member's position is a design-time constant, so
+        // `_options` is a plain constexpr table (ROM, under `dataPrefixTok`
+        // on NES) rather than mutable storage Make_ has to populate -- but it
+        // is still emitted, under the same name and element type as the
+        // variadic array, because the caller needs each option's anchor to
+        // place its selection indicator regardless of target. Draw_<Member>
+        // already bakes the same position into its own body; this is the one
+        // extra copy the indicator's placement needs. ntOffXExpr/ntOffYExpr
+        // are plain integer literals here (see generateCode).
+        const int ntOffX = ntOffXExpr.toInt();
+        const int ntOffY = ntOffYExpr.toInt();
+        QStringList entries;
+        for (QTreeWidgetItem* member : members) {
+            entries << QString("vec2<u16>{%1, %2}")
+                            .arg(member->data(0, kPosXRole).toInt() + ntOffX)
+                            .arg(member->data(0, kPosYRole).toInt() + ntOffY);
+        }
+        lines << QString("%1inline constexpr vec2<u16> %2_options[%3] = {%4};")
+                     .arg(dataPrefixTok, name)
+                     .arg(nOptions)
+                     .arg(entries.join(", "));
     }
 
     // The running option index -- `atomic` (technology.hpp: volatile on NES,
@@ -1342,20 +1384,10 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     if (variadic) {
         for (int i = 0; i < members.size(); ++i) {
             QTreeWidgetItem* member = members[i];
-            auto resolveFor = [&resolveBaked, member](const QString& n, int p) { return resolveBaked(member, n, p); };
-
-            QString xSrc = member->data(0, kPosXExprRole).toString().trimmed();
-            if (xSrc.isEmpty()) xSrc = QStringLiteral("0");
-            QString ySrc = member->data(0, kPosYExprRole).toString().trimmed();
-            if (ySrc.isEmpty()) ySrc = QStringLiteral("0");
-            bool okX = false;
-            bool okY = false;
-            ExprPtr xAst = ExprParser(xSrc).parse(okX);
-            ExprPtr yAst = ExprParser(ySrc).parse(okY);
             const QString xCpp =
-                okX ? emitExprCpp(xAst, resolveFor) : QString::number(member->data(0, kPosXRole).toInt());
+                emitPosComponent(member, kPosXExprRole, kPosXRole, true, rootItem, target, region);
             const QString yCpp =
-                okY ? emitExprCpp(yAst, resolveFor) : QString::number(member->data(0, kPosYRole).toInt());
+                emitPosComponent(member, kPosYExprRole, kPosYRole, true, rootItem, target, region);
             // ntOffXExpr/ntOffYExpr, not the fixed ntOffX/ntOffY ints -- see
             // generateCode's own comment on why a variadic target's
             // nametable-quadrant term has to stay runtime-resolved too.
@@ -1384,6 +1416,40 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
                  "    else if (inputs & input::DOWN) { if (%1_option != %1_nOptions - 1) %1_option += 1; }\n"
                  "}")
                  .arg(name);
+
+    // Draw_<Name>/Erase_<Name>: the whole option list's labels in one call.
+    // Each member's own Draw_/Erase_ only exists on the targets that don't
+    // hide it (see generateCode), so a caller wanting "every option this
+    // target shows" would otherwise need a per-target #if ladder that just
+    // restates the scene's hide lists -- exactly the drift this scene format
+    // exists to remove. This is labels only: the selection indicator and the
+    // call order relative to anything else in the scene stay the caller's job.
+    // Emitted only when every member is a ctTextBox (an rtTextBox has no
+    // Draw_), and Erase_ only when every member also opted into Provide
+    // Erasing -- a partial Erase_ would silently leave stale tiles behind, so
+    // its absence (a compile error at the call site) is the safer failure.
+    bool allDrawable = true;
+    bool allErasable = true;
+    for (QTreeWidgetItem* member : members) {
+        if (!isCtTextBoxItem(member)) {
+            allDrawable = false;
+            allErasable = false;
+            break;
+        }
+        if (!member->data(0, kProvideErasingRole).toBool()) allErasable = false;
+    }
+    if (allDrawable) {
+        QStringList drawBody;
+        QStringList eraseBody;
+        for (QTreeWidgetItem* member : members) {
+            drawBody << QString("    Draw_%1();").arg(bareName(member));
+            eraseBody << QString("    Erase_%1();").arg(bareName(member));
+        }
+        lines << QString("inline AI void Draw_%1() {\n%2\n}").arg(name, drawBody.join("\n"));
+        if (allErasable) {
+            lines << QString("inline AI void Erase_%1() {\n%2\n}").arg(name, eraseBody.join("\n"));
+        }
+    }
 
     return lines.join("\n") + "\n";
 }
@@ -1523,7 +1589,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     for (QTreeWidgetItem* scItem : collectSingleChoiceItems(rootItem)) {
         if (isEffectivelyHidden(scItem, target, region)) continue;
         const QString decl =
-            genSingleChoiceDecl(scItem, rootItem, target, region, bssPrefixTok, ntOffXExpr, ntOffYExpr);
+            genSingleChoiceDecl(scItem, rootItem, target, region, bssPrefixTok, dataPrefixTok, ntOffXExpr, ntOffYExpr);
         if (!decl.isEmpty()) {
             hppDecls << decl;
             usesSingleChoice = true;

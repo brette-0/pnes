@@ -140,8 +140,15 @@ using band_emit_fn = void (*)(int y0, int y1, u16 xscroll, u16 yscroll);
  * ::emu::GenerateFrame, so the two stay byte-for-byte consistent on the split.
  *
  * @param emit Backend band renderer (see ::emu::band_emit_fn).
+ * @param honorHandlerY When false (the default -- what real NES hardware and
+ *        the GX/3DS backends do), a Y write made inside an IRQ handler is
+ *        ignored for the rest of the frame and the Y counter just keeps
+ *        free-running. When true, a handler that changes ::yScroll re-anchors
+ *        the Y counter to that value at the scanline it fired on, so every later
+ *        band's @c yscroll follows it. Only for a backend whose game needs a
+ *        mid-frame Y change to actually land (the DS/GBA follow camera).
  */
-void GenerateBands(band_emit_fn emit);
+void GenerateBands(band_emit_fn emit, bool honorHandlerY = false);
 
 /**
  * @brief Pointer to the PPU-side OAM snapshot the renderer draws sprites from.
