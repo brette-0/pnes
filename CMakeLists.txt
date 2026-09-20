@@ -1305,17 +1305,29 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
             PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
 
-    add_executable(demo ${DEMO_SOURCES})
-    set_target_properties(demo PROPERTIES SUFFIX ".elf")
-    target_link_libraries(demo PRIVATE platform-nes citro2d citro3d ctru m)
+    # THE `demo` TARGET IS THE PACKAGED DELIVERABLE, NOT THE BARE ELF.
+    # devkitPro's packaging helpers (ctr_create_3dsx, nx_create_nro,
+    # wut_create_wuhb, nds_create_rom) each add their OWN separate ALL target on
+    # top of the executable, so building just `demo` used to stop at demo.elf and
+    # leave demo_3dsx/demo_nro/demo_wuhb/demo_nds (and the .smdh/.nacp they pull
+    # in) as extra targets to build by hand. A target can't depend on something
+    # that depends on itself, so the linked ELF is `demo_elf` here (its output is
+    # still demo.elf, via OUTPUT_NAME) and the helper is handed the name `demo`
+    # with TARGET pointing at the ELF: `--target demo` now yields the final
+    # artifact. Every console branch that packages through such a helper does
+    # this; the ones that package with a POST_BUILD step (GC/Wii, PSP, GBA,
+    # NES, desktop) already had one target and are unchanged.
+    add_executable(demo_elf ${DEMO_SOURCES})
+    set_target_properties(demo_elf PROPERTIES OUTPUT_NAME demo SUFFIX ".elf")
+    target_link_libraries(demo_elf PRIVATE platform-nes citro2d citro3d ctru m)
 
     # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
-    target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
+    target_compile_definitions(demo_elf PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
     # CHR art is pulled in with #embed (C23). devkitARM's GCC supports it without
     # a diagnostic here; keep the Clang-only silencer guard for parity with the
     # other branches (no-op under GCC).
-    target_compile_options(demo PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
+    target_compile_options(demo_elf PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
 
     # Enable LTO for release-type configs, mirroring the OGC + desktop branches:
     # the software PPU (emu::GenerateFrame) spans the static lib and the demo's
@@ -1325,7 +1337,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     if(_ipo_ok)
         foreach(_cfg Release MinSizeRel RelWithDebInfo)
             string(TOUPPER ${_cfg} _CFG)
-            set_property(TARGET demo platform-nes
+            set_property(TARGET demo_elf platform-nes
                     PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
         endforeach()
     else()
@@ -1334,13 +1346,17 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
 
     # Wrap the linked ELF as a .3dsx (homebrew loader format) with an SMDH icon/
     # metadata banner. Both helpers come from devkitARM's Tools3DS.cmake once the
-    # 3DS toolchain is active.
+    # 3DS toolchain is active. The packaging target is named `demo` (see the
+    # note on add_executable above); demo.smdh is only a custom-command output
+    # it depends on, not a target of its own. TARGET names the ELF and, since
+    # OUTPUT isn't given, the helper writes ${CMAKE_BINARY_DIR}/demo.3dsx.
     ctr_generate_smdh(demo.smdh
             NAME "platform-nes demo"
             DESCRIPTION "NES engine demo on 3DS (citro2d)"
             AUTHOR "brette"
     )
     ctr_create_3dsx(demo
+            TARGET demo_elf
             SMDH ${CMAKE_BINARY_DIR}/demo.smdh
     )
 
@@ -1401,16 +1417,18 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
                 PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
 
-        add_executable(demo ${DEMO_SOURCES})
-        set_target_properties(demo PROPERTIES SUFFIX ".elf")
-        target_link_libraries(demo PRIVATE platform-nes nx)
+        # `demo` is the packaged .nro, `demo_elf` the linked ELF -- see the note
+        # on the 3DS branch's add_executable for why.
+        add_executable(demo_elf ${DEMO_SOURCES})
+        set_target_properties(demo_elf PROPERTIES OUTPUT_NAME demo SUFFIX ".elf")
+        target_link_libraries(demo_elf PRIVATE platform-nes nx)
 
         # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
-        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
+        target_compile_definitions(demo_elf PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
         # CHR art is pulled in with #embed (C23); keep the Clang-only silencer for
         # parity with the other branches (no-op under devkitA64's GCC).
-        target_compile_options(demo PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
+        target_compile_options(demo_elf PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
 
         # Enable LTO for release-type configs, mirroring the other branches.
         include(CheckIPOSupported)
@@ -1418,7 +1436,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(_ipo_ok)
             foreach(_cfg Release MinSizeRel RelWithDebInfo)
                 string(TOUPPER ${_cfg} _CFG)
-                set_property(TARGET demo platform-nes
+                set_property(TARGET demo_elf platform-nes
                         PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
             endforeach()
         else()
@@ -1448,17 +1466,20 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 COMMENT "Encoding Switch audio: pc_audio.wav -> RomFS pc_audio.raw (48k s16le)"
                 VERBATIM)
         add_custom_target(switch-assets DEPENDS ${NX_RAW})
-        add_dependencies(demo switch-assets)
+        add_dependencies(demo_elf switch-assets)
 
         # Wrap the linked ELF as a homebrew .nro with a NACP metadata banner and
         # the RomFS asset tree. Both helpers come from devkitA64's NXTools.cmake
-        # once the Switch toolchain is active.
+        # once the Switch toolchain is active. The packaging target is `demo`;
+        # demo.nacp is only a custom-command output it depends on, not a target,
+        # and (no OUTPUT given) the .nro lands at ${CMAKE_BINARY_DIR}/demo.nro.
         nx_generate_nacp(demo.nacp
                 NAME "platform-nes demo"
                 AUTHOR "brette"
                 VERSION "1.0.0"
         )
         nx_create_nro(demo
+                TARGET demo_elf
                 NACP ${CMAKE_BINARY_DIR}/demo.nacp
                 ROMFS ${NX_ROMFS}
         )
@@ -1573,21 +1594,24 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
                 PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
 
-        add_executable(demo ${DEMO_SOURCES})
-        set_target_properties(demo PROPERTIES SUFFIX ".elf")
+        # `demo` is the packaged .wuhb, `demo_elf` the linked ELF (the .rpx is a
+        # POST_BUILD step of it) -- see the note on the 3DS branch's
+        # add_executable for why.
+        add_executable(demo_elf ${DEMO_SOURCES})
+        set_target_properties(demo_elf PROPERTIES OUTPUT_NAME demo SUFFIX ".elf")
         # The demo supplies its own main() via the RESET macro, so the backend
         # builds with SDL_MAIN_HANDLED and SDL2main is deliberately NOT linked.
-        target_link_libraries(demo PRIVATE platform-nes)
+        target_link_libraries(demo_elf PRIVATE platform-nes)
 
         # See the TARGET_NES branch's own comment on this same call for
         # GEN_TARGET_DIR. Quoted: DEMO_TITLE_DIR is "wii u" (a space) on this
         # branch, and an unquoted argument here would split on that space
         # into two separate (wrong) compile definitions.
-        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
+        target_compile_definitions(demo_elf PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
         # CHR art is pulled in with #embed (C23); keep the Clang-only silencer for
         # parity with the other branches (no-op under devkitPPC's GCC).
-        target_compile_options(demo PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
+        target_compile_options(demo_elf PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
 
         # Enable LTO for release-type configs, mirroring the other branches.
         include(CheckIPOSupported)
@@ -1595,7 +1619,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(_ipo_ok)
             foreach(_cfg Release MinSizeRel RelWithDebInfo)
                 string(TOUPPER ${_cfg} _CFG)
-                set_property(TARGET demo platform-nes
+                set_property(TARGET demo_elf platform-nes
                         PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
             endforeach()
         else()
@@ -1607,8 +1631,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # music is embedded in the .rpx (above), so the bundle needs no content
         # tree -- both artifacts are fully self-contained and play audio however
         # they are launched. Both helpers come from wut's CafeOS.cmake.
-        wut_create_rpx(demo)
+        wut_create_rpx(demo_elf)
         wut_create_wuhb(demo
+                TARGET    demo_elf
                 NAME      "platform-nes demo"
                 SHORTNAME "platform-nes"
                 AUTHOR    "brette"
@@ -1935,16 +1960,18 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
                 PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
 
-        add_executable(demo ${DEMO_SOURCES})
-        set_target_properties(demo PROPERTIES SUFFIX ".elf")
-        target_link_libraries(demo PRIVATE platform-nes nds9)
+        # `demo` is the packaged .nds ROM, `demo_elf` the linked ARM9 ELF -- see
+        # the note on the 3DS branch's add_executable for why.
+        add_executable(demo_elf ${DEMO_SOURCES})
+        set_target_properties(demo_elf PROPERTIES OUTPUT_NAME demo SUFFIX ".elf")
+        target_link_libraries(demo_elf PRIVATE platform-nes nds9)
 
         # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
-        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
+        target_compile_definitions(demo_elf PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
 
         # CHR art is pulled in with #embed (C23); keep the Clang-only silencer for
         # parity with the other branches (no-op under devkitARM's GCC).
-        target_compile_options(demo PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
+        target_compile_options(demo_elf PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
 
         # Enable LTO for release-type configs, mirroring the other branches.
         include(CheckIPOSupported)
@@ -1952,7 +1979,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(_ipo_ok)
             foreach(_cfg Release MinSizeRel RelWithDebInfo)
                 string(TOUPPER ${_cfg} _CFG)
-                set_property(TARGET demo platform-nes
+                set_property(TARGET demo_elf platform-nes
                         PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
             endforeach()
         else()
@@ -1963,8 +1990,10 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # come from calico automatically). nds_create_rom() comes from devkitARM's
         # Platform/NintendoDS.cmake once the NDS toolchain is active. The output is
         # named demo.nds so it matches the other targets' demo.<ext> convention.
-        nds_create_rom(demo_nds
-                ARM9 demo
+        # The ROM target is `demo` itself (ARM9 names the ELF); it used to be a
+        # separate `demo_nds`, which left `--target demo` at the bare ELF.
+        nds_create_rom(demo
+                ARM9 demo_elf
                 NAME "platform-nes demo"
                 SUBTITLE1 "NES engine demo on DS"
                 SUBTITLE2 "github.com/brette"
@@ -2487,4 +2516,13 @@ target_compile_definitions(platform-nes PUBLIC REGION=${REGION})
 # charmap_generic but never includes demo/src/graphics/charmaps.hpp itself --
 # force it in ahead of every demo TU instead. Safe project-wide: it's just a
 # constexpr inline function (see its own header comment -- no ODR/LTO cost).
-target_compile_options(demo PRIVATE -include ${CMAKE_SOURCE_DIR}/demo/src/graphics/charmaps.hpp)
+#
+# The executable is `demo` on most targets, but `demo_elf` on the ones where
+# `demo` is the packaged deliverable instead (3DS, Switch, Wii U, DS/DSi -- see
+# the note on the 3DS branch's add_executable).
+if(TARGET demo_elf)
+    set(DEMO_EXE_TARGET demo_elf)
+else()
+    set(DEMO_EXE_TARGET demo)
+endif()
+target_compile_options(${DEMO_EXE_TARGET} PRIVATE -include ${CMAKE_SOURCE_DIR}/demo/src/graphics/charmaps.hpp)
