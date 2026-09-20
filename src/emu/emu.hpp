@@ -117,8 +117,10 @@ void InitMemory(unsigned vram_bytes);
  *
  * Invoked once per contiguous run of scanlines [@p y0, @p y1) that share a
  * constant scroll. @p xscroll / @p yscroll are the absolute PPU scroll in
- * effect at @p y0; within the band, screen row @c sy sources world row
- * `yscroll + (sy - y0)` (the PPU's per-scanline Y auto-increment).
+ * effect at @p y0 -- for Y that is the frame's latched Y plus @p y0, since the
+ * PPU's Y counter auto-increments once per scanline and a mid-frame Y write is
+ * not applied until the next frame. Within the band, screen row @c sy sources
+ * world row `yscroll + (sy - y0)`.
  */
 using band_emit_fn = void (*)(int y0, int y1, u16 xscroll, u16 yscroll);
 

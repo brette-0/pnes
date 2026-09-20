@@ -308,7 +308,7 @@ namespace title {
         u16 clearAddr = menuClearAddr;
         for (u8 row = 0; row < kMenuOptions; row++) {
             ppu::WriteRepeatedToNameTable(clearAddr, chrHUDWhitespace_tile, kMenuBoxWidth + 2, 0);
-            clearAddr = static_cast<u16>(clearAddr + 32);
+            clearAddr = static_cast<u16>(clearAddr + kMenuNTWidth);
         }
 
         ui::text::Draw(pPlayModeChunks, playModeAddr, vec2<u8>{kPlayModeBoxWidth, kPlayModeOptions}, ui::text::Left);
@@ -324,7 +324,7 @@ namespace title {
         u16 clearAddr = playModeClearAddr;
         for (u8 row = 0; row < kPlayModeOptions; row++) {
             ppu::WriteRepeatedToNameTable(clearAddr, chrHUDWhitespace_tile, kPlayModeBoxWidth + 2, 0);
-            clearAddr = static_cast<u16>(clearAddr + 32);
+            clearAddr = static_cast<u16>(clearAddr + kMenuNTWidth);
         }
 
         ui::text::Draw(pMenuChunks, menuAddr, vec2<u8>{kMenuBoxWidth, kMenuOptions}, ui::text::Left);

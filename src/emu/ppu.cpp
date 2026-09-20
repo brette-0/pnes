@@ -390,6 +390,11 @@ void GenerateBands(const band_emit_fn emit) {
     // Latched once, here, for the whole frame -- a handler's yScroll write
     // below is not picked up until the NEXT GenerateBands call, matching
     // real hardware only reloading v's vertical bits at the pre-render line.
+    // Each band is handed `fixed_ys + band_start`, not fixed_ys itself: the
+    // PPU's Y counter free-runs one row per scanline (see GenerateFrame's
+    // ppu_y), so the world row sourced at a band's first scanline is the
+    // frame's Y plus that scanline. Passing fixed_ys alone restarted every
+    // band after the first from the frame's top row.
     const u16 fixed_ys = yScroll;
 
     for (int py = 0; py < vph; py++) {
@@ -407,7 +412,7 @@ void GenerateBands(const band_emit_fn emit) {
                 irq::irqPendingValid = false;   // stale — past without firing
             } else if (static_cast<int>(pos.y) == py) {
                 if (py > band_start) {
-                    emit(band_start, py, cur_xs, fixed_ys);
+                    emit(band_start, py, cur_xs, static_cast<u16>(fixed_ys + band_start));
                     band_start = py;
                 }
                 /* Clear before calling so a re-arm from inside the handler
@@ -421,7 +426,7 @@ void GenerateBands(const band_emit_fn emit) {
         }
     }
 
-    if (band_start < vph) emit(band_start, vph, cur_xs, fixed_ys);
+    if (band_start < vph) emit(band_start, vph, cur_xs, static_cast<u16>(fixed_ys + band_start));
 }
 
 const oam::sprite_t* OamShadow() { return oamShadow; }
@@ -514,11 +519,25 @@ void EnableRendering(u8 ppuCtrl_, u8 ppuMask_) {
  * (::ppu::nametableCount of them, see that symbol's own doc comment) --
  * correct for every board, since they all now live in the one flat
  * ::VideoRAM allocation (::video::vram_bytes() already sizes it for all of
- * them). */
+ * them).
+ *
+ * The page count is taken from the geometry grid (gridW * gridH), NOT by
+ * reading ::ppu::nametableCount directly here. That symbol's weak default
+ * (`= 2`) is defined earlier in this file, and GCC (devkitPPC/devkitARM)
+ * constant-folds a `const` whose initialiser is visible in the same TU even
+ * when it is `weak` -- so a direct read below that definition compiles to the
+ * literal 2 and silently ignores a four-screen board's strong override
+ * (`= 4`, src/emu/mappers/mmc3.cpp), flushing only pages 0-1 and leaving the
+ * bottom row of nametables (where the title screen lives) with uninitialised
+ * tiles/attributes. Clang (the PC build) doesn't fold weak variables, which is
+ * why only the console builds showed it. Reads through the header's inline
+ * ::video::nametable_grid_w()/_h() are parsed BEFORE that definition, so they
+ * load the real, link-resolved symbol -- gridW * gridH is exactly the page
+ * count ::video::vram_bytes() sizes ::VideoRAM for. */
 __attribute__((weak))
 void Flush(const u8 nt, const u8 at) {
     const emu::NtGeometry geo = emu::ComputeNtGeometry();
-    const int pageCount = static_cast<int>(ppu::nametableCount);
+    const int pageCount = geo.gridW * geo.gridH;
     for (int page = 0; page < pageCount; page++) {
         const int base = page * geo.pageBytes;
         for (int i = 0; i < geo.ntBytes; i++) {
