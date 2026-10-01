@@ -12,6 +12,12 @@
 // gen::gameOptions -- demo/ui/gameOptions.uis, same per-target directory scheme
 // (gen/playOptions/<GEN_TARGET_DIR>/gameOptions.hpp).
 #include STRCAT(../../gen/playOptions/GEN_TARGET_DIR/gameOptions.hpp)
+// gen::options -- demo/ui/options.uis (the Options screen's buttons), plus the
+// hand-written DrawEnabled_/DrawDisabled_ implementations its generated
+// Button nodes require (see uitk's genButtonDecl) -- this is the one TU that
+// actually includes it, so it's the one place GEN_TARGET_DIR/platform-nes
+// context exists for it.
+#include "../../ui/impl/buttons.hpp"
 #include "../main.hpp"
 #include "../banks.hpp"
 #include "../graphics/colours.hpp"
