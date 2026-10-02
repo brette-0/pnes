@@ -104,9 +104,13 @@ namespace title {
 
     static oam::oam_t Clear(u16 _);
     static NI void DrawLevelPreview();
+    static void UpdateMarySpriteYForPixels(u16 splitPixelRow);
+    static void UpdateMarySpriteY(u8 splitRow);
     static void nmi_handler_drawPlayMode();
     static void nmi_handler_drawMenu();
     static void nmi_handler_lockOptions();
+    static void nmi_handler_lockAnim();
+    static void irq_handler_lockAnim();
     static void nmi_handler_locked();
     static void irq_handler_locked();
 
@@ -122,6 +126,13 @@ namespace title {
     // before ApplySplit() (which reads it) can ever run. The menus' own
     // columns come from the generated scenes, which resolve the same floor.
     static u16 kMenuNT;
+
+    // Mary's feet, in nametable space -- fixed once the level preview loads
+    // (DrawLevelPreview), independent of scroll. Cached so
+    // ::UpdateMarySpriteY can redo just the scroll half of that same math
+    // every step of the reveal animation, without needing the banked level
+    // data (::level::levelHeight) still paged in to re-derive it.
+    static u16 maryGroundNtRow;
 
     // Rows the menu band (everything below the split) is given. The NES lays
     // it out as 30 - 24 = 6 rows, which is what the title/menu text (nametable
@@ -145,13 +156,54 @@ namespace title {
     // panel over the same 30-row nametable -- using the panel height left the
     // second band starting at world row 24 (DS) instead of row 0, so none of
     // the menu/title text (nametable rows 1-4) was ever on screen.
-    static u16 PreviewScrollY() {
+    // Pixel-granular core of the three helpers below (::PreviewScrollYFor,
+    // ::SplitYFor, ::ArmSplitIRQFor): all three normally only ever get called
+    // with a tile-row split (::SplitRow(), always a multiple of 8 scanlines),
+    // but ::nmi_handler_lockAnim walks the split up ONE SCANLINE at a time --
+    // rounding that to the nearest tile row would make the reveal jump 8
+    // scanlines at once every other frame instead of scrolling smoothly.
+    static u16 PreviewScrollYForPixels(const u16 splitPixelRow) {
         const u16 ntHeight = video::viewport_py() < 240 ? 240 : video::viewport_py();
-        return ntHeight - (static_cast<u16>(SplitRow()) << 3);
+        return ntHeight - splitPixelRow;
+    }
+
+    static u16 PreviewScrollYFor(const u8 splitRow) {
+        return PreviewScrollYForPixels(static_cast<u16>(splitRow) << 3);
+    }
+
+    static u16 PreviewScrollY() {
+        return PreviewScrollYFor(SplitRow());
     }
 
     constexpr u8 kSplitDelay = REGION ? 90 : 0;
     static void ApplySplit();
+
+    constexpr u8 kSplitLatency = REGION ? 4 : 3;
+
+    // Same reload-from-row math ::ArmSplitIRQ uses, parametrized so
+    // ::nmi_handler_lockAnim can re-arm against its own shrinking split row
+    // instead of the title menu's fixed ::SplitRow().
+    static void ArmSplitIRQForPixels(const u16 splitPixelRow) {
+        const u8 splitReload = splitPixelRow > kSplitLatency
+            ? static_cast<u8>(splitPixelRow - kSplitLatency) : 0;
+        mmc3::ScheduleScanlineIRQ(splitReload, {0, splitPixelRow});
+    }
+
+    static void ArmSplitIRQFor(const u8 splitRow) {
+        ArmSplitIRQForPixels(static_cast<u16>(splitRow) << 3);
+    }
+
+    // Same row->absolute-Y math ::ApplySplit uses, parametrized for the same
+    // reason as ::ArmSplitIRQFor above.
+    static u16 SplitYForPixels(const u16 splitPixelRow) {
+        return video::viewport_ty() < 30
+            ? static_cast<u16>(PreviewScrollYForPixels(splitPixelRow) + splitPixelRow)
+            : splitPixelRow;
+    }
+
+    static u16 SplitYFor(const u8 splitRow) {
+        return SplitYForPixels(static_cast<u16>(splitRow) << 3);
+    }
 
 
     TITLE NI void main() {
@@ -259,11 +311,7 @@ namespace title {
     }
 
     static void ArmSplitIRQ() {
-        const u16 splitPixelRow = static_cast<u16>(SplitRow()) << 3;
-        constexpr u8 kSplitLatency = REGION ? 4 : 3;
-        const u8 splitReload = splitPixelRow > kSplitLatency
-            ? static_cast<u8>(splitPixelRow - kSplitLatency) : 0;
-        mmc3::ScheduleScanlineIRQ(splitReload, {0, splitPixelRow});
+        ArmSplitIRQFor(SplitRow());
     }
 
     void nmi_handler() {
@@ -303,39 +351,107 @@ namespace title {
         pNMI = nmi_handler;
     }
 
+    // Current split position through the reveal animation below, in
+    // SCANLINES (not tile rows like ::SplitRow() -- stepping this one
+    // scanline at a time is the whole point, see ::nmi_handler_lockAnim).
+    // Starts at the title menu's own split row (converted to scanlines) and
+    // counts down to 0, so the preview band shrinks and the (now-blanked)
+    // menu band grows to fill the gap from the bottom up, one scanline at a
+    // time. NMI-internal only (read/written only inside the
+    // nmi_handler_lockAnim/irq_handler_lockAnim pair below), so plain
+    // statics, same as ::scratchpad's selector-tracking bytes -- no
+    // main-loop/NMI handoff to guard against here.
+    static u16 lockAnimScanline;
+    static u8  lockAnimFrame; // toggles 0/1: lockAnimScanline only steps on a 0->1 edge, i.e. every OTHER frame
+
     // One-shot: entered once Options is picked (see ::main). Clears the
     // title menu's arrow/text -- nothing is drawn in its place, this
-    // deliberately has no Options screen yet -- and disables the scanline
-    // split outright: with no UI band left to show, there's nothing left to
-    // scroll onto. The preview keeps filling the whole screen and animating
-    // every frame via ::nmi_handler_locked afterward, same as before, just
-    // without a split underneath it.
+    // deliberately has no Options screen yet -- and hands off to the reveal
+    // animation below. Still a full, un-shrunk split this frame: the
+    // shrinking starts on nmi_handler_lockAnim's next call.
     static void nmi_handler_lockOptions() {
         ppu::WriteSingleToNameTable(CurrentSelectorAddr(), chrHUDWhitespace_tile);
         gen::title::Erase_TitleOptions();
-        mmc3::AcknowledgeScanlineIRQ();
         oam::RefreshSprites(OAMBuffer);
-        ppu::SetScroll({0, PreviewScrollY()});
 
-        pIRQ = irq_handler_locked;
-        pNMI = nmi_handler_locked;
+        lockAnimScanline = static_cast<u16>(SplitRow()) << 3;
+        lockAnimFrame = 0;
+        ppu::SetScroll({0, PreviewScrollY()});
+        ArmSplitIRQ();
+
+        pNMI = nmi_handler_lockAnim;
+        pIRQ = irq_handler_lockAnim;
     }
 
-    // Steady state once locked: the preview keeps animating (sprites still
-    // refreshed, scroll still advances every frame) -- ::main's own
-    // ::optionsLocked check is what actually stops input from doing
-    // anything; this handler just never calls ArmSplitIRQ(), which is the
-    // only thing that distinguishes it from ::nmi_handler.
+    // The reveal itself: every OTHER frame (so one scanline per 2 frames --
+    // slow enough to read as a smooth scroll, not a jump cut), the split
+    // boundary rises by exactly one scanline, same way the ordinary title/
+    // gameOptions band is already split -- just walking that same Y-wrap
+    // further instead of holding it at ::SplitRow(). Since the menu band was
+    // already blanked (nmi_handler_lockOptions, above) and nothing else is
+    // drawn into it, what creeps up from the bottom is just whatever's left
+    // there: blank/black tiles, the UI's own backdrop. Stops shrinking once
+    // the split gets down to ::kSplitLatency scanlines -- any closer to the
+    // top and there isn't enough IRQ latency left to land the split reliably
+    // (the exact corruption ::ArmSplitIRQForPixels' own clamp already guards
+    // against for a single frame) -- and from there just hands off to
+    // ::nmi_handler_locked, which shows the UI nametable full-screen with no
+    // split left to do at all.
+    static void nmi_handler_lockAnim() {
+        oam::RefreshSprites(OAMBuffer);
+
+        if (lockAnimScanline <= kSplitLatency) {
+            mmc3::AcknowledgeScanlineIRQ();
+            ppu::SetScroll({static_cast<u16>(kMenuNT << 3), 0});
+
+            // The preview band she was standing on is gone -- the whole
+            // screen is the UI nametable from here on -- so there's no
+            // ground left to show her on. Same off-screen Y ::Clear() parks
+            // every sprite at before anything's drawn. (Belt and braces:
+            // ::UpdateMarySpriteY already hides her herself once her feet
+            // scroll past the top, well before this point is reached.)
+            OAMBuffer[0].y = OAMBuffer[1].y = 0xf0;
+
+            pNMI = nmi_handler_locked;
+            pIRQ = irq_handler_locked;
+            return;
+        }
+
+        if (lockAnimFrame == 0) --lockAnimScanline;
+        lockAnimFrame ^= 1;
+
+        ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
+        ArmSplitIRQForPixels(lockAnimScanline);
+        UpdateMarySpriteYForPixels(lockAnimScanline);
+    }
+
+    // The split half of the reveal: same job as ::ApplySplit (switch to the
+    // UI's nametable for everything below the split), just reading the
+    // animation's own shrinking ::lockAnimScanline instead of the title
+    // menu's fixed ::SplitRow().
+    static void irq_handler_lockAnim() {
+        mmc3::AcknowledgeScanlineIRQ();
+        tech::SpinWait(kSplitDelay);
+        ppu::SetScroll({static_cast<u16>(kMenuNT << 3), SplitYForPixels(lockAnimScanline)});
+    }
+
+    // Steady state once the reveal finishes: the split's gone, so the whole
+    // screen is just the UI nametable (physically $2400/$2C00 under the
+    // vertical mirroring ::main sets up -- ::kMenuNT's horizontal scroll is
+    // what actually lands on it, same as the ordinary menu band always did;
+    // "whatever that means" on a variadic target is exactly what ::kMenuNT
+    // already abstracts). Sprites still refresh every frame so OAM doesn't
+    // go stale, but there's nothing left to scroll -- X/Y are now constant.
     static void nmi_handler_locked() {
         oam::RefreshSprites(OAMBuffer);
-        ppu::SetScroll({0, PreviewScrollY()});
+        ppu::SetScroll({static_cast<u16>(kMenuNT << 3), 0});
     }
 
-    // Defensive only: once ArmSplitIRQ() stops being called (above), MMC3's
-    // scanline IRQ stays disabled and this should never fire. If a split was
-    // already in-flight the instant the lock engaged, it must NOT do what
-    // ::irq_handler does -- no ApplySplit(), i.e. no scroll onto the
-    // now-gone UI nametable -- so it just clears itself.
+    // Defensive only: with ArmSplitIRQ()/ArmSplitIRQFor() never called again
+    // after the reveal finishes, MMC3's scanline IRQ stays disabled and this
+    // should never fire. If one was already in-flight the instant the reveal
+    // finished, it must NOT do what ::irq_handler/::irq_handler_lockAnim do
+    // -- no further scroll write at all -- so it just clears itself.
     static void irq_handler_locked() {
         mmc3::AcknowledgeScanlineIRQ();
     }
@@ -353,11 +469,8 @@ namespace title {
         // menu nametable's row 0. The DS/GBA backends honour the handler's Y
         // (their gameplay follow camera needs that -- see ApplyHudSplit,
         // level.cpp), so here it has to name that same row explicitly: 240,
-        // not the split row.
-        const u16 splitY = video::viewport_ty() < 30
-            ? static_cast<u16>(PreviewScrollY() + (static_cast<u16>(SplitRow()) << 3))
-            : static_cast<u16>(SplitRow() << 3);
-        ppu::SetScroll({static_cast<u16>(kMenuNT << 3), splitY});
+        // not the split row. See ::SplitYFor for the shared math.
+        ppu::SetScroll({static_cast<u16>(kMenuNT << 3), SplitYFor(SplitRow())});
     }
 
     void InitTitleScreen() {
@@ -404,18 +517,42 @@ namespace title {
             ppu::pal::WriteFromBuffer(5, BGColours + 5, 3);
         });
 
-        const u16 groundNtRow = tyBase * 8 + (levelHeight - 2) * 16;
+        maryGroundNtRow = tyBase * 8 + (levelHeight - 2) * 16;
+        OAMBuffer[0].x = 32; OAMBuffer[1].x = 40;
+        UpdateMarySpriteY(SplitRow());
+    }
+
+    // Re-derives Mary's screen Y from ::maryGroundNtRow and whatever split
+    // position is live right now -- the scroll-dependent half of the math
+    // DrawLevelPreview used to do once, now shared with
+    // ::nmi_handler_lockAnim (via the Pixels form, for the same one-
+    // scanline-at-a-time reason as ::PreviewScrollYForPixels) so her feet
+    // track the band's rising split instead of staying nailed to its
+    // original position.
+    //
+    // Once the band scrolls far enough that her feet would go above row 0,
+    // she's hidden outright rather than clamped to row 0: ::maryGroundNtRow
+    // is wherever she stands within the ORIGINAL preview band, which is
+    // nowhere near the full scanline range the reveal animation walks
+    // through -- clamping instead of hiding left her pinned at the top edge
+    // for the back half of the animation while the background kept
+    // scrolling out from under her, well past the point her own ground had
+    // scrolled off-screen.
+    static void UpdateMarySpriteYForPixels(const u16 splitPixelRow) {
         // On the NES/PC/etc. the sprite Y is plain screen space, so the band's
         // scroll is subtracted here. The cropping backends (DS/DSi/GBA) instead
         // subtract the frame's scroll from EVERY sprite themselves (their
         // window transform -- see build_sprites in src/nds/video.cpp), so
         // subtracting it here as well counted it twice and put Mary at the top
         // of the screen; those targets want the un-scrolled Y.
-        const u16 spriteScroll = video::viewport_ty() < 30 ? 0 : PreviewScrollY();
-        const i16 rawFeetY    = static_cast<i16>(groundNtRow) - 16 - static_cast<i16>(spriteScroll);
-        const auto feetY      = static_cast<oam::oam_t>(rawFeetY < 0 ? 0 : rawFeetY);
+        const u16 spriteScroll = video::viewport_ty() < 30 ? 0 : PreviewScrollYForPixels(splitPixelRow);
+        const i16 rawFeetY    = static_cast<i16>(maryGroundNtRow) - 16 - static_cast<i16>(spriteScroll);
+        const auto feetY      = rawFeetY < 0 ? static_cast<oam::oam_t>(0xf0) : static_cast<oam::oam_t>(rawFeetY);
         OAMBuffer[0].y = feetY; OAMBuffer[1].y = feetY;
-        OAMBuffer[0].x = 32;    OAMBuffer[1].x = 40;
+    }
+
+    static void UpdateMarySpriteY(const u8 splitRow) {
+        UpdateMarySpriteYForPixels(static_cast<u16>(splitRow) << 3);
     }
 
     AI auto SelectorUpdate() -> void {
