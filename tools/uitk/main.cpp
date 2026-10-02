@@ -926,7 +926,8 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
 // every node.
 bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int nametable, const QString& target,
                    const QString& region, const QString& linkerPrefix, const QString& bssPrefix,
-                   const QString& dataPrefix, const QString& charmap) {
+                   const QString& dataPrefix, const QString& charmap, bool showTileGrid, int tileGridW,
+                   int tileGridH) {
     QJsonArray nodes;
     for (int i = 0; i < rootItem->childCount(); ++i) {
         nodes.append(serializeNode(rootItem->child(i)));
@@ -940,6 +941,12 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
     doc["bss_prefix"] = bssPrefix;
     doc["data_prefix"] = dataPrefix;
     doc["charmap"] = charmap;
+    // Editor-only canvas aid (see showTileGridCheck/tileGridWSpin/
+    // tileGridHSpin above) -- round-tripped here so it's remembered per
+    // scene, but never read by generateCode/exportOneTarget.
+    doc["showTileGrid"] = showTileGrid;
+    doc["tileGridW"] = tileGridW;
+    doc["tileGridH"] = tileGridH;
     doc["nodes"] = nodes;
 
     QFile file(path);
@@ -961,7 +968,7 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
 // absent (e.g. an older file).
 bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, QString& outTarget,
                    QString& outRegion, QString& outLinkerPrefix, QString& outBssPrefix, QString& outDataPrefix,
-                   QString& outCharmap) {
+                   QString& outCharmap, bool& outShowTileGrid, int& outTileGridW, int& outTileGridH) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
@@ -979,6 +986,11 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
     outBssPrefix = doc.object()["bss_prefix"].toString();
     outDataPrefix = doc.object()["data_prefix"].toString();
     outCharmap = doc.object()["charmap"].toString();
+    // Editor-only canvas aid -- missing from an older file, so it defaults
+    // to off at 1x1 rather than failing the whole parse.
+    outShowTileGrid = doc.object()["showTileGrid"].toBool(false);
+    outTileGridW = std::max(1, doc.object()["tileGridW"].toInt(1));
+    outTileGridH = std::max(1, doc.object()["tileGridH"].toInt(1));
     return true;
 }
 
@@ -1818,8 +1830,10 @@ class TileGridWidget : public QWidget {
 
 public:
     TileGridWidget(double tilePx, QTreeWidget* tree, QComboBox* targetCombo, QComboBox* regionCombo,
+                   QCheckBox* showTileGridCheck, QSpinBox* tileGridWSpin, QSpinBox* tileGridHSpin,
                    QWidget* parent = nullptr)
-        : QWidget(parent), tilePx_(tilePx), tree_(tree), targetCombo_(targetCombo), regionCombo_(regionCombo) {
+        : QWidget(parent), tilePx_(tilePx), tree_(tree), targetCombo_(targetCombo), regionCombo_(regionCombo),
+          showTileGridCheck_(showTileGridCheck), tileGridWSpin_(tileGridWSpin), tileGridHSpin_(tileGridHSpin) {
         // A monospace font from the OS, sized to fill most of a cell's
         // height -- its glyphs are narrower than they are tall, though, so
         // drawCellGlyph() additionally stretches each one horizontally to
@@ -1935,6 +1949,28 @@ protected:
             const QString name = bareName(item);
             for (int i = 0; i < name.length() && i < w; ++i) {
                 drawCellGlyph(painter, tileRect(x + i, y), name.at(i));
+            }
+        }
+
+        // Editor-only alignment aid (see showTileGridCheck/tileGridWSpin/
+        // tileGridHSpin) -- drawn last, on top of everything else, as thin
+        // translucent lines every tileGridWSpin_/tileGridHSpin_ tiles. Purely
+        // visual: it reads nothing but those three widgets, and nothing it
+        // draws here is ever part of what gets exported (see generateCode,
+        // which never touches this widget at all).
+        if (showTileGridCheck_ && showTileGridCheck_->isChecked()) {
+            const int cols = std::max(1, qRound(width() / tilePx_));
+            const int rows = std::max(1, qRound(height() / tilePx_));
+            const int stepX = std::max(1, tileGridWSpin_->value());
+            const int stepY = std::max(1, tileGridHSpin_->value());
+            painter.setPen(QPen(QColor(255, 255, 0, 160), 1));
+            for (int col = stepX; col < cols; col += stepX) {
+                const int lineX = tileRect(col, 0).left();
+                painter.drawLine(lineX, 0, lineX, height());
+            }
+            for (int row = stepY; row < rows; row += stepY) {
+                const int lineY = tileRect(0, row).top();
+                painter.drawLine(0, lineY, width(), lineY);
             }
         }
     }
@@ -2094,6 +2130,9 @@ private:
     QTreeWidget* tree_;
     QComboBox* targetCombo_;
     QComboBox* regionCombo_;
+    QCheckBox* showTileGridCheck_;
+    QSpinBox* tileGridWSpin_;
+    QSpinBox* tileGridHSpin_;
     QFont glyphFont_;
     int naturalGlyphWidthPx_ = 1;
     int naturalGlyphHeightPx_ = 1;
@@ -2111,6 +2150,13 @@ struct Sidebar {
     QLineEdit* yEdit;
     QComboBox* targetCombo;
     QComboBox* regionCombo;
+
+    // Editor-only tile-grid overlay controls (see showTileGridCheck above) --
+    // exposed so createViewportPanel's TileGridWidget can read them, same as
+    // targetCombo/regionCombo.
+    QCheckBox* showTileGridCheck;
+    QSpinBox* tileGridWSpin;
+    QSpinBox* tileGridHSpin;
 
     // Exposed for the headless CLI export path (see runCliExport), which
     // needs the same load/resolve/export machinery the File/Export menu
@@ -2283,6 +2329,29 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                              "unencoded C string instead (unless a node's own Charmap Override sets one). "
                              "A textbox's Charmap Override property replaces this default for that node.");
 
+    // Purely a canvas aid, scene-wide like the fields above -- toggles an
+    // overlay of grid lines every `tileGridWSpin`/`tileGridHSpin` tiles over
+    // the viewport (see TileGridWidget::paintEvent) to help line up
+    // components by eye. Unlike everything else in this group, none of this
+    // ever reaches generateCode/exportOneTarget -- it round-trips through the
+    // .uis file (so it's remembered per scene) but has no effect on, and
+    // never appears in, the generated .hpp/.cpp. Default 1x1 (every tile
+    // boundary); either axis can be grown up to the viewport's own tile
+    // count (e.g. 8x1, to check a single row/column alignment).
+    auto* showTileGridCheck = new QCheckBox(content);
+    showTileGridCheck->setToolTip("Overlays grid lines on the canvas every N tiles (set below) -- an editor-only "
+                                   "aid with no effect on exported code.");
+    auto* tileGridWSpin = new QSpinBox(content);
+    tileGridWSpin->setRange(1, std::max(1, maxTilesX));
+    tileGridWSpin->setValue(1);
+    tileGridWSpin->setSuffix(" tiles");
+    tileGridWSpin->setToolTip("Grid overlay spacing, in tiles, along X.");
+    auto* tileGridHSpin = new QSpinBox(content);
+    tileGridHSpin->setRange(1, std::max(1, maxTilesY));
+    tileGridHSpin->setValue(1);
+    tileGridHSpin->setSuffix(" tiles");
+    tileGridHSpin->setToolTip("Grid overlay spacing, in tiles, along Y.");
+
     // --- File menu: New / Open / Save / Save As, plus unsaved-changes
     // tracking so those and closing the window never silently discard work.
     // An empty currentPath means "no file yet" -- a new scene doesn't ask
@@ -2352,7 +2421,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     });
 
     auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, nametableCombo, targetCombo, regionCombo,
-                     linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit]() {
+                     linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, showTileGridCheck,
+                     tileGridWSpin, tileGridHSpin]() {
         QString path = QFileDialog::getSaveFileName(window, "Save Scene", QString(), "UI Scene (*.uis)");
         if (path.isEmpty()) {
             return false;
@@ -2362,7 +2432,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         }
         if (!writeUisFile(path, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
                            regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text(),
-                           dataPrefixEdit->text(), charmapEdit->text())) {
+                           dataPrefixEdit->text(), charmapEdit->text(), showTileGridCheck->isChecked(),
+                           tileGridWSpin->value(), tileGridHSpin->value())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + path);
             return false;
         }
@@ -2373,13 +2444,15 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     };
 
     auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window, nametableCombo, targetCombo,
-                   regionCombo, linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit]() {
+                   regionCombo, linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, showTileGridCheck,
+                   tileGridWSpin, tileGridHSpin]() {
         if (currentPath->isEmpty()) {
             return doSaveAs();
         }
         if (!writeUisFile(*currentPath, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
                            regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text(),
-                           dataPrefixEdit->text(), charmapEdit->text())) {
+                           dataPrefixEdit->text(), charmapEdit->text(), showTileGridCheck->isChecked(),
+                           tileGridWSpin->value(), tileGridHSpin->value())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + *currentPath);
             return false;
         }
@@ -2412,7 +2485,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // through a file-picker dialog or the unsaved-changes prompt.
     auto loadSceneFromFile = [tree, rootItem, currentPath, dirty, loading, updateTitle, resolveAllPtr,
                                nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit,
-                               dataPrefixEdit, charmapEdit](const QString& path) -> bool {
+                               dataPrefixEdit, charmapEdit, showTileGridCheck, tileGridWSpin,
+                               tileGridHSpin](const QString& path) -> bool {
         // Parse before touching the tree, so a corrupt/unreadable file never
         // wipes out whatever scene was already open.
         QJsonArray nodes;
@@ -2423,7 +2497,11 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         QString bssPrefix;
         QString dataPrefix;
         QString charmap;
-        if (!parseUisFile(path, nodes, nametable, target, region, linkerPrefix, bssPrefix, dataPrefix, charmap)) {
+        bool showTileGrid = false;
+        int tileGridW = 8;
+        int tileGridH = 8;
+        if (!parseUisFile(path, nodes, nametable, target, region, linkerPrefix, bssPrefix, dataPrefix, charmap,
+                           showTileGrid, tileGridW, tileGridH)) {
             return false;
         }
         // An unrecognized or missing target/region (an older file, or a
@@ -2443,6 +2521,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         bssPrefixEdit->setText(bssPrefix);
         dataPrefixEdit->setText(dataPrefix);
         charmapEdit->setText(charmap);
+        showTileGridCheck->setChecked(showTileGrid);
+        tileGridWSpin->setValue(std::min(tileGridW, tileGridWSpin->maximum()));
+        tileGridHSpin->setValue(std::min(tileGridH, tileGridHSpin->maximum()));
         *loading = false;
         (*resolveAllPtr)();
         tree->expandItem(rootItem);
@@ -2548,6 +2629,11 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                       [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
     QObject::connect(charmapEdit, &QLineEdit::textChanged,
                       [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
+    QObject::connect(showTileGridCheck, &QCheckBox::toggled, [markDirtyFromCombo](bool) { markDirtyFromCombo(); });
+    QObject::connect(tileGridWSpin, qOverload<int>(&QSpinBox::valueChanged),
+                      [markDirtyFromCombo](int) { markDirtyFromCombo(); });
+    QObject::connect(tileGridHSpin, qOverload<int>(&QSpinBox::valueChanged),
+                      [markDirtyFromCombo](int) { markDirtyFromCombo(); });
 
     // --- Properties panel: shows/edits the selected node's geometry,
     // alignment, and hide-on-Target/Region lists. Hidden entirely (not just
@@ -3491,14 +3577,27 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     sceneForm->addRow("Default Charmap:", charmapEdit);
     layout->addWidget(sceneGroup);
 
-    // Global/Scene are scene-wide properties, not the selected node's -- they
-    // only make sense to show/edit while the root (the scene itself) is
-    // selected, same as how the node Properties panel above only shows for a
-    // prefixed node.
-    auto updateGlobalSceneVisibility = [globalGroup, sceneGroup, rootItem](QTreeWidgetItem* current) {
+    // Separate from Global/Scene (which are both exported in one way or
+    // another) specifically so nothing in here is ever mistaken for an
+    // export setting: Editor holds purely visual canvas aids, round-tripped
+    // through the .uis file for convenience but never read by
+    // generateCode/exportOneTarget.
+    auto* editorGroup = new QGroupBox("Editor", content);
+    auto* editorForm = new QFormLayout(editorGroup);
+    editorForm->addRow("Show Tile Grid:", showTileGridCheck);
+    editorForm->addRow("Grid Width:", tileGridWSpin);
+    editorForm->addRow("Grid Height:", tileGridHSpin);
+    layout->addWidget(editorGroup);
+
+    // Global/Scene/Editor are scene-wide properties, not the selected node's
+    // -- they only make sense to show/edit while the root (the scene itself)
+    // is selected, same as how the node Properties panel above only shows
+    // for a prefixed node.
+    auto updateGlobalSceneVisibility = [globalGroup, sceneGroup, editorGroup, rootItem](QTreeWidgetItem* current) {
         const bool onRoot = (current == rootItem);
         globalGroup->setVisible(onRoot);
         sceneGroup->setVisible(onRoot);
+        editorGroup->setVisible(onRoot);
     };
     QObject::connect(tree, &QTreeWidget::currentItemChanged,
                       [updateGlobalSceneVisibility](QTreeWidgetItem* current, QTreeWidgetItem*) {
@@ -3507,6 +3606,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     updateGlobalSceneVisibility(tree->currentItem());
 
     return {content, tree, xEdit, yEdit, targetCombo, regionCombo,
+             showTileGridCheck, tileGridWSpin, tileGridHSpin,
              sceneName, loadSceneFromFile, hasUnresolvedErrors, exportOneTarget,
              doSave, doSaveAs, confirmDiscard, displayName};
 }
@@ -3524,8 +3624,10 @@ struct ViewportPanel {
 };
 
 ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidget* tree, QLineEdit* xEdit,
-                                   QLineEdit* yEdit, QComboBox* targetCombo, QComboBox* regionCombo) {
-    auto* grid = new TileGridWidget(tilePx, tree, targetCombo, regionCombo);
+                                   QLineEdit* yEdit, QComboBox* targetCombo, QComboBox* regionCombo,
+                                   QCheckBox* showTileGridCheck, QSpinBox* tileGridWSpin, QSpinBox* tileGridHSpin) {
+    auto* grid = new TileGridWidget(tilePx, tree, targetCombo, regionCombo, showTileGridCheck, tileGridWSpin,
+                                     tileGridHSpin);
 
     // Any change to a component's data (position, size, alignment, text,
     // name) goes through the tree item's setData(), which Qt reports via
@@ -3540,6 +3642,13 @@ ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidge
     // either combo changes, without anything on the tree itself changing.
     QObject::connect(targetCombo, qOverload<int>(&QComboBox::currentIndexChanged), grid, [grid](int) { grid->update(); });
     QObject::connect(regionCombo, qOverload<int>(&QComboBox::currentIndexChanged), grid, [grid](int) { grid->update(); });
+
+    // Same idea for the tile-grid overlay itself -- toggling it, or changing
+    // its spacing, only touches these three widgets directly (see
+    // TileGridWidget::paintEvent), so it needs its own repaint hookup too.
+    QObject::connect(showTileGridCheck, &QCheckBox::toggled, grid, [grid](bool) { grid->update(); });
+    QObject::connect(tileGridWSpin, qOverload<int>(&QSpinBox::valueChanged), grid, [grid](int) { grid->update(); });
+    QObject::connect(tileGridHSpin, qOverload<int>(&QSpinBox::valueChanged), grid, [grid](int) { grid->update(); });
 
     // Deleting (or otherwise structurally adding/removing) a node doesn't
     // go through setData() at all, so itemChanged alone never fires for it
@@ -3619,7 +3728,8 @@ struct TabManager {
 
         auto viewportPtr = std::make_shared<ViewportPanel>(
             createViewportPanel(window, tilePx, sidebar.tree, sidebar.xEdit, sidebar.yEdit, sidebar.targetCombo,
-                                 sidebar.regionCombo));
+                                 sidebar.regionCombo, sidebar.showTileGridCheck, sidebar.tileGridWSpin,
+                                 sidebar.tileGridHSpin));
 
         // Pushed before either widget is added below, so the currentChanged
         // handler main() wires up (which addTab can trigger synchronously)

@@ -11,25 +11,31 @@
  * entry points directly, no farcall wrapper needed.
  */
 
-/* This demo's own ROM size -- a project choice, not an MMC3 fact. 128 KiB
- * (16 banks), doubled from 64 KiB for headroom for new banked domains.
- * Any power of 2 from 32 up to 512 KiB (MMC3's hardware max) works with no
- * other edit -- mmc3-helper.ld anchors the resident image to the TOP of the
- * file and pads the rest into prg_rom_spare.
+/* This demo's own ROM size -- a project choice, not an MMC3 fact. 256 KiB
+ * (32 banks), doubled from 128 KiB for headroom for new banked domains (see
+ * the named prg_rom_empty_N placeholder banks below). Any power of 2 from 32
+ * up to 512 KiB (MMC3's hardware max) works with no other edit --
+ * mmc3-helper.ld anchors the resident image to the TOP of the file and pads
+ * the rest into prg_rom_spare.
  *
  * TRACK THIS BY HAND: demo/src/header.hpp's HEADER() prg_rom_bytes argument
  * must match (the NES2.0 header can't see linker symbols). Growing this does
  * NOT grow the flat resident image ($8000-$DFFF) -- new banks are only
  * reachable through MMC3_BANKED() domains. */
-PROVIDE(__prg_rom_size = 128);
+PROVIDE(__prg_rom_size = 256);
 PROVIDE(__chr_rom_size = 8);
 
-/* Eight banked domains, claiming banks that would otherwise be prg_rom_spare:
- * level code (0), level data (1), audio (2), audio_data (3), cold (4),
- * actors (5), level's dynamic-plane source (6), level graphics (7) -- see
- * banks.hpp. MUST be set before `INCLUDE mmc3-helper.ld`: PROVIDE() only
+/* Eight real banked domains, claiming banks that would otherwise be
+ * prg_rom_spare: level code (0), level data (1), audio (2), audio_data (3),
+ * cold (4), actors (5), level's dynamic-plane source (6), level graphics (7)
+ * -- see banks.hpp. Plus 22 placeholder banks (8-29), named .prg_rom_empty_0
+ * through .prg_rom_empty_21 below, carved out of what would otherwise be
+ * anonymous prg_rom_spare padding so the doubled ROM's extra space is
+ * individually addressable instead of one unstructured blob -- a bank can be
+ * converted into a real domain later by renaming its section, no layout
+ * rework needed. MUST be set before `INCLUDE mmc3-helper.ld`: PROVIDE() only
  * takes its first value. */
-PROVIDE(__mmc3_reserved_banks = 8);
+PROVIDE(__mmc3_reserved_banks = 30);
 
 /* ONE resident window ($C000-$DFFF), not the default three. Both switchable
  * windows go to the level domain below (16 KiB contiguous, since no farcall
@@ -103,6 +109,43 @@ MEMORY {
    * mmc3::CallInBlock<level_graphics_tag>, switched in and back out around
    * the reads that need it. See banks.hpp's ::level_graphics_tag. */
   prg_rom_level_graphics : ORIGIN = 0x0008a000, LENGTH = 0x2000  /* bank 7, window 2 */
+
+  /* OPTIONS MENU: bank 8, window 1. uitk-generated options-scene code + data
+   * (demo/ui/options.uis: linker_prefix "OPTIONS", data_prefix
+   * "OPTIONS_DATA") -- small enough to share one bank, same "distinct
+   * section NAME, same physical bank" pattern as ::COLD/::TITLE (banks.hpp),
+   * so OPTIONS_DATA's literal section name just needs the ".prg_rom_options"
+   * prefix to fall under this rule's existing *.* wildcard below. Carved out
+   * of what was prg_rom_empty_0 -- see __mmc3_reserved_banks's comment for
+   * why these placeholder banks exist named rather than as anonymous
+   * prg_rom_spare. */
+  prg_rom_options : ORIGIN = 0x00098000, LENGTH = 0x2000  /* bank 8, window 1 */
+
+  /* PLACEHOLDER BANKS: 9-29, unused for now. Named individually (instead of
+   * left as anonymous prg_rom_spare) so each is addressable on its own and
+   * visible in the space report -- see the comment above
+   * __mmc3_reserved_banks for why. */
+  prg_rom_empty_1 : ORIGIN = 0x000a8000, LENGTH = 0x2000  /* bank 9, window 1 */
+  prg_rom_empty_2 : ORIGIN = 0x000b8000, LENGTH = 0x2000  /* bank 10, window 1 */
+  prg_rom_empty_3 : ORIGIN = 0x000c8000, LENGTH = 0x2000  /* bank 11, window 1 */
+  prg_rom_empty_4 : ORIGIN = 0x000d8000, LENGTH = 0x2000  /* bank 12, window 1 */
+  prg_rom_empty_5 : ORIGIN = 0x000e8000, LENGTH = 0x2000  /* bank 13, window 1 */
+  prg_rom_empty_6 : ORIGIN = 0x000f8000, LENGTH = 0x2000  /* bank 14, window 1 */
+  prg_rom_empty_7 : ORIGIN = 0x00108000, LENGTH = 0x2000  /* bank 15, window 1 */
+  prg_rom_empty_8 : ORIGIN = 0x00118000, LENGTH = 0x2000  /* bank 16, window 1 */
+  prg_rom_empty_9 : ORIGIN = 0x00128000, LENGTH = 0x2000  /* bank 17, window 1 */
+  prg_rom_empty_10 : ORIGIN = 0x00138000, LENGTH = 0x2000  /* bank 18, window 1 */
+  prg_rom_empty_11 : ORIGIN = 0x00148000, LENGTH = 0x2000  /* bank 19, window 1 */
+  prg_rom_empty_12 : ORIGIN = 0x00158000, LENGTH = 0x2000  /* bank 20, window 1 */
+  prg_rom_empty_13 : ORIGIN = 0x00168000, LENGTH = 0x2000  /* bank 21, window 1 */
+  prg_rom_empty_14 : ORIGIN = 0x00178000, LENGTH = 0x2000  /* bank 22, window 1 */
+  prg_rom_empty_15 : ORIGIN = 0x00188000, LENGTH = 0x2000  /* bank 23, window 1 */
+  prg_rom_empty_16 : ORIGIN = 0x00198000, LENGTH = 0x2000  /* bank 24, window 1 */
+  prg_rom_empty_17 : ORIGIN = 0x001a8000, LENGTH = 0x2000  /* bank 25, window 1 */
+  prg_rom_empty_18 : ORIGIN = 0x001b8000, LENGTH = 0x2000  /* bank 26, window 1 */
+  prg_rom_empty_19 : ORIGIN = 0x001c8000, LENGTH = 0x2000  /* bank 27, window 1 */
+  prg_rom_empty_20 : ORIGIN = 0x001d8000, LENGTH = 0x2000  /* bank 28, window 1 */
+  prg_rom_empty_21 : ORIGIN = 0x001e8000, LENGTH = 0x2000  /* bank 29, window 1 */
 }
 
 /* Published for the build-time space report -- see mmc3-helper.ld's own
@@ -123,6 +166,50 @@ __space_origin_prg_rom_level_dynamic = ORIGIN(prg_rom_level_dynamic);
 __space_length_prg_rom_level_dynamic = LENGTH(prg_rom_level_dynamic);
 __space_origin_prg_rom_level_graphics = ORIGIN(prg_rom_level_graphics);
 __space_length_prg_rom_level_graphics = LENGTH(prg_rom_level_graphics);
+__space_origin_prg_rom_options = ORIGIN(prg_rom_options);
+__space_length_prg_rom_options = LENGTH(prg_rom_options);
+__space_origin_prg_rom_empty_1 = ORIGIN(prg_rom_empty_1);
+__space_length_prg_rom_empty_1 = LENGTH(prg_rom_empty_1);
+__space_origin_prg_rom_empty_2 = ORIGIN(prg_rom_empty_2);
+__space_length_prg_rom_empty_2 = LENGTH(prg_rom_empty_2);
+__space_origin_prg_rom_empty_3 = ORIGIN(prg_rom_empty_3);
+__space_length_prg_rom_empty_3 = LENGTH(prg_rom_empty_3);
+__space_origin_prg_rom_empty_4 = ORIGIN(prg_rom_empty_4);
+__space_length_prg_rom_empty_4 = LENGTH(prg_rom_empty_4);
+__space_origin_prg_rom_empty_5 = ORIGIN(prg_rom_empty_5);
+__space_length_prg_rom_empty_5 = LENGTH(prg_rom_empty_5);
+__space_origin_prg_rom_empty_6 = ORIGIN(prg_rom_empty_6);
+__space_length_prg_rom_empty_6 = LENGTH(prg_rom_empty_6);
+__space_origin_prg_rom_empty_7 = ORIGIN(prg_rom_empty_7);
+__space_length_prg_rom_empty_7 = LENGTH(prg_rom_empty_7);
+__space_origin_prg_rom_empty_8 = ORIGIN(prg_rom_empty_8);
+__space_length_prg_rom_empty_8 = LENGTH(prg_rom_empty_8);
+__space_origin_prg_rom_empty_9 = ORIGIN(prg_rom_empty_9);
+__space_length_prg_rom_empty_9 = LENGTH(prg_rom_empty_9);
+__space_origin_prg_rom_empty_10 = ORIGIN(prg_rom_empty_10);
+__space_length_prg_rom_empty_10 = LENGTH(prg_rom_empty_10);
+__space_origin_prg_rom_empty_11 = ORIGIN(prg_rom_empty_11);
+__space_length_prg_rom_empty_11 = LENGTH(prg_rom_empty_11);
+__space_origin_prg_rom_empty_12 = ORIGIN(prg_rom_empty_12);
+__space_length_prg_rom_empty_12 = LENGTH(prg_rom_empty_12);
+__space_origin_prg_rom_empty_13 = ORIGIN(prg_rom_empty_13);
+__space_length_prg_rom_empty_13 = LENGTH(prg_rom_empty_13);
+__space_origin_prg_rom_empty_14 = ORIGIN(prg_rom_empty_14);
+__space_length_prg_rom_empty_14 = LENGTH(prg_rom_empty_14);
+__space_origin_prg_rom_empty_15 = ORIGIN(prg_rom_empty_15);
+__space_length_prg_rom_empty_15 = LENGTH(prg_rom_empty_15);
+__space_origin_prg_rom_empty_16 = ORIGIN(prg_rom_empty_16);
+__space_length_prg_rom_empty_16 = LENGTH(prg_rom_empty_16);
+__space_origin_prg_rom_empty_17 = ORIGIN(prg_rom_empty_17);
+__space_length_prg_rom_empty_17 = LENGTH(prg_rom_empty_17);
+__space_origin_prg_rom_empty_18 = ORIGIN(prg_rom_empty_18);
+__space_length_prg_rom_empty_18 = LENGTH(prg_rom_empty_18);
+__space_origin_prg_rom_empty_19 = ORIGIN(prg_rom_empty_19);
+__space_length_prg_rom_empty_19 = LENGTH(prg_rom_empty_19);
+__space_origin_prg_rom_empty_20 = ORIGIN(prg_rom_empty_20);
+__space_length_prg_rom_empty_20 = LENGTH(prg_rom_empty_20);
+__space_origin_prg_rom_empty_21 = ORIGIN(prg_rom_empty_21);
+__space_length_prg_rom_empty_21 = LENGTH(prg_rom_empty_21);
 
 SECTIONS {
   /* Level's interrupt path needs no rule at all: nmi_handler, irq_handler and
@@ -139,6 +226,31 @@ SECTIONS {
   .prg_rom_actors : { *(.prg_rom_actors .prg_rom_actors.*) } >prg_rom_actors
   .prg_rom_level_dynamic : { *(.prg_rom_level_dynamic .prg_rom_level_dynamic.*) } >prg_rom_level_dynamic
   .prg_rom_level_graphics : { *(.prg_rom_level_graphics .prg_rom_level_graphics.*) } >prg_rom_level_graphics
+
+  /* .* wildcard covers OPTIONS_DATA too, same as LEVEL_CODE/COLD/ACTORS'
+   * own rules -- see this bank's MEMORY comment above. */
+  .prg_rom_options : { *(.prg_rom_options .prg_rom_options.*) } >prg_rom_options
+  .prg_rom_empty_1 : { *(.prg_rom_empty_1 .prg_rom_empty_1.*) } >prg_rom_empty_1
+  .prg_rom_empty_2 : { *(.prg_rom_empty_2 .prg_rom_empty_2.*) } >prg_rom_empty_2
+  .prg_rom_empty_3 : { *(.prg_rom_empty_3 .prg_rom_empty_3.*) } >prg_rom_empty_3
+  .prg_rom_empty_4 : { *(.prg_rom_empty_4 .prg_rom_empty_4.*) } >prg_rom_empty_4
+  .prg_rom_empty_5 : { *(.prg_rom_empty_5 .prg_rom_empty_5.*) } >prg_rom_empty_5
+  .prg_rom_empty_6 : { *(.prg_rom_empty_6 .prg_rom_empty_6.*) } >prg_rom_empty_6
+  .prg_rom_empty_7 : { *(.prg_rom_empty_7 .prg_rom_empty_7.*) } >prg_rom_empty_7
+  .prg_rom_empty_8 : { *(.prg_rom_empty_8 .prg_rom_empty_8.*) } >prg_rom_empty_8
+  .prg_rom_empty_9 : { *(.prg_rom_empty_9 .prg_rom_empty_9.*) } >prg_rom_empty_9
+  .prg_rom_empty_10 : { *(.prg_rom_empty_10 .prg_rom_empty_10.*) } >prg_rom_empty_10
+  .prg_rom_empty_11 : { *(.prg_rom_empty_11 .prg_rom_empty_11.*) } >prg_rom_empty_11
+  .prg_rom_empty_12 : { *(.prg_rom_empty_12 .prg_rom_empty_12.*) } >prg_rom_empty_12
+  .prg_rom_empty_13 : { *(.prg_rom_empty_13 .prg_rom_empty_13.*) } >prg_rom_empty_13
+  .prg_rom_empty_14 : { *(.prg_rom_empty_14 .prg_rom_empty_14.*) } >prg_rom_empty_14
+  .prg_rom_empty_15 : { *(.prg_rom_empty_15 .prg_rom_empty_15.*) } >prg_rom_empty_15
+  .prg_rom_empty_16 : { *(.prg_rom_empty_16 .prg_rom_empty_16.*) } >prg_rom_empty_16
+  .prg_rom_empty_17 : { *(.prg_rom_empty_17 .prg_rom_empty_17.*) } >prg_rom_empty_17
+  .prg_rom_empty_18 : { *(.prg_rom_empty_18 .prg_rom_empty_18.*) } >prg_rom_empty_18
+  .prg_rom_empty_19 : { *(.prg_rom_empty_19 .prg_rom_empty_19.*) } >prg_rom_empty_19
+  .prg_rom_empty_20 : { *(.prg_rom_empty_20 .prg_rom_empty_20.*) } >prg_rom_empty_20
+  .prg_rom_empty_21 : { *(.prg_rom_empty_21 .prg_rom_empty_21.*) } >prg_rom_empty_21
 }
 
 /* Moves the C writable arena (.data/.bss/heap/soft stack) into PRG-RAM
@@ -215,6 +327,28 @@ OUTPUT_FORMAT {
   FULL(prg_rom_actors)
   FULL(prg_rom_level_dynamic)
   FULL(prg_rom_level_graphics)
+  FULL(prg_rom_options)
+  FULL(prg_rom_empty_1)
+  FULL(prg_rom_empty_2)
+  FULL(prg_rom_empty_3)
+  FULL(prg_rom_empty_4)
+  FULL(prg_rom_empty_5)
+  FULL(prg_rom_empty_6)
+  FULL(prg_rom_empty_7)
+  FULL(prg_rom_empty_8)
+  FULL(prg_rom_empty_9)
+  FULL(prg_rom_empty_10)
+  FULL(prg_rom_empty_11)
+  FULL(prg_rom_empty_12)
+  FULL(prg_rom_empty_13)
+  FULL(prg_rom_empty_14)
+  FULL(prg_rom_empty_15)
+  FULL(prg_rom_empty_16)
+  FULL(prg_rom_empty_17)
+  FULL(prg_rom_empty_18)
+  FULL(prg_rom_empty_19)
+  FULL(prg_rom_empty_20)
+  FULL(prg_rom_empty_21)
   FULL(prg_rom_spare)
   FULL(prg_rom_switchable)
   FULL(prg_rom_fixed)

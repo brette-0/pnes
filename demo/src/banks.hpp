@@ -90,6 +90,15 @@ template <> struct mmc3::bank_layout<actor_tag> {
 
 #define LEVEL_GRAPHICS CREATE_SEGMENT_KEYWORD(".prg_rom_level_graphics")
 
+// OPTIONS/OPTIONS_DATA are NOT defined here -- demo/gen/options/*/options.hpp
+// (uitk-generated, from demo/ui/options.uis) is a standalone header that
+// never includes banks.hpp, so CMakeLists.txt feeds them in as whole compile
+// definitions instead, same mechanism as TITLE/TITLE_DATA/SYSMEM (see its own
+// comment, "TITLE / SYSMEM: placement for uitk-generated UI code"). Unlike
+// TITLE, there is no per-developer bank choice to make for OPTIONS: it's
+// hardcoded in CMakeLists.txt to demo/link.ld's own dedicated
+// prg_rom_options bank, not read from local.cmake.
+
 // ONE shared switch/restore body for window 2 (R7), defined once in
 // banks.cpp -- ordinary (non-template) function, so it exists exactly once
 // in the final binary no matter how many call sites use it. This replaces

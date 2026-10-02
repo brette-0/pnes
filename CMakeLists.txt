@@ -913,10 +913,19 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # the same story: title.cpp's own #error guard on it exists for exactly
     # this reason -- catch a compile path that forgot it, loudly, instead of
     # a confusing "file not found" from the #include STRCAT(...) below it.
+    # OPTIONS/OPTIONS_DATA: same mechanism as TITLE/TITLE_DATA above
+    # (uitk-generated demo/gen/options/*/options.hpp needs them as whole
+    # compile definitions, not a header include), but with no local.cmake
+    # variable behind them -- the options scene has no per-developer bank
+    # choice, it always lives in demo/link.ld's own dedicated prg_rom_options
+    # bank (one of the named placeholder banks carved out when PRG-ROM was
+    # doubled to 256 KiB), so the section name is a literal here instead.
     set(DEMO_PLACEMENT_DEFINES
             "TITLE=CREATE_SEGMENT_KEYWORD(\"${TITLE}\")"
             "TITLE_DATA=CREATE_SEGMENT_KEYWORD(\"${TITLE}.rodata\")"
-            "SYSMEM=CREATE_SEGMENT_KEYWORD(\"${SYSMEM}\")")
+            "SYSMEM=CREATE_SEGMENT_KEYWORD(\"${SYSMEM}\")"
+            "OPTIONS=CREATE_SEGMENT_KEYWORD(\".prg_rom_options\")"
+            "OPTIONS_DATA=CREATE_SEGMENT_KEYWORD(\".prg_rom_options.rodata\")")
     list(TRANSFORM DEMO_PLACEMENT_DEFINES PREPEND "-D" OUTPUT_VARIABLE DEMO_PLACEMENT_FLAGS)
 
     # demo/gen/title/ holds one uitk-generated title.cpp per console, all

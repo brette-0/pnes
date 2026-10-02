@@ -44,6 +44,13 @@ namespace title {
     // `atomic`, technology.hpp: volatile on NES, true atomic elsewhere).
     static atomic bool playModeActive = false;
 
+    // Set once Options is chosen and never cleared: a deliberate one-way
+    // lock (there's no Options screen built yet -- see ::nmi_handler_lockOptions).
+    // Written from the main loop, read from main loop only (unlike
+    // playModeActive, no NMI handler reads it), but kept atomic for the same
+    // reason/consistency.
+    static atomic bool optionsLocked = false;
+
     // Nametable address of the arrow slot for option `i` of a generated
     // SingleChoice: two tiles left of that option's anchor. Reads .x/.y
     // individually -- `_options` is `atomic` (volatile) on a variadic target,
@@ -99,6 +106,9 @@ namespace title {
     static NI void DrawLevelPreview();
     static void nmi_handler_drawPlayMode();
     static void nmi_handler_drawMenu();
+    static void nmi_handler_lockOptions();
+    static void nmi_handler_locked();
+    static void irq_handler_locked();
 
     // Column where the menu/play-mode nametable begins: one nametable's width
     // to the right of nametable A, computed at runtime rather than a
@@ -195,45 +205,52 @@ namespace title {
             const u8 pressed = inputs & static_cast<u8>(~prevInputs); // strobe: only the frame a button goes down
             prevInputs = inputs;
 
-            const u8 lastOption = ActiveOption();
-            if (playModeActive) gen::gameOptions::Pass_gameOptions(pressed);
-            else                gen::title::Pass_TitleOptions(pressed);
-            if (ActiveOption() != lastOption) MoveSelector(ActiveArrowAddr());
+            if (!optionsLocked) {
+                const u8 lastOption = ActiveOption();
+                if (playModeActive) gen::gameOptions::Pass_gameOptions(pressed);
+                else                gen::title::Pass_TitleOptions(pressed);
+                if (ActiveOption() != lastOption) MoveSelector(ActiveArrowAddr());
 
-            if (pressed & input::A) {
-                if (playModeActive) {
+                if (pressed & input::A) {
+                    if (playModeActive) {
 #ifdef PLAYER2_SUPPORTED
-                    level::multiplayer = gen::gameOptions::gameOptions_option != 0;
+                        level::multiplayer = gen::gameOptions::gameOptions_option != 0;
 #endif
-                    ppu::PPUMASK = 0;
-                    gameMode = eGameModes::Level;
-                    return;
-                }
+                        ppu::PPUMASK = 0;
+                        gameMode = eGameModes::Level;
+                        return;
+                    }
 
-                switch (gen::title::TitleOptions_option) {
-                    case NewGame:
-                    case Continue:
-                        // State first, NMI handler last: the handler reads it.
-                        playModeActive = true;
-                        pNMI = nmi_handler_drawPlayMode;
-                        break;
+                    switch (gen::title::TitleOptions_option) {
+                        case NewGame:
+                        case Continue:
+                            // State first, NMI handler last: the handler reads it.
+                            playModeActive = true;
+                            pNMI = nmi_handler_drawPlayMode;
+                            break;
 
-                    case Options:
-                        break;
+                        case Options:
+                            // No Options screen built yet -- rather than a
+                            // silent no-op, freeze input here for good: same
+                            // state-first-NMI-last ordering as above.
+                            optionsLocked = true;
+                            pNMI = nmi_handler_lockOptions;
+                            break;
 
 #if defined(TARGET_MACOS) || defined(TARGET_WINDOWS) || defined(TARGET_LINUX)
-                    case Quit:
-                        quit = true;
-                        return;
+                        case Quit:
+                            quit = true;
+                            return;
 #endif
 
-                    default: ;
+                        default: ;
+                    }
                 }
-            }
 
-            if (pressed & input::B && playModeActive) {
-                playModeActive = false;
-                pNMI = nmi_handler_drawMenu;
+                if (pressed & input::B && playModeActive) {
+                    playModeActive = false;
+                    pNMI = nmi_handler_drawMenu;
+                }
             }
 
             video::WaitForPresent();
@@ -284,6 +301,43 @@ namespace title {
         ArmSplitIRQ();
 
         pNMI = nmi_handler;
+    }
+
+    // One-shot: entered once Options is picked (see ::main). Clears the
+    // title menu's arrow/text -- nothing is drawn in its place, this
+    // deliberately has no Options screen yet -- and disables the scanline
+    // split outright: with no UI band left to show, there's nothing left to
+    // scroll onto. The preview keeps filling the whole screen and animating
+    // every frame via ::nmi_handler_locked afterward, same as before, just
+    // without a split underneath it.
+    static void nmi_handler_lockOptions() {
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), chrHUDWhitespace_tile);
+        gen::title::Erase_TitleOptions();
+        mmc3::AcknowledgeScanlineIRQ();
+        oam::RefreshSprites(OAMBuffer);
+        ppu::SetScroll({0, PreviewScrollY()});
+
+        pIRQ = irq_handler_locked;
+        pNMI = nmi_handler_locked;
+    }
+
+    // Steady state once locked: the preview keeps animating (sprites still
+    // refreshed, scroll still advances every frame) -- ::main's own
+    // ::optionsLocked check is what actually stops input from doing
+    // anything; this handler just never calls ArmSplitIRQ(), which is the
+    // only thing that distinguishes it from ::nmi_handler.
+    static void nmi_handler_locked() {
+        oam::RefreshSprites(OAMBuffer);
+        ppu::SetScroll({0, PreviewScrollY()});
+    }
+
+    // Defensive only: once ArmSplitIRQ() stops being called (above), MMC3's
+    // scanline IRQ stays disabled and this should never fire. If a split was
+    // already in-flight the instant the lock engaged, it must NOT do what
+    // ::irq_handler does -- no ApplySplit(), i.e. no scroll onto the
+    // now-gone UI nametable -- so it just clears itself.
+    static void irq_handler_locked() {
+        mmc3::AcknowledgeScanlineIRQ();
     }
 
     void irq_handler() {

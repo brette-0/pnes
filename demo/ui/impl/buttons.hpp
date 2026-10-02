@@ -7,13 +7,32 @@
 
 // hand written uitk button impls
 namespace ui::impl {
-    constexpr u16 MaybeGetCartesian(const u16 pos) { return pos; }
-    constexpr u16 MaybeGetCartesian(const vec2<u16>& pos) { return ppu::CartesianToAddress(pos); }
-    constexpr u16 MaybeGetCartesian(const volatile vec2<u16>& pos) {
+    enum eButtonState {
+        DisabledUnselected,
+        DisabledSelected,
+        EnabledUnselected,
+        EnabledSelected
+    };
+
+    constexpr u16 MaybeGetAddressFromCartesian(const u16 pos) { return pos; }
+    constexpr u16 MaybeGetAddressFromCartesian(const vec2<u16>& pos) { return ppu::CartesianToAddress(pos); }
+    constexpr u16 MaybeGetAddressFromCartesian(const volatile vec2<u16>& pos) {
         return ppu::CartesianToAddress({pos.x, pos.y});
     }
 
-    constexpr void DrawTextBox(const u16 pos, const vec2<u8> &box) {
+    constexpr void DrawDotBoxDisabled(const u16 pos) {
+        // TODO: create actual graphics and use it normally
+        constexpr u8 DisabledGraphic = 0x00;
+        ppu::WriteSingleToNameTable(pos, DisabledGraphic);
+    }
+
+    constexpr void DrawDotBoxEnabled(const u16 pos) {
+        // TODO: create actual graphics and use it normally
+        constexpr u8 EnabledGraphic = 0x00;
+        ppu::WriteSingleToNameTable(pos, EnabledGraphic);
+    }
+
+    constexpr void DrawTextBox(const u16 pos, const vec2<u8>& box) {
         // TODO: create actual graphics and use it normally
         constexpr u8 ULCornerGraphic   = 0x00;
         constexpr u8 URCornerGraphic   = 0x00;
@@ -42,17 +61,21 @@ namespace ui::impl {
         );
         ppu::WriteSingleToNameTable(pos + box.x + video::viewport_tx() * box.x, BRCornerGraphic);
     }
+
+    constexpr void UpdateTextBox(const eButtonState state, const u16 pos, const vec2<u8> &box) {
+        // use attribute tables to change colours for state
+    }
 }
 
 // impl for gen code
 namespace gen::options {
     inline void DrawDisabled_reduceFlashesButton() {
-        ui::impl::DrawTextBox(ui::impl::MaybeGetCartesian(reduceFlashesButton_pos), reduceFlashesButton_box);
+        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, ui::impl::MaybeGetAddressFromCartesian(reduceFlashesButton_pos), reduceFlashesButton_box);
     }
 
 #if TARGET_GC
     inline void DrawDisabled_enableWidescreenButton() {
-        ui::impl::DrawTextBox(ui::impl::MaybeGetCartesian(enableWidescreenButton_pos), enableWidescreenButton_box);
+        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, ui::impl::MaybeGetAddressFromCartesian(enableWidescreenButton_pos), enableWidescreenButton_box);
     }
 #endif
 }
