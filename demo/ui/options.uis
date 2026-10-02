@@ -3,7 +3,7 @@
     "charmap": "generic",
     "data_prefix": "OPTIONS_DATA",
     "linker_prefix": "OPTIONS",
-    "nametable": 3,
+    "nametable": 2,
     "nodes": [
         {
             "align": 0,
