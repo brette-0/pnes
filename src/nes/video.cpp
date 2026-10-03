@@ -130,13 +130,15 @@ AI void SetScroll(const vec2<u16> pos) {
     u16 y = pos.y;
     xScroll = x; yScroll = y;
 
-
-    // this code is shit needs fixing
-    if (y >= 240) {
-        y -= 240;
-        y ^= 0x100;
-    }
-
+    // Wraps y Past one nametable's height (240) into the next one, tagging
+    // bit 0x100 so the nt-bit derivation below picks it up (y >> 7 & 0x02
+    // reads out exactly that tag). This used to run twice unconditionally:
+    // the first pass's tag (y |= 0x100, via XOR against an already-clear
+    // bit) makes y >= 240 true again on its own, so the second copy fired
+    // every time the first one did too, re-subtracting 240 and re-toggling
+    // the tag back off -- e.g. y=240 (exactly one nametable down) came out
+    // as final y=16 with the tag lost, instead of the intended y=0 with the
+    // nametable-select bit correctly set.
     if (y >= 240) {
         y -= 240;
         y ^= 0x100;
@@ -353,7 +355,7 @@ AI void WriteFromProviderToAttributeTable(
 template void WriteFromProviderToAttributeTable<u8>(vec2<u16>, u8 (*)(u8), u8, u8);
 template void WriteFromProviderToAttributeTable<u16>(vec2<u16>, u8 (*)(u16), u8, u8);
 
-VIDEO_BANK u16 CartesianToAddress(const vec2<u16> pos) {
+VIDEO_BANK u16 CartesianToAddress(const vec2<u16>& pos) {
     return xy_to_nt_addr(pos.x, pos.y);
 }
 

@@ -790,7 +790,7 @@ void WriteFromProviderToAttributeTable(
 template void WriteFromProviderToAttributeTable<u8>(u16, u8 (*)(u8), u8, u8);
 template void WriteFromProviderToAttributeTable<u16>(u16, u8 (*)(u16), u8, u8);
 
-u16 CartesianToAddress(const vec2<u16> pos) {
+u16 CartesianToAddress(const vec2<u16>& pos) {
     return xy_to_nt_addr(pos.x, pos.y);
 }
 

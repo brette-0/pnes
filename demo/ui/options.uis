@@ -17,7 +17,7 @@
             "kind": "ctTextBox",
             "name": "[CT] optionsTitle",
             "posXExpr": "(VIEWPORT_TX - this.size.x) >> 1",
-            "posYExpr": "1",
+            "posYExpr": "3",
             "provideErasing": false,
             "sizeHExpr": "1",
             "sizeWExpr": "7",
@@ -136,6 +136,25 @@
             "sizeHExpr": "4",
             "sizeWExpr": "12",
             "toggleable": false
+        },
+        {
+            "align": 1,
+            "charmapOverride": "",
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] superMarySistersText",
+            "posXExpr": "1",
+            "posYExpr": "1",
+            "provideErasing": false,
+            "sizeHExpr": "2",
+            "sizeWExpr": "10",
+            "splitter": " ",
+            "text": "SUPER MARY SISTERS"
         }
     ],
     "region": "NTSC",

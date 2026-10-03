@@ -111,6 +111,7 @@ namespace title {
     static void nmi_handler_lockOptions();
     static void nmi_handler_lockAnim();
     static void nmi_handler_locked();
+    static void nmi_handler_lockAnimReverse();
 
     // Column where the menu/play-mode nametable begins: one nametable's width
     // to the right of nametable A, computed at runtime rather than a
@@ -131,6 +132,19 @@ namespace title {
     // every step of the reveal animation, without needing the banked level
     // data (::level::levelHeight) still paged in to re-derive it.
     static u16 maryGroundNtRow;
+
+    // Current position through the reveal animation (::nmi_handler_lockAnim)
+    // and its reverse (::nmi_handler_lockAnimReverse), in SCANLINES (not
+    // tile rows -- stepping one scanline at a time is the whole point of
+    // both). Forward counts down from the title menu's own split row
+    // (converted to scanlines) to 0; reverse counts back up from 0 to that
+    // same value. One scanline every frame (two scanlines' worth of 60fps
+    // motion per 30fps-equivalent tick reads as a brisk, still-smooth
+    // scroll; this was one scanline every OTHER frame -- half the speed --
+    // before). Declared up here (not besides the handlers that actually use
+    // it) because ::main's own B-press handling needs it in scope before
+    // ::main is defined, to check whether a reveal is actually running.
+    static u16 lockAnimScanline;
 
     // Rows the menu band (everything below the split) is given. The NES lays
     // it out as 30 - 24 = 6 rows, which is what the title/menu text (nametable
@@ -243,6 +257,7 @@ namespace title {
         gen::options::Draw_optionsTitle();
         gen::options::Draw_videoOptions();
         gen::options::Draw_reduceFlashesText();
+        gen::options::Draw_superMarySistersText();
 
         InitTitleScreen();
 
@@ -314,6 +329,10 @@ namespace title {
                     playModeActive = false;
                     pNMI = nmi_handler_drawMenu;
                 }
+            } else if (pressed & input::B && pNMI == nmi_handler_locked) {
+                // Only once the reveal has fully finished (pNMI is the
+                // steady ::nmi_handler_locked, not still mid-reveal).
+                pNMI = nmi_handler_lockAnimReverse;
             }
 
             video::WaitForPresent();
@@ -364,17 +383,6 @@ namespace title {
 
     // Current split position through the reveal animation below, in
     // SCANLINES (not tile rows like ::SplitRow() -- stepping this one
-    // scanline at a time is the whole point, see ::nmi_handler_lockAnim).
-    // Starts at the title menu's own split row (converted to scanlines) and
-    // counts down to 0, so the preview scrolls further into its own
-    // nametable, one scanline at a time, revealing the (preloaded, see
-    // ::main) Options text sitting below it. NMI-internal only (read/written
-    // only inside ::nmi_handler_lockAnim), so a plain static, same as
-    // ::scratchpad's selector-tracking bytes -- no main-loop/NMI handoff to
-    // guard against here.
-    static u16 lockAnimScanline;
-    static u8  lockAnimFrame; // toggles 0/1: lockAnimScanline only steps on a 0->1 edge, i.e. every OTHER frame
-
     // One-shot: entered once Options is picked (see ::main). Clears the
     // title menu's arrow/text (nametable B, $2C00+) -- nothing is drawn in
     // its place, this deliberately has no Options MENU built yet, just the
@@ -391,75 +399,80 @@ namespace title {
         oam::RefreshSprites(OAMBuffer);
 
         lockAnimScanline = static_cast<u16>(SplitRow()) << 3;
-        lockAnimFrame = 0;
         ppu::SetScroll({0, PreviewScrollY()});
 
         pNMI = nmi_handler_lockAnim;
     }
 
-    // The reveal itself: every OTHER frame (so one scanline per 2 frames --
-    // slow enough to read as a smooth scroll, not a jump cut), the Y scroll
-    // bumps one scanline further into the preview's own nametable -- the
-    // exact same Y-wrap ::nmi_handler already relies on every frame, just
-    // walked past its usual resting point (::SplitRow()) instead of holding
-    // there. Runs all the way down to 0 (a full wrap: the WHOLE screen is
-    // then nametable A starting at its own row 0), putting the preloaded
-    // Options text at the top of the screen once it's done, and hands off
-    // to ::nmi_handler_locked, which just holds the scroll there.
-    // ::ppu::SetScroll's own y>=240 wrap case (its own comment: "this code is
-    // shit needs fixing") double-fires for an input of exactly 240 and ends
-    // up poking a nonzero scroll register instead of the 0 we actually want
-    // -- so rather than feed it that edge case, this lands on it by hand:
-    // write the scroll registers the ordinary way (which resolves to nt=0,
-    // $2000 -- SetScroll has no notion that we've actually wrapped into the
-    // nametable's OTHER vertical bank) and then correct PPUCTRL's
-    // nametable-select bit directly afterward, same read-modify-write
-    // SetScroll itself does. Without this, the reveal's last frame silently
-    // reverts to viewing $2000 (nametable A's un-wrapped bank) instead of
-    // the $2800 bank the preloaded Options text actually lives in.
-    static void SetScrollOptionsBank() {
-        ppu::SetScroll({0, 0});
-        constexpr u8 kNametableYSelect = 0x02; // PPUCTRL bit1 -- see ::ppu::SetScroll's own "nt" derivation
-        ppu::PPUCTRL = static_cast<u8>((ppu::PPUCTRL & 0xFC) | kNametableYSelect);
-    }
-
+    // The reveal itself: every frame, the Y scroll bumps one scanline
+    // further into the preview's own nametable -- the exact same Y-wrap
+    // ::nmi_handler already relies on every frame, just walked past its
+    // usual resting point (::SplitRow()) instead of holding there. Runs all
+    // the way down to 0, i.e. ::PreviewScrollYForPixels(0) == one full
+    // nametable height (240): the point where ::ppu::SetScroll's own wrap
+    // case lands on the nametable BELOW the preview's -- a real, distinct
+    // page (this board links four-screen VRAM, ALTERNATIVE_NAMETABLE==1:
+    // see mmc3.cpp), which is where the preloaded Options text actually
+    // lives. Hands off to ::nmi_handler_locked, which just holds the scroll
+    // there.
     static void nmi_handler_lockAnim() {
         oam::RefreshSprites(OAMBuffer);
 
-        if (lockAnimFrame == 0 && lockAnimScanline != 0) --lockAnimScanline;
-        lockAnimFrame ^= 1;
+        if (lockAnimScanline != 0) --lockAnimScanline;
 
-        // Checked AFTER the decrement, not before: the step that counts
-        // lockAnimScanline down to 0 used to fall through to the plain
-        // ppu::SetScroll({0, PreviewScrollYForPixels(0)}) below, i.e.
-        // SetScroll({0, 240}) -- the exact input that trips ::SetScroll's
-        // own broken y>=240 double-wrap (see ::SetScrollOptionsBank's
-        // comment) and pokes 16 instead of 0, visibly skipping the first 2
-        // tile rows (the HUD) for that one frame. Branching to
-        // ::SetScrollOptionsBank immediately instead -- the same frame the
-        // count hits 0 -- never feeds SetScroll that value at all.
-        if (lockAnimScanline == 0) {
-            SetScrollOptionsBank();
+        ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
+        UpdateMarySpriteYForPixels(lockAnimScanline);
 
-            pNMI = nmi_handler_locked;
+        if (lockAnimScanline == 0) pNMI = nmi_handler_locked;
+    }
+
+    // Steady state once the reveal finishes: nothing left to scroll, Y is
+    // just pinned at the nametable-below boundary (::PreviewScrollYForPixels(0),
+    // same value ::nmi_handler_lockAnim's last step already set -- the
+    // preview's own ::UpdateMarySpriteYForPixels(0) already hid her once her
+    // feet scrolled past the top, same as it would on any other frame -- no
+    // special-casing needed here). Sprites still refresh every frame so OAM
+    // doesn't go stale.
+    static void nmi_handler_locked() {
+        oam::RefreshSprites(OAMBuffer);
+        ppu::SetScroll({0, PreviewScrollYForPixels(0)});
+    }
+
+    // Entered on B, but only once ::main sees pNMI == ::nmi_handler_locked
+    // (the reveal has actually finished, not still mid-animation) -- mirrors
+    // ::nmi_handler_lockAnim exactly, just counting ::lockAnimScanline back
+    // UP from 0 instead of down, so the preview/Options boundary retraces
+    // the same scanline-at-a-time path backward. ::lockAnimScanline is
+    // already 0 (that's how we got to ::nmi_handler_locked in the first
+    // place), so there's no separate one-shot entry step the way
+    // ::nmi_handler_lockOptions is for the forward direction -- ::main just
+    // drops straight into this.
+    static void nmi_handler_lockAnimReverse() {
+        oam::RefreshSprites(OAMBuffer);
+
+        const u16 target = static_cast<u16>(SplitRow()) << 3;
+        if (lockAnimScanline < target) ++lockAnimScanline;
+
+        if (lockAnimScanline >= target) {
+            // Back to the title menu's own steady split: redraw the labels
+            // the arrow this time (QueueSelectorDraw's clear-then-arrow onto
+            // one tile is the SAME "first-draw indicator" trick ::main's own
+            // initial arrow draw uses -- nothing to clear first, there's no
+            // stale arrow left anywhere on screen to punch a hole in) and
+            // re-arm the split ::nmi_handler relies on every frame.
+            gen::title::Draw_TitleOptions();
+            QueueSelectorDraw(TitleArrowAddr());
+            SelectorUpdate();
+            ppu::SetScroll({0, PreviewScrollY()});
+            ArmSplitIRQ();
+
+            optionsLocked = false;
+            pNMI = nmi_handler;
             return;
         }
 
         ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
         UpdateMarySpriteYForPixels(lockAnimScanline);
-    }
-
-    // Steady state once the reveal finishes: nothing left to scroll, Y is
-    // just pinned at 0 (the preview's own ::UpdateMarySpriteYForPixels(0)
-    // already hid her once her feet scrolled past the top, same as it would
-    // on any other frame -- no special-casing needed here). Sprites still
-    // refresh every frame so OAM doesn't go stale. Still has to go through
-    // ::SetScrollOptionsBank every frame, same as ::nmi_handler_lockAnim's
-    // own handoff -- a plain ::SetScroll({0,0}) here would just re-flip
-    // PPUCTRL back to $2000 on the very next frame.
-    static void nmi_handler_locked() {
-        oam::RefreshSprites(OAMBuffer);
-        SetScrollOptionsBank();
     }
 
     void irq_handler() {

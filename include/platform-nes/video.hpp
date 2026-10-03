@@ -489,7 +489,35 @@ namespace ppu {
      * @param pos Tile position.
      * @return  Absolute PPU address of the corresponding nametable byte.
      */
-    u16 CartesianToAddress(vec2<u16> pos);
+    u16 CartesianToAddress(const vec2<u16>& pos);
+
+    /**
+     * @brief Overload for a position already read out of volatile storage
+     *        (e.g. a UI widget's live on-screen position). Copies out of
+     *        @p pos once and forwards to the non-volatile overload.
+     *
+     * Taking @p pos by reference (rather than by value) here and above
+     * matters: both overloads must stay in the reference-binding tier so a
+     * non-volatile caller resolves to the non-volatile overload by a strict
+     * best match (identity vs. a volatile-qualification adjustment) instead
+     * of being ambiguous against this one.
+     * @param pos Tile position.
+     * @return  Absolute PPU address of the corresponding nametable byte.
+     */
+    inline u16 CartesianToAddress(const volatile vec2<u16>& pos) {
+        return CartesianToAddress(vec2<u16>{pos.x, pos.y});
+    }
+
+    /**
+     * @brief Overload for a caller that already holds a precomputed PPU
+     *        address rather than a tile position -- passes it through
+     *        unchanged so generic callers don't need to special-case it.
+     * @param pos Precomputed PPU address.
+     * @return  @p pos, unchanged.
+     */
+    constexpr u16 CartesianToAddress(const u16 pos) {
+        return pos;
+    }
 
 
     void StreamFromVideoMemory(u16 offset, atomic u8* target, u8 size);

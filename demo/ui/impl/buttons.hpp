@@ -14,12 +14,6 @@ namespace ui::impl {
         EnabledSelected
     };
 
-    constexpr u16 MaybeGetAddressFromCartesian(const u16 pos) { return pos; }
-    constexpr u16 MaybeGetAddressFromCartesian(const vec2<u16>& pos) { return ppu::CartesianToAddress(pos); }
-    constexpr u16 MaybeGetAddressFromCartesian(const volatile vec2<u16>& pos) {
-        return ppu::CartesianToAddress({pos.x, pos.y});
-    }
-
     constexpr void DrawDotBoxDisabled(const u16 pos) {
         // TODO: create actual graphics and use it normally
         constexpr u8 DisabledGraphic = 0x00;
@@ -70,12 +64,12 @@ namespace ui::impl {
 // impl for gen code
 namespace gen::options {
     inline void DrawDisabled_reduceFlashesButton() {
-        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, ui::impl::MaybeGetAddressFromCartesian(reduceFlashesButton_pos), reduceFlashesButton_box);
+        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, ppu::CartesianToAddress(reduceFlashesButton_pos), reduceFlashesButton_box);
     }
 
 #if TARGET_GC
     inline void DrawDisabled_enableWidescreenButton() {
-        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, ui::impl::MaybeGetAddressFromCartesian(enableWidescreenButton_pos), enableWidescreenButton_box);
+        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, ppu::CartesianToAddress(enableWidescreenButton_pos), enableWidescreenButton_box);
     }
 #endif
 }
