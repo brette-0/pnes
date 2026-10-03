@@ -1,0 +1,52 @@
+Graphic Asset License
+======================
+
+Copyright (c) 2026 Brette Allen. All rights reserved.
+
+This license applies to all original graphic and visual art assets in
+this repository created by Brette Allen, which are distinct from the
+source code licensed under the project's LICENSE file (Mozilla Public
+License 2.0). This includes, without limitation, all sprite and tile
+artwork under demo/chr/ (both the raw graphic data and its associated
+metadata, e.g. .chr and .tng file pairs), all tilesheet images under
+demo/tiled/tilesheets/, and demo/demo.png, whether currently present in
+the repository or added in the future -- EXCEPT the third-party assets
+listed below, which are explicitly excluded from this copyright claim.
+
+This list is illustrative, not exhaustive. Omission of a specific file
+or asset from this section does not imply that it is unlicensed or free
+to use; every original graphic/visual art asset described above is
+covered.
+
+No permission is granted to copy, modify, distribute, sublicense, or
+create derivative works from these original assets, in whole or in
+part, without prior written permission from the copyright holder.
+
+This license does not apply to source code, build scripts, audio
+assets, or the third-party assets below.
+
+These assets are provided "as is", without warranty of any kind, express
+or implied.
+
+
+Third-Party Assets
+===================
+
+The following assets are NOT owned by Benjamin Allen (brette-0) and are NOT covered
+by the copyright claim above. They are used in this repository under
+permission from their original creator(s), for use within this project
+only. Brette Allen has no authority to grant, and does not grant, any
+further rights to copy, modify, distribute, sublicense, or redistribute
+these assets -- doing so requires permission directly from their
+original creator(s).
+
+  - Mushlet sprite       (demo/chr/sprites/enemies/mushlet/)
+  - Berries graphic      (demo/chr/sprites/berries.chr, berries.tng)
+  - Wand graphic         (demo/chr/sprites/wand.chr, wand.tng)
+  - Font graphic         (demo/chr/tiles/static/ui/font.chr, font.tng)
+  - Terrain graphic      (demo/chr/tiles/static/terrain.chr, terrain.tng)
+
+  Original creator / source: Melissa Veniot (neonivvy)
+
+If you are the creator of one of these assets and have concerns about
+its use here, please contact Brette Allen at: brette.allen05@gmail.com
