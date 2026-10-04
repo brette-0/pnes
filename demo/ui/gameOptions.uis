@@ -10,12 +10,9 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [
-                    ],
-                    "hideRegions": [
-                    ],
-                    "hideTargets": [
-                    ],
+                    "children": [],
+                    "hideRegions": [],
+                    "hideTargets": [],
                     "kind": "ctTextBox",
                     "name": "[CT] SinglePlayer",
                     "posXExpr": "VIEWPORT_TX - this.size.x - 1",
@@ -29,10 +26,8 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [
-                    ],
-                    "hideRegions": [
-                    ],
+                    "children": [],
+                    "hideRegions": [],
                     "hideTargets": [
                         "GBA",
                         "GCN",
@@ -58,10 +53,8 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [
-                    ],
-                    "hideRegions": [
-                    ],
+                    "children": [],
+                    "hideRegions": [],
                     "hideTargets": [
                         "NES",
                         "GBA",
@@ -82,10 +75,8 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [
-                    ],
-                    "hideRegions": [
-                    ],
+                    "children": [],
+                    "hideRegions": [],
                     "hideTargets": [
                         "NES"
                     ],
@@ -101,10 +92,8 @@
                 }
             ],
             "defaultOption": 0,
-            "hideRegions": [
-            ],
-            "hideTargets": [
-            ],
+            "hideRegions": [],
+            "hideTargets": [],
             "kind": "singlechoice",
             "name": "[SC] gameOptions"
         }

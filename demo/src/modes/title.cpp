@@ -11,8 +11,8 @@
 // covers every target without a per-target #if ladder.
 #include STRCAT(../../gen/title/GEN_TARGET_DIR/title.hpp)
 // gen::gameOptions -- demo/ui/gameOptions.uis, same per-target directory scheme
-// (gen/playOptions/<GEN_TARGET_DIR>/gameOptions.hpp).
-#include STRCAT(../../gen/playOptions/GEN_TARGET_DIR/gameOptions.hpp)
+// (gen/gameOptions/<GEN_TARGET_DIR>/gameOptions.hpp).
+#include STRCAT(../../gen/gameOptions/GEN_TARGET_DIR/gameOptions.hpp)
 // gen::options -- demo/ui/options.uis (the Options screen's buttons), plus the
 // hand-written DrawEnabled_/DrawDisabled_ implementations its generated
 // Button nodes require (see uitk's genButtonDecl) -- this is the one TU that

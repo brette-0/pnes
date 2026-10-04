@@ -8,12 +8,9 @@
         {
             "align": 0,
             "charmapOverride": "",
-            "children": [
-            ],
-            "hideRegions": [
-            ],
-            "hideTargets": [
-            ],
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [],
             "kind": "ctTextBox",
             "name": "[CT] optionsTitle",
             "posXExpr": "(VIEWPORT_TX - this.size.x) >> 1",
@@ -27,12 +24,9 @@
         {
             "align": 0,
             "charmapOverride": "",
-            "children": [
-            ],
-            "hideRegions": [
-            ],
-            "hideTargets": [
-            ],
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [],
             "kind": "ctTextBox",
             "name": "[CT] videoOptions",
             "posXExpr": "1",
@@ -44,15 +38,11 @@
             "text": "VIDEO"
         },
         {
-            "children": [
-            ],
+            "children": [],
             "defaultEnabled": true,
             "hasBox": true,
-            "hasSelector": true,
-            "hideRegions": [
-            ],
-            "hideTargets": [
-            ],
+            "hideRegions": [],
+            "hideTargets": [],
             "kind": "button",
             "name": "[B] reduceFlashesButton",
             "posXExpr": "3",
@@ -64,12 +54,9 @@
         {
             "align": 0,
             "charmapOverride": "",
-            "children": [
-            ],
-            "hideRegions": [
-            ],
-            "hideTargets": [
-            ],
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [],
             "kind": "ctTextBox",
             "name": "[CT] reduceFlashesText",
             "posXExpr": "4",
@@ -83,10 +70,8 @@
         {
             "align": 0,
             "charmapOverride": "",
-            "children": [
-            ],
-            "hideRegions": [
-            ],
+            "children": [],
+            "hideRegions": [],
             "hideTargets": [
                 "NES",
                 "GBA",
@@ -110,13 +95,10 @@
             "text": "ENABLE WIDESCREEN"
         },
         {
-            "children": [
-            ],
+            "children": [],
             "defaultEnabled": true,
             "hasBox": true,
-            "hasSelector": true,
-            "hideRegions": [
-            ],
+            "hideRegions": [],
             "hideTargets": [
                 "NES",
                 "GBA",
@@ -140,12 +122,9 @@
         {
             "align": 1,
             "charmapOverride": "",
-            "children": [
-            ],
-            "hideRegions": [
-            ],
-            "hideTargets": [
-            ],
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [],
             "kind": "ctTextBox",
             "name": "[CT] superMarySistersText",
             "posXExpr": "1",

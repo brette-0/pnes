@@ -222,13 +222,17 @@ macro(_fixup_fetched_cxx_std_targets)
 endmacro()
 
 # ----------------------------------------------------------------------
-# uitk-export -- regenerates every demo/gen/title/<target>/title.hpp|.cpp
-# pair from demo/ui/title.uis, and every
-# demo/gen/playOptions/<target>/gameOptions.hpp|.cpp pair from
-# demo/ui/gameOptions.uis, by building and running tools/uitk (see
-# tools/uitk/README.md). Runs here, at CONFIGURE time -- deliberately, not
-# as a build-time target `demo` depends on: demo/gen/ is gitignored, never
-# committed, so every TARGET_PLATFORM branch's own
+# uitk-export -- regenerates demo/gen/<name>/<target>/<name>.hpp|.cpp for
+# EVERY demo/ui/<name>.uis, by building and running tools/uitk (see
+# tools/uitk/README.md) once per scene file found by the glob below. The
+# output directory always matches the .uis file's own basename -- add a new
+# demo/ui/whatever.uis and it exports to demo/gen/whatever with no edit
+# needed here; there is no per-scene special-casing (gameOptions.uis used to
+# export to demo/gen/playOptions instead of demo/gen/gameOptions -- that
+# exception is gone, and every TARGET_PLATFORM branch below now globs
+# demo/gen/gameOptions/ to match). Runs here, at CONFIGURE time --
+# deliberately, not as a build-time target `demo` depends on: demo/gen/ is
+# gitignored, never committed, so every TARGET_PLATFORM branch's own
 # `file(GLOB DEMO_TITLE_SOURCES ...)` below has to see the regenerated files
 # BEFORE it globs, not after. A build-time custom target regenerates too
 # late for that -- CMake fixes a GLOB's matched file list into build.ninja
@@ -258,7 +262,7 @@ endmacro()
 #
 # Qt (Widgets) is only actually required when demo/gen/ doesn't already have
 # something to fall back to. With Qt: always regenerate, so a local build is
-# never stale after editing demo/ui/title.uis. Without Qt: warn and use
+# never stale after editing any demo/ui/*.uis. Without Qt: warn and use
 # whatever's already under demo/gen/ instead -- normally populated by CI's
 # `codegen-check` job's demo-gen artifact (.github/workflows/ci.yml; every
 # other platform job downloads it, deliberately so *those* never need Qt
@@ -267,7 +271,7 @@ endmacro()
 # demo/gen/ with no Qt available is a hard configure error -- nothing to
 # build against at all.
 #
-# Re-runs whenever demo/ui/title.uis or uitk's own sources change (see the
+# Re-runs whenever any demo/ui/*.uis or uitk's own sources change (see the
 # CMAKE_CONFIGURE_DEPENDS below) -- CMake already reconfigures automatically
 # on any CONFIGURE_DEPENDS-listed file changing, the same mechanism
 # file(GLOB ... CONFIGURE_DEPENDS) itself relies on, so a plain
@@ -317,9 +321,9 @@ endif()
 
 if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
     file(GLOB_RECURSE UITK_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tools/uitk/*.cpp)
+    file(GLOB UITK_SCENE_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/ui/*.uis)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-                 ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
-                 ${CMAKE_SOURCE_DIR}/demo/ui/gameOptions.uis
+                 ${UITK_SCENE_FILES}
                  ${UITK_SOURCES}
                  ${CMAKE_SOURCE_DIR}/tools/uitk/CMakeLists.txt)
 
@@ -352,28 +356,21 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
     if(NOT UITK_BUILD_RESULT EQUAL 0)
         message(FATAL_ERROR "uitk: failed to build (see output above).")
     endif()
-    execute_process(
-            COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
-                    --input ${CMAKE_SOURCE_DIR}/demo/ui/title.uis
-                    --output ${CMAKE_SOURCE_DIR}/demo/gen/title
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-            RESULT_VARIABLE UITK_EXPORT_RESULT)
-    if(NOT UITK_EXPORT_RESULT EQUAL 0)
-        message(FATAL_ERROR "uitk: export failed (see output above).")
-    endif()
-    # demo/ui/gameOptions.uis -> demo/gen/playOptions/<target>/gameOptions.hpp|.cpp
-    # (output dir name matches title's precedent above; the generated
-    # filename itself is taken from the .uis basename, "gameOptions", same
-    # as title.uis -> title.hpp).
-    execute_process(
-            COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
-                    --input ${CMAKE_SOURCE_DIR}/demo/ui/gameOptions.uis
-                    --output ${CMAKE_SOURCE_DIR}/demo/gen/playOptions
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-            RESULT_VARIABLE UITK_EXPORT_RESULT)
-    if(NOT UITK_EXPORT_RESULT EQUAL 0)
-        message(FATAL_ERROR "uitk: export failed (see output above).")
-    endif()
+    # One export per demo/ui/*.uis found above -- output dir is always that
+    # file's own basename (demo/ui/foo.uis -> demo/gen/foo/<target>/foo.hpp|.cpp),
+    # so a new scene file needs no edit here to start exporting.
+    foreach(UITK_SCENE_FILE ${UITK_SCENE_FILES})
+        get_filename_component(UITK_SCENE_NAME ${UITK_SCENE_FILE} NAME_WE)
+        execute_process(
+                COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
+                        --input ${UITK_SCENE_FILE}
+                        --output ${CMAKE_SOURCE_DIR}/demo/gen/${UITK_SCENE_NAME}
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                RESULT_VARIABLE UITK_EXPORT_RESULT)
+        if(NOT UITK_EXPORT_RESULT EQUAL 0)
+            message(FATAL_ERROR "uitk: export failed for ${UITK_SCENE_FILE} (see output above).")
+        endif()
+    endforeach()
 
     # Put CXX/CC back to what enable_language(CXX) above actually bound them
     # to -- undoes the host-compiler swap just for the nested uitk
@@ -392,7 +389,7 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
     else()
         unset(ENV{CC})
     endif()
-elseif(EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/title AND EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/playOptions)
+elseif(EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/title AND EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/gameOptions)
     message(WARNING
         "Qt Widgets not found; using whatever's already under demo/gen/ "
         "instead of regenerating it from demo/ui/*.uis (e.g. a "
@@ -401,7 +398,7 @@ elseif(EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/title AND EXISTS ${CMAKE_SOURCE_DIR}/
         "editing demo/ui/title.uis or demo/ui/gameOptions.uis locally.")
 else()
     message(FATAL_ERROR
-        "Qt Widgets not found, and demo/gen/title/ or demo/gen/playOptions/ "
+        "Qt Widgets not found, and demo/gen/title/ or demo/gen/gameOptions/ "
         "doesn't exist -- nothing to fall back to. Install Qt6 (or Qt5) so "
         "this configure step can generate them from demo/ui/*.uis, or "
         "populate demo/gen/ yourself first (e.g. download codegen-check's "
@@ -933,11 +930,11 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # target actually builds, or every other platform's title.cpp comes
     # along too and the linker sees duplicate symbols for all of them.
     file(GLOB_RECURSE DEMO_C_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/*.cpp)
-    list(FILTER DEMO_C_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
+    list(FILTER DEMO_C_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/gen/title/nes/*.cpp)
     list(APPEND DEMO_C_SOURCES ${DEMO_TITLE_SOURCES})
-    file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/gen/playOptions/nes/*.cpp)
-    list(APPEND DEMO_C_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
+    file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/nes/*.cpp)
+    list(APPEND DEMO_C_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
     set(PASS1_ELF ${CMAKE_BINARY_DIR}/demo_pass1.elf)
     add_custom_command(
@@ -1202,11 +1199,11 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "wii")
                 COMPILE_OPTIONS "--embed-dir=${OGC_ASSET_DIR}")
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
-    file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
-    list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
+    file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+    list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
     # (being the includer) emits the folded CHR ROM image. Declare the art as an
@@ -1299,11 +1296,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
-    file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
-    list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
+    file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+    list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
     # (being the includer) emits the folded CHR ROM image. Declare the art as an
@@ -1412,11 +1409,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
-        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
-        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
+        file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1589,11 +1586,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                     COMPILE_OPTIONS "--embed-dir=${WIIU_ASSET_DIR}")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
-        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
-        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
+        file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1840,11 +1837,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                     COMPILE_OPTIONS "--embed-dir=${PSP_ASSET_DIR}")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
-        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
-        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
+        file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -1955,11 +1952,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
-        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
-        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
+        file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -2070,11 +2067,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
-        file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
-        list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
+        file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
         # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
         # editing the art retriggers a recompile.
@@ -2324,11 +2321,11 @@ else()
     endif()
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
-    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|playOptions)/")
+    list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
     file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
-    file(GLOB DEMO_PLAYOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/playOptions/${DEMO_TITLE_DIR}/*.cpp")
-    list(APPEND DEMO_SOURCES ${DEMO_PLAYOPTIONS_SOURCES})
+    file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+    list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
     # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
     # (being the includer) emits the folded CHR ROM image. Declare the art as an

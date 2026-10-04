@@ -8,12 +8,9 @@
         {
             "align": 1,
             "charmapOverride": "",
-            "children": [
-            ],
-            "hideRegions": [
-            ],
-            "hideTargets": [
-            ],
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [],
             "kind": "ctTextBox",
             "name": "[CT] GameTitle",
             "posXExpr": "1",
@@ -29,12 +26,9 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [
-                    ],
-                    "hideRegions": [
-                    ],
-                    "hideTargets": [
-                    ],
+                    "children": [],
+                    "hideRegions": [],
+                    "hideTargets": [],
                     "kind": "ctTextBox",
                     "name": "[CT] NewGame",
                     "posXExpr": "( ( VIEWPORT_TX >> 1 ) << 1 ) - 1 - 8",
@@ -48,12 +42,9 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [
-                    ],
-                    "hideRegions": [
-                    ],
-                    "hideTargets": [
-                    ],
+                    "children": [],
+                    "hideRegions": [],
+                    "hideTargets": [],
                     "kind": "ctTextBox",
                     "name": "[CT] Continue",
                     "posXExpr": "NewGame.pos.x",
@@ -67,12 +58,9 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [
-                    ],
-                    "hideRegions": [
-                    ],
-                    "hideTargets": [
-                    ],
+                    "children": [],
+                    "hideRegions": [],
+                    "hideTargets": [],
                     "kind": "ctTextBox",
                     "name": "[CT] Options",
                     "posXExpr": "NewGame.pos.x",
@@ -86,10 +74,8 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [
-                    ],
-                    "hideRegions": [
-                    ],
+                    "children": [],
+                    "hideRegions": [],
                     "hideTargets": [
                         "NES",
                         "GBA",
@@ -114,10 +100,8 @@
                 }
             ],
             "defaultOption": 0,
-            "hideRegions": [
-            ],
-            "hideTargets": [
-            ],
+            "hideRegions": [],
+            "hideTargets": [],
             "kind": "singlechoice",
             "name": "[SC] TitleOptions"
         }
