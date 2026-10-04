@@ -12,24 +12,14 @@
 //     object, so the linker folds it to exactly one copy no matter how many
 //     TUs include this header
 //
-// sprite-0 graphics MUST stay first (tile 0) for sprite-0 hit detection.
 // #embed paths are relative to THIS header (demo/src/graphics/).
 
 #include <platform-nes/video.hpp>
 
-CHARACTER_ROM_BEGIN(chrSprite0)
-#embed "../../chr/sprites/sprite0.chr"
-// chrSprite0 is a single tile, landing chrPlayerStanding on an odd tile id.
-// Hardware 8x16 sprites pack the top/bottom tile of a pair as (tile & 0xFE) /
-// (tile & 0xFE) + 1, so the pair's top tile must sit at an even local index --
-// pad chrSprite0's own end here to align chrPlayerStanding to an even boundary.
-CHARACTER_ROM_END_PAD_TO(chrSprite0, CHR_ORIGIN,
-                          (chrSprite0_tile + chrSprite0_raw_ntiles + 1) & ~1);
-
 // player sprite graphics
 CHARACTER_ROM_BEGIN(chrPlayerStanding)
 #embed "../../chr/sprites/player/standing.chr"
-CHARACTER_ROM_END(chrPlayerStanding, chrSprite0);
+CHARACTER_ROM_END(chrPlayerStanding, CHR_ORIGIN);
 
 // power sprite graphics
 CHARACTER_ROM_BEGIN(chrBerries)
@@ -79,11 +69,20 @@ CHARACTER_ROM_BEGIN(chrHUDWhitespace)
 #embed "../../chr/tiles/static/ui/hud_whitespace.chr"
 CHARACTER_ROM_END(chrHUDWhitespace, chrHUDCoin);
 
+// button toggle-state dot (checked / unchecked)
+CHARACTER_ROM_BEGIN(chrSelected)
+#embed "../../chr/tiles/static/ui/selected.chr"
+CHARACTER_ROM_END(chrSelected, chrHUDWhitespace);
+
+CHARACTER_ROM_BEGIN(chrUnselected)
+#embed "../../chr/tiles/static/ui/unselected.chr"
+CHARACTER_ROM_END(chrUnselected, chrSelected);
+
 // dedicated blank tile -- the official ' ' glyph (see charmaps.hpp). Kept
 // separate from chrFont so it isn't at the mercy of font.chr's own layout.
 CHARACTER_ROM_BEGIN(chrEmpty)
 #embed "../../chr/tiles/static/ui/empty.chr"
-CHARACTER_ROM_END(chrEmpty, chrHUDWhitespace);
+CHARACTER_ROM_END(chrEmpty, chrUnselected);
 
 // menu selection cursor (title screen)
 CHARACTER_ROM_BEGIN(chrArrow)

@@ -3,6 +3,7 @@
 #include <platform-nes/types.hpp>
 #include <intsh>
 
+#include "../../src/graphics/graphics.hpp"
 #include STRCAT(../../gen/options/GEN_TARGET_DIR/options.hpp)
 
 // hand written uitk button impls
@@ -15,45 +16,56 @@ namespace ui::impl {
     };
 
     constexpr void DrawDotBoxDisabled(const u16 pos) {
-        // TODO: create actual graphics and use it normally
-        constexpr u8 DisabledGraphic = 0x00;
-        ppu::WriteSingleToNameTable(pos, DisabledGraphic);
+        ppu::WriteSingleToNameTable(pos, chrUnselected_tile);
     }
 
     constexpr void DrawDotBoxEnabled(const u16 pos) {
-        // TODO: create actual graphics and use it normally
-        constexpr u8 EnabledGraphic = 0x00;
-        ppu::WriteSingleToNameTable(pos, EnabledGraphic);
+        ppu::WriteSingleToNameTable(pos, chrSelected_tile);
     }
 
     constexpr void DrawTextBox(const u16 pos, const vec2<u8>& box) {
         // TODO: create actual graphics and use it normally
-        constexpr u8 ULCornerGraphic   = 0x00;
-        constexpr u8 URCornerGraphic   = 0x00;
-        constexpr u8 BLCornerGraphic   = 0x00;
-        constexpr u8 BRCornerGraphic   = 0x00;
-        constexpr u8 LeftEdgeGraphic   = 0x00;
-        constexpr u8 RightEdgeGraphic  = 0x00;
-        constexpr u8 TopEdgeGraphic    = 0x00;
-        constexpr u8 BottomEdgeGraphic = 0x00;
+        constexpr u8 ULCornerGraphic   = charmap_generic('X');
+        constexpr u8 URCornerGraphic   = charmap_generic('X');
+        constexpr u8 BLCornerGraphic   = charmap_generic('X');
+        constexpr u8 BRCornerGraphic   = charmap_generic('X');
+        constexpr u8 LeftEdgeGraphic   = charmap_generic('O');
+        constexpr u8 RightEdgeGraphic  = charmap_generic('O');
+        constexpr u8 TopEdgeGraphic    = charmap_generic('O');
+        constexpr u8 BottomEdgeGraphic = charmap_generic('O');
 
+        // UL
         ppu::WriteSingleToNameTable(pos, ULCornerGraphic);
+
+        // UR
+        ppu::WriteSingleToNameTable(pos + box.x - 1, URCornerGraphic);
+
+        // BL
+        ppu::WriteSingleToNameTable(pos + video::viewport_tx() * (box.y - 1), BLCornerGraphic);
+
+        // BR
+        ppu::WriteSingleToNameTable(pos + box.x + video::viewport_tx() * (box.y - 1) - 1, BRCornerGraphic);
+
+        // top row
         ppu::WriteRepeatedToNameTable(pos + 1, TopEdgeGraphic, box.x - 2, 0);
-        ppu::WriteSingleToNameTable(pos + box.x, URCornerGraphic);
+
+        // bottom row
         ppu::WriteRepeatedToNameTable(
-            pos + video::viewport_tx() * box.y, BottomEdgeGraphic,
+            pos + video::viewport_tx() * (box.y - 1) + 1, BottomEdgeGraphic,
             box.x - 2, 0
         );
-        ppu::WriteSingleToNameTable(pos + video::viewport_tx() * box.x, BLCornerGraphic);
+
+        // left edge
         ppu::WriteRepeatedToNameTable(
             pos + video::viewport_tx(), LeftEdgeGraphic,
             box.y - 2, 1
         );
+
+        // right edge
         ppu::WriteRepeatedToNameTable(
-            pos + video::viewport_tx() + box.x, RightEdgeGraphic,
+            pos + video::viewport_tx() + box.x - 1, RightEdgeGraphic,
             box.y - 2, 1
         );
-        ppu::WriteSingleToNameTable(pos + box.x + video::viewport_tx() * box.x, BRCornerGraphic);
     }
 
     constexpr void UpdateTextBox(const eButtonState state, const u16 pos, const vec2<u8> &box) {
@@ -63,13 +75,29 @@ namespace ui::impl {
 
 // impl for gen code
 namespace gen::options {
+    inline void DrawEnabled_reduceFlashesButton() {
+        const u16 addr = ppu::CartesianToAddress(reduceFlashesButton_pos);
+        ui::impl::DrawTextBox(addr, reduceFlashesButton_box);
+        ui::impl::UpdateTextBox(ui::impl::EnabledUnselected, addr, reduceFlashesButton_box);
+    }
+
     inline void DrawDisabled_reduceFlashesButton() {
-        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, ppu::CartesianToAddress(reduceFlashesButton_pos), reduceFlashesButton_box);
+        const u16 addr = ppu::CartesianToAddress(reduceFlashesButton_pos);
+        ui::impl::DrawTextBox(addr, reduceFlashesButton_box);
+        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, addr, reduceFlashesButton_box);
     }
 
 #if TARGET_GC
+    inline void DrawEnabled_enableWidescreenButton() {
+        const u16 addr = ppu::CartesianToAddress(enableWidescreenButton_pos);
+        ui::impl::DrawTextBox(addr, enableWidescreenButton_box);
+        ui::impl::UpdateTextBox(ui::impl::EnabledUnselected, addr, enableWidescreenButton_box);
+    }
+
     inline void DrawDisabled_enableWidescreenButton() {
-        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, ppu::CartesianToAddress(enableWidescreenButton_pos), enableWidescreenButton_box);
+        const u16 addr = ppu::CartesianToAddress(enableWidescreenButton_pos);
+        ui::impl::DrawTextBox(addr, enableWidescreenButton_box);
+        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, addr, enableWidescreenButton_box);
     }
 #endif
 }

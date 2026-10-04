@@ -1,4 +1,5 @@
 #include "title.hpp"
+
 #ifndef GEN_TARGET_DIR
 #error "GEN_TARGET_DIR is not set -- add it to this target's CMakeLists.txt branch."
 #endif
@@ -248,16 +249,29 @@ namespace title {
 
         // Preloaded once, here, with the rest of the UI -- not drawn later
         // when Options is actually picked. demo/ui/options.uis now targets
-        // $2800 (buttons excluded for now: reduceFlashesButton), which under
-        // the vertical mirroring just set up is the SAME physical page as
-        // the preview's own nametable -- the rows the preview scrolls past
-        // rather than a separate nametable, so this has to run AFTER
-        // DrawLevelPreview (above), not before, or the preview's own column
-        // writes would overwrite this text right back out.
+        // $2800, which under the vertical mirroring just set up is the SAME
+        // physical page as the preview's own nametable -- the rows the
+        // preview scrolls past rather than a separate nametable, so this has
+        // to run AFTER DrawLevelPreview (above), not before, or the
+        // preview's own column writes would overwrite this text right back
+        // out.
         gen::options::Draw_optionsTitle();
         gen::options::Draw_videoOptions();
         gen::options::Draw_reduceFlashesText();
         gen::options::Draw_superMarySistersText();
+#if TARGET_VARIADIC_DISPLAY
+        // Make_ resolves this button's anchor against the viewport THIS run
+        // has -- on NES/GBA/PSP the position is a `constexpr` instead (see
+        // ::TARGET_VARIADIC_DISPLAY), so there's no Make_ to call there.
+        gen::options::Make_reduceFlashesButton();
+#endif
+        gen::options::Draw_reduceFlashesButton();
+#if TARGET_GC
+        // TARGET_GC is always inside the OGC (variadic) family, so Make_ is
+        // unconditional here -- no fixed-panel build ever sets TARGET_GC.
+        gen::options::Make_enableWidescreenButton();
+        gen::options::Draw_enableWidescreenButton();
+#endif
 
         InitTitleScreen();
 

@@ -1,0 +1,166 @@
+{
+    "bss_prefix": "SYSMEM",
+    "charmap": "generic",
+    "data_prefix": "OPTIONS_DATA",
+    "linker_prefix": "OPTIONS",
+    "nametable": 2,
+    "nodes": [
+        {
+            "align": 0,
+            "charmapOverride": "",
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] optionsTitle",
+            "posXExpr": "(VIEWPORT_TX - this.size.x) >> 1",
+            "posYExpr": "3",
+            "provideErasing": false,
+            "sizeHExpr": "1",
+            "sizeWExpr": "7",
+            "splitter": " ",
+            "text": "OPTIONS"
+        },
+        {
+            "align": 0,
+            "charmapOverride": "",
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] videoOptions",
+            "posXExpr": "1",
+            "posYExpr": "4",
+            "provideErasing": false,
+            "sizeHExpr": "1",
+            "sizeWExpr": "5",
+            "splitter": " ",
+            "text": "VIDEO"
+        },
+        {
+            "children": [
+            ],
+            "defaultEnabled": true,
+            "hasBox": true,
+            "hasSelector": true,
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "button",
+            "name": "[B] reduceFlashesButton",
+            "posXExpr": "3",
+            "posYExpr": "7",
+            "sizeHExpr": "4",
+            "sizeWExpr": "9",
+            "toggleable": false
+        },
+        {
+            "align": 0,
+            "charmapOverride": "",
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] reduceFlashesText",
+            "posXExpr": "4",
+            "posYExpr": "8",
+            "provideErasing": false,
+            "sizeHExpr": "2",
+            "sizeWExpr": "7",
+            "splitter": " ",
+            "text": "REDUCE FLASHES"
+        },
+        {
+            "align": 0,
+            "charmapOverride": "",
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+                "NES",
+                "GBA",
+                "DS",
+                "DSI",
+                "Wii",
+                "Wii U",
+                "3DS",
+                "Switch",
+                "PSP",
+                "PC"
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] enableWidescreenText",
+            "posXExpr": "4",
+            "posYExpr": "14",
+            "provideErasing": false,
+            "sizeHExpr": "2",
+            "sizeWExpr": "10",
+            "splitter": " ",
+            "text": "ENABLE WIDESCREEN"
+        },
+        {
+            "children": [
+            ],
+            "defaultEnabled": true,
+            "hasBox": true,
+            "hasSelector": true,
+            "hideRegions": [
+            ],
+            "hideTargets": [
+                "NES",
+                "GBA",
+                "DS",
+                "DSI",
+                "Wii",
+                "Wii U",
+                "3DS",
+                "Switch",
+                "PSP",
+                "PC"
+            ],
+            "kind": "button",
+            "name": "[B] enableWidescreenButton",
+            "posXExpr": "3",
+            "posYExpr": "13",
+            "sizeHExpr": "4",
+            "sizeWExpr": "12",
+            "toggleable": false
+        },
+        {
+            "align": 1,
+            "charmapOverride": "",
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] superMarySistersText",
+            "posXExpr": "1",
+            "posYExpr": "1",
+            "provideErasing": false,
+            "sizeHExpr": "2",
+            "sizeWExpr": "10",
+            "splitter": " ",
+            "text": "SUPER MARY SISTERS"
+        }
+    ],
+    "region": "NTSC",
+    "showTileGrid": true,
+    "target": "GCN",
+    "tileGridH": 2,
+    "tileGridW": 2,
+    "version": 1
+}

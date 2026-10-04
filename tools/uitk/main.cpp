@@ -241,12 +241,6 @@ constexpr int kProvideErasingRole = Qt::UserRole + 20;
 // Draw_<Name>) start the scene with the button enabled or disabled -- seeds
 // the generated <Name>_enabled flag's initializer.
 constexpr int kButtonDefaultEnabledRole = Qt::UserRole + 21;
-// Button-only: a button whose "selected" look comes from something else
-// entirely (a separate cursor/selector sprite another node already draws)
-// has no need for its own DrawSelected_/DrawUnselected_ hooks -- checking
-// this suppresses those two forced-to-define prototypes, leaving only
-// DrawEnabled_/DrawDisabled_ for the caller to implement.
-constexpr int kButtonHasSelectorRole = Qt::UserRole + 22;
 // Button-only: whether a Toggle_<Name>() is emitted alongside Enable_/
 // Disable_ -- not every button needs one (e.g. a plain confirm button is
 // only ever Enabled or Disabled from outside, never toggled by itself).
@@ -370,10 +364,11 @@ bool isSingleChoiceItem(const QTreeWidgetItem* item) {
 
 // Has its own position/size, like a textbox, but no baked appearance:
 // uitk provides no Draw function for one, only the forced-to-define
-// DrawEnabled_/DrawDisabled_/(conditionally)DrawSelected_/DrawUnselected_
-// hooks hand-written code must implement -- a button could be a tickbox, a
-// wide labeled box, or a sprite, so there's nothing uitk could bake that
-// would be right for all of them (see genButtonDecl).
+// DrawEnabled_/DrawDisabled_ hooks hand-written code must implement -- a
+// button could be a tickbox, a wide labeled box, or a sprite, so there's
+// nothing uitk could bake that would be right for all of them (see
+// genButtonDecl). Enabled/disabled is the only state uitk offers memory
+// for -- there is no selected/unselected concept of its own.
 bool isButtonItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kButtonKind);
 }
@@ -826,7 +821,6 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
         }
         if (isButtonItem(item)) {
             obj["defaultEnabled"] = item->data(0, kButtonDefaultEnabledRole).toBool();
-            obj["hasSelector"] = item->data(0, kButtonHasSelectorRole).toBool();
             obj["toggleable"] = item->data(0, kButtonToggleableRole).toBool();
             obj["hasBox"] = item->data(0, kButtonHasBoxRole).toBool();
         }
@@ -897,7 +891,6 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
         }
         if (isButton) {
             item->setData(0, kButtonDefaultEnabledRole, obj["defaultEnabled"].toBool(true));
-            item->setData(0, kButtonHasSelectorRole, obj["hasSelector"].toBool(false));
             item->setData(0, kButtonToggleableRole, obj["toggleable"].toBool(false));
             item->setData(0, kButtonHasBoxRole, obj["hasBox"].toBool(true));
         }
@@ -1518,16 +1511,16 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
 }
 
 // Emits one Button node's declarations: its `<name>_pos` (plus `<name>_box`,
-// if the node opted into one -- see kButtonHasBoxRole), a mutable
-// `<name>_enabled` flag plus the Enable_/Disable_ (and, if opted in,
-// bool-returning Toggle_) functions that flip it, and Draw_<name>, which just
-// dispatches on `<name>_enabled` to whichever of
-// DrawEnabled_<name>()/DrawDisabled_<name>() hand-written code must supply --
-// uitk only *declares* those two (and, unless the button has its own
-// `kButtonHasSelectorRole` selector graphic elsewhere, DrawSelected_<name>/
-// DrawUnselected_<name> too): a button could look like anything from a 1x1
-// tickbox to a sprite, so there's no one appearance uitk could bake that
-// would suit all of them. Leaving one of these prototypes undefined is only
+// if the node opted into one -- see kButtonHasBoxRole), and the Enable_/
+// Disable_ (and, if opted in, bool-returning Toggle_) functions plus
+// Draw_<name> that read/write its enabled bit. uitk provides no appearance
+// of its own for a button -- only the forced-to-define DrawEnabled_<name>()/
+// DrawDisabled_<name>() hooks hand-written code must supply, dispatched by
+// Draw_<name>: a button could look like anything from a 1x1 tickbox to a
+// sprite, so there's no one appearance uitk could bake that would suit all
+// of them, and no selected/unselected state of its own either -- enabled or
+// disabled, dispatched purely off its own box pos/size, is all the memory
+// this toolkit offers. Leaving DrawEnabled_/DrawDisabled_ undefined is only
 // ever caught at link time, and only once something actually calls the
 // function (directly, or transitively via Draw_<name>) that needed it -- the
 // closest thing to "forced by compile" this toolchain's codegen can offer
@@ -1548,18 +1541,30 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
 //    one (see genSingleChoiceDecl). Hand-written code must call Make_<name>()
 //    once at runtime, before anything reads <name>_pos, the same contract
 //    SingleChoice's Make_ already has.
+//
+// A button's enabled/disabled bit is never its own standalone variable --
+// every button in the scene shares one `button_state` byte array (see
+// generateCode, which sizes it to exactly fit however many buttons the
+// scene actually has and assigns each one a fixed bit index before calling
+// this), so `bitIndex`/`stateArrayName` say which byte and bit within that
+// shared array belong to this particular button. One bool per button used
+// to cost one whole byte (`atomic bool` is never smaller, and is often
+// padded further); eight buttons now cost exactly one byte between them.
 QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                        QTreeWidgetItem* rootItem, const QString& target, const QString& region,
-                       const QString& ntOffXExpr, const QString& ntOffYExpr) {
+                       const QString& ntOffXExpr, const QString& ntOffYExpr, int bitIndex,
+                       const QString& stateArrayName) {
     const QString name = bareName(item);
     const int x = item->data(0, kPosXRole).toInt() + ntOffX;
     const int y = item->data(0, kPosYRole).toInt() + ntOffY;
     const int w = std::clamp(item->data(0, kSizeWRole).toInt(), 1, 255);
     const int h = std::clamp(item->data(0, kSizeHRole).toInt(), 1, 255);
-    const bool defaultEnabled = item->data(0, kButtonDefaultEnabledRole).toBool();
-    const bool hasSelector = item->data(0, kButtonHasSelectorRole).toBool();
     const bool toggleable = item->data(0, kButtonToggleableRole).toBool();
     const bool hasBox = item->data(0, kButtonHasBoxRole).toBool();
+    const int byteIndex = bitIndex / 8;
+    const int bitInByte = bitIndex % 8;
+    const QString byteExpr = QString("%1[%2]").arg(stateArrayName).arg(byteIndex);
+    const QString maskExpr = QString("(1u << %1)").arg(bitInByte);
 
     QStringList lines;
     lines << QString("// Button: %1").arg(name);
@@ -1577,17 +1582,12 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     if (hasBox) {
         lines << QString("inline constexpr vec2<u8> %1_box = {%2, %3};").arg(name).arg(w).arg(h);
     }
-    lines << QString("inline atomic bool %1_enabled = %2;").arg(name, defaultEnabled ? "true" : "false");
 
     // Forced-to-define: no body here, deliberately -- see the doc comment
     // above. Hand-written game code must define these somewhere linked into
     // the final binary.
     lines << QString("void DrawEnabled_%1();").arg(name);
     lines << QString("void DrawDisabled_%1();").arg(name);
-    if (!hasSelector) {
-        lines << QString("void DrawSelected_%1();").arg(name);
-        lines << QString("void DrawUnselected_%1();").arg(name);
-    }
 
     if (!isNes && variadic) {
         const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
@@ -1602,12 +1602,13 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
                      .arg(name, xFinal, yFinal);
     }
 
-    lines << QString("inline AI void Enable_%1() { %1_enabled = true; }").arg(name);
-    lines << QString("inline AI void Disable_%1() { %1_enabled = false; }").arg(name);
+    lines << QString("inline AI void Enable_%1() { %2 |= %3; }").arg(name, byteExpr, maskExpr);
+    lines << QString("inline AI void Disable_%1() { %2 &= static_cast<u8>(~%3); }").arg(name, byteExpr, maskExpr);
     if (toggleable) {
-        lines << QString("inline AI bool Toggle_%1() { return (%1_enabled ^= true); }").arg(name);
+        lines << QString("inline AI bool Toggle_%1() { return (%2 ^= %3) & %3; }").arg(name, byteExpr, maskExpr);
     }
-    lines << QString("inline AI void Draw_%1() { %1_enabled ? DrawEnabled_%1() : DrawDisabled_%1(); }").arg(name);
+    lines << QString("inline AI void Draw_%1() { (%2 & %3) ? DrawEnabled_%1() : DrawDisabled_%1(); }")
+                 .arg(name, byteExpr, maskExpr);
 
     return lines.join("\n") + "\n";
 }
@@ -1682,13 +1683,48 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     // covers all of them, not just the scene default.
     QSet<QString> usedCharmapFns;
 
+    // Every visible Button in the scene, in document order -- fixes each
+    // one's bit index into the shared `button_state` array below before any
+    // button's own Enable_/Disable_/Draw_ (see genButtonDecl) gets emitted,
+    // since they all share one array sized to exactly fit them all.
+    static const QString kButtonStateArrayName = QStringLiteral("button_state");
+    QVector<QTreeWidgetItem*> visibleButtons;
+    for (QTreeWidgetItem* item : collectComponentItems(rootItem)) {
+        if (isButtonItem(item) && !isEffectivelyHidden(item, target, region)) {
+            visibleButtons.push_back(item);
+        }
+    }
+    QHash<const QTreeWidgetItem*, int> buttonBitIndex;
+    for (int i = 0; i < visibleButtons.size(); ++i) {
+        buttonBitIndex[visibleButtons[i]] = i;
+    }
+    if (!visibleButtons.isEmpty()) {
+        const int byteCount = (visibleButtons.size() + 7) / 8;
+        QVector<unsigned> byteDefaults(byteCount, 0u);
+        for (int i = 0; i < visibleButtons.size(); ++i) {
+            if (visibleButtons[i]->data(0, kButtonDefaultEnabledRole).toBool()) {
+                byteDefaults[i / 8] |= (1u << (i % 8));
+            }
+        }
+        QStringList byteLiterals;
+        for (unsigned b : byteDefaults) {
+            byteLiterals << QString("0x%1").arg(b, 2, 16, QLatin1Char('0'));
+        }
+        hppDecls << QString("// Every Button's enabled/disabled bit, packed into the fewest bytes that fit\n"
+                             "// them all -- one bit per button, in the order they appear in the scene.\n"
+                             "inline atomic u8 %1[%2] = {%3};\n")
+                        .arg(kButtonStateArrayName)
+                        .arg(byteCount)
+                        .arg(byteLiterals.join(", "));
+    }
+
     for (QTreeWidgetItem* item : collectComponentItems(rootItem)) {
         if (isNegSpaceItem(item)) continue;  // negative-space carries no code
         if (isEffectivelyHidden(item, target, region)) continue;
 
         if (isButtonItem(item)) {
             hppDecls << genButtonDecl(item, ntOffX, ntOffY, isNes, variadic, rootItem, target, region, ntOffXExpr,
-                                        ntOffYExpr);
+                                        ntOffYExpr, buttonBitIndex.value(item), kButtonStateArrayName);
             continue;
         }
 
@@ -2665,17 +2701,11 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     defaultOptionSpin->setToolTip("Which option (0-based, in tree order) this SingleChoice starts on.\n"
                                     "Clamped to the number of option children it actually has on export.");
 
-    // Button-only (see kButtonDefaultEnabledRole/kButtonHasSelectorRole/
-    // kButtonToggleableRole).
+    // Button-only (see kButtonDefaultEnabledRole/kButtonToggleableRole).
     auto* buttonDefaultEnabledCheck = new QCheckBox(properties);
-    auto* buttonHasSelectorCheck = new QCheckBox(properties);
     auto* buttonToggleableCheck = new QCheckBox(properties);
     auto* buttonHasBoxCheck = new QCheckBox(properties);
     buttonDefaultEnabledCheck->setToolTip("Whether the scene starts with this button Enabled or Disabled.");
-    buttonHasSelectorCheck->setToolTip(
-        "Check this if the button's \"selected\" look comes from something else entirely "
-        "(a separate cursor/selector sprite) -- this suppresses the DrawSelected_/"
-        "DrawUnselected_ hooks, leaving only DrawEnabled_/DrawDisabled_ to implement.");
     buttonToggleableCheck->setToolTip("Also generate a Toggle_<Name>() that flips and returns the enabled flag.");
     buttonHasBoxCheck->setToolTip("Also generate a <Name>_box (vec2<u8>) constant with this button's Size X/Y.\n"
                                    "Leave unchecked if your DrawEnabled_/DrawDisabled_/etc. implementation has "
@@ -2781,7 +2811,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     auto* buttonForm = new QFormLayout(buttonGroup);
     buttonForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     buttonForm->addRow("Default Enabled", buttonDefaultEnabledCheck);
-    buttonForm->addRow("Has External Selector", buttonHasSelectorCheck);
     buttonForm->addRow("Toggleable", buttonToggleableCheck);
     buttonForm->addRow("Has Box", buttonHasBoxCheck);
 
@@ -2812,7 +2841,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // straight back -- harmless, but pointless).
     auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, textEdit, splitterEdit,
                          charmapOverrideEdit, provideErasingCheck, defaultOptionSpin, buttonDefaultEnabledCheck,
-                         buttonHasSelectorCheck, buttonToggleableCheck, buttonHasBoxCheck, hideTargetsButton,
+                         buttonToggleableCheck, buttonHasBoxCheck, hideTargetsButton,
                          hideTargetActions, hideRegionsButton, hideRegionActions, updateHideButtonSummary,
                          suppressHideWrite](QTreeWidgetItem* item) {
         const QSignalBlocker bx(posXEdit);
@@ -2826,7 +2855,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         const QSignalBlocker be(provideErasingCheck);
         const QSignalBlocker bd(defaultOptionSpin);
         const QSignalBlocker bbe(buttonDefaultEnabledCheck);
-        const QSignalBlocker bbs(buttonHasSelectorCheck);
         const QSignalBlocker bbt(buttonToggleableCheck);
         const QSignalBlocker bbb(buttonHasBoxCheck);
         auto exprOr = [item](int exprRole, int fallback) {
@@ -2845,7 +2873,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         provideErasingCheck->setChecked(item->data(0, kProvideErasingRole).toBool());
         defaultOptionSpin->setValue(item->data(0, kDefaultOptionRole).toInt());
         buttonDefaultEnabledCheck->setChecked(item->data(0, kButtonDefaultEnabledRole).toBool());
-        buttonHasSelectorCheck->setChecked(item->data(0, kButtonHasSelectorRole).toBool());
         buttonToggleableCheck->setChecked(item->data(0, kButtonToggleableRole).toBool());
         buttonHasBoxCheck->setChecked(item->data(0, kButtonHasBoxRole).toBool());
 
@@ -2913,7 +2940,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         tree, &QTreeWidget::itemChanged,
         [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit, sizeHEdit, textEdit,
          splitterEdit, charmapOverrideEdit, provideErasingCheck, defaultOptionSpin, buttonDefaultEnabledCheck,
-         buttonHasSelectorCheck, buttonToggleableCheck, buttonHasBoxCheck](QTreeWidgetItem* item, int column) {
+         buttonToggleableCheck, buttonHasBoxCheck](QTreeWidgetItem* item, int column) {
             if (column != 0 || item != tree->currentItem() || !isPrefixedItem(item)) {
                 return;
             }
@@ -2921,7 +2948,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             if (posXEdit->hasFocus() || posYEdit->hasFocus() || sizeWEdit->hasFocus() || sizeHEdit->hasFocus() ||
                 textEdit->hasFocus() || splitterEdit->hasFocus() || charmapOverrideEdit->hasFocus() ||
                 provideErasingCheck->hasFocus() || defaultOptionSpin->hasFocus() ||
-                buttonDefaultEnabledCheck->hasFocus() || buttonHasSelectorCheck->hasFocus() ||
+                buttonDefaultEnabledCheck->hasFocus() ||
                 buttonToggleableCheck->hasFocus() || buttonHasBoxCheck->hasFocus()) {
                 return;
             }
@@ -2988,12 +3015,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         QTreeWidgetItem* item = tree->currentItem();
         if (isButtonItem(item)) {
             item->setData(0, kButtonDefaultEnabledRole, checked);
-        }
-    });
-    QObject::connect(buttonHasSelectorCheck, &QCheckBox::toggled, [tree](bool checked) {
-        QTreeWidgetItem* item = tree->currentItem();
-        if (isButtonItem(item)) {
-            item->setData(0, kButtonHasSelectorRole, checked);
         }
     });
     QObject::connect(buttonToggleableCheck, &QCheckBox::toggled, [tree](bool checked) {
@@ -3138,7 +3159,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         child->setData(0, kSizeWRole, 1);
         child->setData(0, kSizeHRole, 1);
         child->setData(0, kButtonDefaultEnabledRole, true);
-        child->setData(0, kButtonHasSelectorRole, false);
         child->setData(0, kButtonToggleableRole, false);
         child->setData(0, kButtonHasBoxRole, true);
         child->setData(0, kLastValidNameRole, name);
@@ -3178,19 +3198,25 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
          addButtonNode, deleteNode](const QPoint& pos) {
             QTreeWidgetItem* clicked = tree->itemAt(pos);
             const bool onSingleChoice = isSingleChoiceItem(clicked);
+            // A Button can likewise take ctTextBox/rtTextBox children (e.g.
+            // a label), same reasoning as SingleChoice's own options below --
+            // so it gets the same textbox-only menu when right-clicked.
+            const bool onButton = isButtonItem(clicked);
+            const bool onTextBoxContainer = onSingleChoice || onButton;
             // A single choice's own children are its ctTextBox/rtTextBox
             // options, so right-clicking one targets textbox adds at it
             // rather than at root -- same as every other add here, which
             // still always targets root until there's UI for nesting more
-            // generally. It houses only textboxes, so Negative Space and
-            // nested Single Choice aren't offered there at all.
-            QTreeWidgetItem* textBoxParent = onSingleChoice ? clicked : rootItem;
+            // generally. It (and a Button, for its label) houses only
+            // textboxes, so Negative Space, Single Choice, and Button
+            // aren't offered there at all.
+            QTreeWidgetItem* textBoxParent = onTextBoxContainer ? clicked : rootItem;
             QMenu menu;
             QAction* addCtTextboxAction = menu.addAction("Add Compile-Time Textbox");
             QAction* addRtTextboxAction = menu.addAction("Add Runtime Textbox");
-            QAction* addNegSpaceAction = onSingleChoice ? nullptr : menu.addAction("Add Negative Space");
-            QAction* addSingleChoiceAction = onSingleChoice ? nullptr : menu.addAction("Add Single Choice");
-            QAction* addButtonAction = onSingleChoice ? nullptr : menu.addAction("Add Button");
+            QAction* addNegSpaceAction = onTextBoxContainer ? nullptr : menu.addAction("Add Negative Space");
+            QAction* addSingleChoiceAction = onTextBoxContainer ? nullptr : menu.addAction("Add Single Choice");
+            QAction* addButtonAction = onTextBoxContainer ? nullptr : menu.addAction("Add Button");
             QAction* deleteAction = nullptr;
             if (clicked && clicked != rootItem) {
                 menu.addSeparator();
