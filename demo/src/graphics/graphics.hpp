@@ -89,10 +89,35 @@ CHARACTER_ROM_BEGIN(chrArrow)
 #embed "../../chr/tiles/static/ui/arrow.chr"
 CHARACTER_ROM_END(chrArrow, chrEmpty);
 
+// button box border pieces
+CHARACTER_ROM_BEGIN(chrButtonBoxUL)
+#embed "../../chr/tiles/static/ui/button/box_ul.chr"
+CHARACTER_ROM_END(chrButtonBoxUL, chrArrow);
+
+CHARACTER_ROM_BEGIN(chrButtonBoxUR)
+#embed "../../chr/tiles/static/ui/button/box_ur.chr"
+CHARACTER_ROM_END(chrButtonBoxUR, chrButtonBoxUL);
+
+CHARACTER_ROM_BEGIN(chrButtonBoxBR)
+#embed "../../chr/tiles/static/ui/button/box_br.chr"
+CHARACTER_ROM_END(chrButtonBoxBR, chrButtonBoxUR);
+
+CHARACTER_ROM_BEGIN(chrButtonBoxBL)
+#embed "../../chr/tiles/static/ui/button/box_bl.chr"
+CHARACTER_ROM_END(chrButtonBoxBL, chrButtonBoxBR);
+
+CHARACTER_ROM_BEGIN(chrButtonBoxHorizontal)
+#embed "../../chr/tiles/static/ui/button/box_horizontal.chr"
+CHARACTER_ROM_END(chrButtonBoxHorizontal, chrButtonBoxBL);
+
+CHARACTER_ROM_BEGIN(chrButtonBoxVertical)
+#embed "../../chr/tiles/static/ui/button/box_vertical.chr"
+CHARACTER_ROM_END(chrButtonBoxVertical, chrButtonBoxHorizontal);
+
 // world dynamic tiles -- FINAL blob. Closing it with _FINAL also emits the
 // whole cartridge's CHR ROM image: 0x2000 (8 KB) is the entire CHR ROM here,
 // which (being a single page) the PPU maps directly. A banked cartridge would
 // pass its full CHR ROM size instead and let the mapper window it in.
 CHARACTER_ROM_BEGIN(chrCoin)
 #embed "../../chr/tiles/dynamic/coin.chr"
-CHARACTER_ROM_END_FINAL(chrCoin, chrArrow, 0x2000);
+CHARACTER_ROM_END_FINAL(chrCoin, chrButtonBoxVertical, 0x2000);

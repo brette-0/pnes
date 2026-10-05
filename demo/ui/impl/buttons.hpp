@@ -25,14 +25,14 @@ namespace ui::impl {
 
     constexpr void DrawTextBox(const u16 pos, const vec2<u8>& box) {
         // TODO: create actual graphics and use it normally
-        constexpr u8 ULCornerGraphic   = charmap_generic('X');
-        constexpr u8 URCornerGraphic   = charmap_generic('X');
-        constexpr u8 BLCornerGraphic   = charmap_generic('X');
-        constexpr u8 BRCornerGraphic   = charmap_generic('X');
-        constexpr u8 LeftEdgeGraphic   = charmap_generic('O');
-        constexpr u8 RightEdgeGraphic  = charmap_generic('O');
-        constexpr u8 TopEdgeGraphic    = charmap_generic('O');
-        constexpr u8 BottomEdgeGraphic = charmap_generic('O');
+        constexpr u8 ULCornerGraphic   = chrButtonBoxUL_tile;
+        constexpr u8 URCornerGraphic   = chrButtonBoxUR_tile;
+        constexpr u8 BLCornerGraphic   = chrButtonBoxBL_tile;
+        constexpr u8 BRCornerGraphic   = chrButtonBoxBR_tile;
+        constexpr u8 LeftEdgeGraphic   = chrButtonBoxVertical_tile;
+        constexpr u8 RightEdgeGraphic  = chrButtonBoxVertical_tile;
+        constexpr u8 TopEdgeGraphic    = chrButtonBoxHorizontal_tile;
+        constexpr u8 BottomEdgeGraphic = chrButtonBoxHorizontal_tile;
 
         // UL
         ppu::WriteSingleToNameTable(pos, ULCornerGraphic);
