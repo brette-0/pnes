@@ -109,10 +109,13 @@ namespace title {
     static void UpdateMarySpriteY(u8 splitRow);
     static void nmi_handler_drawPlayMode();
     static void nmi_handler_drawMenu();
+    static void BuildPaletteFadePhases();
+    static void nmi_handler_fadeToOptions();
     static void nmi_handler_lockOptions();
     static void nmi_handler_lockAnim();
     static void nmi_handler_locked();
     static void nmi_handler_lockAnimReverse();
+    static void nmi_handler_fadeFromOptions();
 
     // Column where the menu/play-mode nametable begins: one nametable's width
     // to the right of nametable A, computed at runtime rather than a
@@ -136,16 +139,66 @@ namespace title {
 
     // Current position through the reveal animation (::nmi_handler_lockAnim)
     // and its reverse (::nmi_handler_lockAnimReverse), in SCANLINES (not
-    // tile rows -- stepping one scanline at a time is the whole point of
+    // tile rows -- stepping a few scanlines at a time is the whole point of
     // both). Forward counts down from the title menu's own split row
     // (converted to scanlines) to 0; reverse counts back up from 0 to that
-    // same value. One scanline every frame (two scanlines' worth of 60fps
-    // motion per 30fps-equivalent tick reads as a brisk, still-smooth
-    // scroll; this was one scanline every OTHER frame -- half the speed --
-    // before). Declared up here (not besides the handlers that actually use
-    // it) because ::main's own B-press handling needs it in scope before
-    // ::main is defined, to check whether a reveal is actually running.
+    // same value, ::kScanlinesPerFrame scanlines every frame (this was one
+    // scanline every frame before -- half the speed -- and one scanline
+    // every OTHER frame before that). Declared up here (not besides the
+    // handlers that actually use it) because ::main's own B-press handling
+    // needs it in scope before ::main is defined, to check whether a reveal
+    // is actually running.
     static u16 lockAnimScanline;
+
+    // How many scanlines ::nmi_handler_lockAnim/::nmi_handler_lockAnimReverse
+    // walk the scroll split by, per frame.
+    constexpr u16 kScanlinesPerFrame = 2;
+
+    // Where each phase below writes back to, and how long it is. BG_3 (the
+    // HUD's palette, ::titleScreenColours) is deliberately absent -- the fade
+    // must leave the HUD alone.
+    struct FadeRun { u8 offset; u8 count; };
+    constexpr FadeRun kFadeEntries[] = {
+        {ppu::BG_0,         4}, // BG_0 sub-palette, incl. the shared backdrop
+        {ppu::BG_1 + 1,     3}, // BG_1 colours 1-3
+        {ppu::SPRITE_0 + 1, 3}, // Mary's sprite colours
+    };
+
+    // A colour byte's row/brightness nibble is 2 bits (0-3) on every valid
+    // NES palette entry -- a hardware ceiling, not something that depends on
+    // ::BGColours/::maryColors' actual values -- so walking every entry one
+    // row darker at a time always reaches "every entry forced to 0x1f" by
+    // phase 4 (row 3 -> 2 -> 1 -> 0 -> swap), regardless of what the starting
+    // colours are. Phase 0 is the untouched original.
+    constexpr u8 kFadePhaseCount = 5;
+
+    // Every phase of the fade, precomputed once (::BuildPaletteFadePhases,
+    // called from ::main as soon as the title screen's own palette is known)
+    // instead of stepped live frame by frame: fading out just walks this
+    // table forward, fading back in on the way back to the title walks it
+    // backward -- a plain index into fixed, exact data instead of an inverse
+    // of the darkening arithmetic (which can't be inverted exactly: forcing
+    // a colour to 0x1f on the way down throws its hue away). Needed only
+    // while the title screen is up; nothing reads it once gameMode leaves
+    // Title; it's a fixed-size file-static array, not heap-allocated --
+    // there's no real heap to speak of on the NES target, and the size here
+    // is a hardware-fixed constant, so there's nothing a dynamic allocation
+    // would buy over just declaring the array.
+    static u8 paletteFadePhases[kFadePhaseCount][4 + 3 + 3];
+
+    // Current index into ::paletteFadePhases: 0 is full colour, ::kFadePhaseCount - 1
+    // is fully black. ::nmi_handler_fadeToOptions counts this up,
+    // ::nmi_handler_fadeFromOptions counts it back down.
+    static u8 fadePhase;
+
+    // Each phase holds for this many frames before the next one -- advancing
+    // every vblank reads as a near-instant snap (only ::kFadePhaseCount - 1
+    // steps total), not a fade.
+    constexpr u8 kFadeStepFrames = 4;
+
+    // Counts frames within the current phase; wraps back to 0 (and advances
+    // ::fadePhase) in ::nmi_handler_fadeToOptions/::nmi_handler_fadeFromOptions.
+    static u8 fadeFrameCounter;
 
     // Rows the menu band (everything below the split) is given. The NES lays
     // it out as 30 - 24 = 6 rows, which is what the title/menu text (nametable
@@ -247,6 +300,12 @@ namespace title {
 
         DrawLevelPreview();
 
+        // Every phase of the Options fade, computed once up front from the
+        // same colours DrawLevelPreview just uploaded -- see
+        // ::paletteFadePhases' own comment for why this lives here (title
+        // entry) rather than inside ::main's own input loop.
+        BuildPaletteFadePhases();
+
         // Preloaded once, here, with the rest of the UI -- not drawn later
         // when Options is actually picked. demo/ui/options.uis now targets
         // $2800, which under the vertical mirroring just set up is the SAME
@@ -324,9 +383,15 @@ namespace title {
                         case Options:
                             // No Options screen built yet -- rather than a
                             // silent no-op, freeze input here for good: same
-                            // state-first-NMI-last ordering as above.
+                            // state-first-NMI-last ordering as above. Fades
+                            // the non-HUD palette to black before handing off
+                            // to the existing lock/reveal sequence --
+                            // ::paletteFadePhases is already built (::main,
+                            // at title entry), so this just rewinds the index.
+                            fadePhase = 0;
+                            fadeFrameCounter = 0;
                             optionsLocked = true;
-                            pNMI = nmi_handler_lockOptions;
+                            pNMI = nmi_handler_fadeToOptions;
                             break;
 
 #if defined(TARGET_MACOS) || defined(TARGET_WINDOWS) || defined(TARGET_LINUX)
@@ -397,6 +462,100 @@ namespace title {
 
     // Current split position through the reveal animation below, in
     // SCANLINES (not tile rows like ::SplitRow() -- stepping this one
+    // One luminance step darker: the colour's row/brightness nibble (its top
+    // nibble) drops by 0x10. Once that nibble is already 0 there's no lower
+    // row to drop to, so the colour is pinned at 0x1f (a safe NES black)
+    // instead of underflowing into the next hue's range. Only used by
+    // ::BuildPaletteFadePhases, to fill the table below.
+    static u8 FadeStep(const u8 colour) {
+        if ((colour & 0xf0) == 0) return 0x1f;
+        return static_cast<u8>(colour - 0x10);
+    }
+
+    // Fills ::paletteFadePhases: phase 0 is the title screen's live, non-HUD
+    // palette (read from the same ROM arrays DrawLevelPreview uploads it
+    // from -- BGColours/maryColors live in the LEVEL_GRAPHICS bank, same
+    // reason DrawLevelPreview itself reads them inside CallLevelGraphics),
+    // every later phase is the previous one run through ::FadeStep once.
+    static void BuildPaletteFadePhases() {
+        CallLevelGraphics([] {
+            u8* dst = paletteFadePhases[0];
+            *dst++ = BGColours[0]; *dst++ = BGColours[1]; *dst++ = BGColours[2]; *dst++ = BGColours[3];
+            *dst++ = BGColours[5]; *dst++ = BGColours[6]; *dst++ = BGColours[7];
+            *dst++ = maryColors[0]; *dst++ = maryColors[1]; *dst++ = maryColors[2];
+        });
+        for (u8 phase = 1; phase < kFadePhaseCount; ++phase) {
+            for (u8 i = 0; i < sizeof(paletteFadePhases[0]); ++i) {
+                paletteFadePhases[phase][i] = FadeStep(paletteFadePhases[phase - 1][i]);
+            }
+        }
+    }
+
+    // Writes one precomputed phase out via ::ppu::pal::WriteFromBuffer (plain
+    // RAM source -- no LEVEL_GRAPHICS switch needed here, unlike
+    // ::BuildPaletteFadePhases).
+    static void WritePaletteFadePhase(const u8 phase) {
+        const u8* src = paletteFadePhases[phase];
+        for (const FadeRun& run : kFadeEntries) {
+            ppu::pal::WriteFromBuffer(run.offset, src, run.count);
+            src += run.count;
+        }
+    }
+
+    // Steps ::fadePhase one phase darker and writes it out. Returns false
+    // once ::fadePhase has reached the fully-black last phase.
+    static bool StepPaletteFade() {
+        if (fadePhase >= kFadePhaseCount - 1) return false;
+        WritePaletteFadePhase(++fadePhase);
+        return fadePhase < kFadePhaseCount - 1;
+    }
+
+    // ::StepPaletteFade's mirror: steps ::fadePhase one phase brighter
+    // (toward phase 0, the original colours) and writes it out. Returns
+    // false once ::fadePhase is back at 0.
+    static bool StepPaletteFadeIn() {
+        if (fadePhase == 0) return false;
+        WritePaletteFadePhase(--fadePhase);
+        return fadePhase != 0;
+    }
+
+    // Runs ::StepPaletteFade once per vblank until every non-HUD colour has
+    // reached black, then hands off to ::nmi_handler_lockOptions to continue
+    // the existing reveal sequence -- the fade plays out BEFORE the scroll
+    // into the options screen starts. Keeps the scroll at the title screen's
+    // own resting position (X=0, Y=::PreviewScrollY(), same as ::nmi_handler's
+    // every-frame write) for the whole fade: once pNMI points here,
+    // ::nmi_handler itself isn't running any more, so nothing re-arms its
+    // split IRQ, which would otherwise fire once more mid-fade and leave
+    // X-scroll stuck shifted into the menu nametable (::kMenuNT << 3). Y is
+    // deliberately NOT reset to 0 -- that's the preview nametable's own row
+    // 0, where ::DrawLevelPreview writes the coin icon/"Mary" label using the
+    // level's real HUD tiles; that's gameplay furniture that has no business
+    // appearing during this transition.
+    //
+    // ::StepPaletteFade MUST run before ::ppu::SetScroll, not after: $2006
+    // (PPUADDR, which ::ppu::pal::WriteFromBuffer uses) and $2005 (PPUSCROLL)
+    // share the same write-twice toggle/t-register, so a palette write
+    // issued after the scroll write clobbers it with the palette address --
+    // scroll has to be the LAST PPU-address write of the handler.
+    //
+    // ::StepPaletteFade itself only runs once every ::kFadeStepFrames frames
+    // (::fadeFrameCounter, reset in ::main's ::Options case) -- every vblank
+    // would run the whole fade in ::kFadePhaseCount - 1 frames flat.
+    static void nmi_handler_fadeToOptions() {
+        oam::RefreshSprites(OAMBuffer);
+        mmc3::AcknowledgeScanlineIRQ();
+
+        bool stillFading = true;
+        if (++fadeFrameCounter >= kFadeStepFrames) {
+            fadeFrameCounter = 0;
+            stillFading = StepPaletteFade();
+        }
+
+        ppu::SetScroll({0, PreviewScrollY()});
+        if (!stillFading) pNMI = nmi_handler_lockOptions;
+    }
+
     // One-shot: entered once Options is picked (see ::main). Clears the
     // title menu's arrow/text (nametable B, $2C00+) -- nothing is drawn in
     // its place, this deliberately has no Options MENU built yet, just the
@@ -432,7 +591,8 @@ namespace title {
     static void nmi_handler_lockAnim() {
         oam::RefreshSprites(OAMBuffer);
 
-        if (lockAnimScanline != 0) --lockAnimScanline;
+        lockAnimScanline = lockAnimScanline > kScanlinesPerFrame
+            ? static_cast<u16>(lockAnimScanline - kScanlinesPerFrame) : 0;
 
         ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
         UpdateMarySpriteYForPixels(lockAnimScanline);
@@ -465,7 +625,8 @@ namespace title {
         oam::RefreshSprites(OAMBuffer);
 
         const u16 target = static_cast<u16>(SplitRow()) << 3;
-        if (lockAnimScanline < target) ++lockAnimScanline;
+        const u16 next = static_cast<u16>(lockAnimScanline + kScanlinesPerFrame);
+        lockAnimScanline = next < target ? next : target;
 
         if (lockAnimScanline >= target) {
             // Back to the title menu's own steady split: redraw the labels
@@ -473,20 +634,54 @@ namespace title {
             // one tile is the SAME "first-draw indicator" trick ::main's own
             // initial arrow draw uses -- nothing to clear first, there's no
             // stale arrow left anywhere on screen to punch a hole in) and
-            // re-arm the split ::nmi_handler relies on every frame.
+            // re-arm the split ::nmi_handler relies on every frame. The menu
+            // text itself (BG_3) was never part of the fade, so it's safe to
+            // draw it right away -- only the preview behind it is still
+            // black; ::nmi_handler_fadeFromOptions brings that back up before
+            // handing off to the steady ::nmi_handler.
             gen::title::Draw_TitleOptions();
             QueueSelectorDraw(TitleArrowAddr());
             SelectorUpdate();
             ppu::SetScroll({0, PreviewScrollY()});
             ArmSplitIRQ();
 
-            optionsLocked = false;
-            pNMI = nmi_handler;
+            fadeFrameCounter = 0;
+            pNMI = nmi_handler_fadeFromOptions;
             return;
         }
 
         ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
         UpdateMarySpriteYForPixels(lockAnimScanline);
+    }
+
+    // The reverse of ::nmi_handler_fadeToOptions: runs ::StepPaletteFadeIn
+    // once every ::kFadeStepFrames frames until every faded entry is back at
+    // its ::paletteFadeTarget value, then resumes the title menu's ordinary
+    // steady state. Entered once ::nmi_handler_lockAnimReverse's scroll-up
+    // finishes and the menu text is already back on screen -- otherwise
+    // behaves exactly like the steady ::nmi_handler (refresh sprites, update
+    // the selector, hold scroll, re-arm the split) so there's nothing left to
+    // do when it hands off, same ordering reason as ::nmi_handler_fadeToOptions
+    // (palette writes before ::ppu::SetScroll, scroll before ::ArmSplitIRQ --
+    // the latter only touches MMC3 IRQ registers, not the PPU, so it isn't
+    // order-sensitive against the other two).
+    static void nmi_handler_fadeFromOptions() {
+        oam::RefreshSprites(OAMBuffer);
+        SelectorUpdate();
+
+        bool stillFading = true;
+        if (++fadeFrameCounter >= kFadeStepFrames) {
+            fadeFrameCounter = 0;
+            stillFading = StepPaletteFadeIn();
+        }
+
+        ppu::SetScroll({0, PreviewScrollY()});
+        ArmSplitIRQ();
+
+        if (!stillFading) {
+            optionsLocked = false;
+            pNMI = nmi_handler;
+        }
     }
 
     void irq_handler() {

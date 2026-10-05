@@ -8,11 +8,9 @@
 
 // hand written uitk button impls
 namespace ui::impl {
-    enum eButtonState {
-        DisabledUnselected,
-        DisabledSelected,
-        EnabledUnselected,
-        EnabledSelected
+    enum eButtonState : u8 {
+        Enabled,
+        Disabled
     };
 
     constexpr void DrawDotBoxDisabled(const u16 pos) {
@@ -78,26 +76,26 @@ namespace gen::options {
     inline void DrawEnabled_reduceFlashesButton() {
         const u16 addr = ppu::CartesianToAddress(reduceFlashesButton_pos);
         ui::impl::DrawTextBox(addr, reduceFlashesButton_box);
-        ui::impl::UpdateTextBox(ui::impl::EnabledUnselected, addr, reduceFlashesButton_box);
+        ui::impl::UpdateTextBox(ui::impl::Disabled, addr, reduceFlashesButton_box);
     }
 
     inline void DrawDisabled_reduceFlashesButton() {
         const u16 addr = ppu::CartesianToAddress(reduceFlashesButton_pos);
         ui::impl::DrawTextBox(addr, reduceFlashesButton_box);
-        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, addr, reduceFlashesButton_box);
+        ui::impl::UpdateTextBox(ui::impl::Disabled, addr, reduceFlashesButton_box);
     }
 
 #if TARGET_GC
     inline void DrawEnabled_enableWidescreenButton() {
         const u16 addr = ppu::CartesianToAddress(enableWidescreenButton_pos);
         ui::impl::DrawTextBox(addr, enableWidescreenButton_box);
-        ui::impl::UpdateTextBox(ui::impl::EnabledUnselected, addr, enableWidescreenButton_box);
+        ui::impl::UpdateTextBox(ui::impl::Disabled, addr, enableWidescreenButton_box);
     }
 
     inline void DrawDisabled_enableWidescreenButton() {
         const u16 addr = ppu::CartesianToAddress(enableWidescreenButton_pos);
         ui::impl::DrawTextBox(addr, enableWidescreenButton_box);
-        ui::impl::UpdateTextBox(ui::impl::DisabledUnselected, addr, enableWidescreenButton_box);
+        ui::impl::UpdateTextBox(ui::impl::Disabled, addr, enableWidescreenButton_box);
     }
 #endif
 }
