@@ -303,6 +303,19 @@ PROVIDE(__audio_engine_size = SIZEOF(.prg_rom_audio));
 ASSERT(__audio_engine_size > 0 || !DEFINED(nmi_handler),
        "The audio bank is empty -- demo/famistudio_config.s's FAMISTUDIO_CA65_CODE_SEGMENT no longer decodes to .prg_rom_audio (ld.lld XO65 escapes: _p is '.', __ is '_'), so audio::Update() would call an engine that is not in the ROM.")
 
+/* Zero page is opt-in only: CMakeLists.txt sets -mlto-zp=0 so mos-zero-page-alloc
+ * promotes nothing on its own, leaving $20-$FF free for `direct`-tagged globals
+ * (technology.hpp) and FamiStudio's own ZEROPAGE segment (famistudio_config.s).
+ * That contract depends on llvm-mos's 32-byte imaginary-register block
+ * (__rc0-__rc31) staying exactly $00-$1F -- nes-no-pow2.ld already computes the
+ * `zp` region as `__rc31 + 1` rather than hardcoding $20 for this reason, and
+ * carries its own ASSERT(__rc31 == 0x1f, ...). That file is a tracked, unmodified
+ * fork of the SDK's nes.ld (see its own header comment), so this second,
+ * project-local ASSERT pins the same fact here instead of hand-editing it --
+ * ORIGIN(zp) MUST be $20 for code that assumes `direct` variables start there. */
+ASSERT(ORIGIN(zp) == 0x20,
+       "Zero page's free region no longer starts at $20 -- llvm-mos's imaginary-register block (__rc0-__rc31) grew or shrank. `direct`-tagged globals and FamiStudio's ZEROPAGE segment assume ORIGIN(zp) == 0x20; update anything that hardcodes that address.")
+
 /* mmc3-helper.ld FULL()s only nes2_header; every PRG region is this
  * project's job, in this exact order -- OUTPUT_FORMAT is additive across
  * INCLUDEd files, and this block's position (AFTER mmc3-helper.ld's own)

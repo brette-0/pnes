@@ -947,11 +947,13 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             -std=gnu++23 -Wno-c23-extensions -x c++
             -include ${CMAKE_SOURCE_DIR}/demo/src/graphics/charmaps.hpp
             -Os ${PLATFORM_DEFINE_FLAGS} ${DEMO_PLACEMENT_FLAGS} -DGEN_TARGET_DIR=nes -D${ORIENTATION}
-            # Reserve 10 ZP bytes for FamiStudio (8 vars + 2 alignment slack).
-            # mos-nes.cfg defaults to -mlto-zp=224 (the full region); capping at
-            # 214 prevents mos-zero-page-alloc from filling the last 10 bytes and
-            # leaving no room for FamiStudio's ZEROPAGE segment.
-            -mlto-zp=214
+            # mos-nes.cfg defaults to -mlto-zp=224 (the whole region), letting
+            # mos-zero-page-alloc opportunistically promote ordinary globals into
+            # zero page with no source-level opt-in. Capped to 0 so zero page is
+            # only ever used by what explicitly asks for it: `direct`-tagged C++
+            # globals (.zp.bss, technology.hpp) and FamiStudio's own ZEROPAGE
+            # segment (famistudio_config.s), neither of which this flag affects.
+            -mlto-zp=0
             # This custom command calls the compiler directly, bypassing
             # CMAKE_EXE_LINKER_FLAGS (which supplies -T/-L for every ordinary
             # CMake target's link step) -- so -T/-L have to be repeated here too.
@@ -1089,7 +1091,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # FamiStudio and the hand-written assembly objects are required by
     # every build configuration.
     target_link_options(demo PRIVATE
-            -mlto-zp=214   # leaves 10 bytes at the top of zero page for FamiStudio's own ZEROPAGE segment
+            -mlto-zp=0   # match pass-1 cap; disables mos-zero-page-alloc entirely, see pass-1's comment
             ${FAMISTUDIO_OBJ}
             ${DEMO_ASM_OBJECTS}
     )
