@@ -45,6 +45,29 @@ namespace level {
 
     static void CoinVramReset() { CoinVramLen = 0; }
 
+    // Guards nmi_handler's own ppu::SetScroll call against EnterLevelSetup's
+    // raw, unprotected PPUADDR/PPUDATA uploads (ppu::Flush, the OAM/palette/
+    // name-table writes, PopulateNameTableColumns). On real NES hardware,
+    // PPUSCROLL ($2005) and PPUADDR ($2006) share the PPU's internal write
+    // toggle and loopy_t/loopy_v address registers. NMI generation is
+    // already running throughout EnterLevelSetup (inherited from title --
+    // see that function's own comment), so every one of those multi-byte
+    // VRAM uploads is live to being interrupted mid-sequence: if
+    // nmi_handler's unconditional SetScroll lands in the middle of one, its
+    // two PPUSCROLL writes clobber the VRAM address the interrupted write
+    // was relying on for its remaining bytes, landing them at an unrelated
+    // address carrying whatever value happened to be mid-flight (observed:
+    // a stray palette-0 byte landing on an attribute cell
+    // PopulateNameTableColumns had already walked past -- hence a grey
+    // coin, and only ever right after the title->level transition, where
+    // NMI is live but none of this setup work is NMI-safe).
+    //
+    // Sidesteps NMI rather than disabling it (NMI can't be masked by SEI on
+    // 6502): nmi_handler still runs every vblank and ::irq::nmi_done still
+    // gets set (by the NMI vector macro itself, unconditionally, not by
+    // this handler), so ::video::WaitForPresent keeps working throughout.
+    static bool suppressNmiScroll;
+
     // ACTORS: sole caller is PushCoinVram (player.cpp), now in the actors bank --
     // CoinVram/CoinVramLen stay put (RAM, not bank-sensitive); only the code that
     // writes them needs to be reachable. See banks.hpp's ::actor_tag comment.
@@ -109,6 +132,7 @@ namespace level {
     // the FIXED trampoline instead of ::COLD (confirmed empirically:
     // prg_rom_cold measured 0 bytes, prg_rom_fixed ballooned ~5.2 KiB).
     static COLD NI void EnterLevelSetup() {
+        suppressNmiScroll = true;   // see ::suppressNmiScroll's own comment
         pNMI = nmi_handler;
         pIRQ = irq_handler;
 
@@ -195,6 +219,10 @@ namespace level {
         mmc3::CallInBlock<level_code_tag>([] {
             PopulateNameTableColumns(static_cast<u16>(2 + video::viewport_tx()));
         });
+
+        // Last of the raw, unprotected VRAM uploads above -- safe from here
+        // on for nmi_handler to touch PPUSCROLL again every frame.
+        suppressNmiScroll = false;
 
         edgeRAbs    = (1 + viewport_mx()) * levelHeight;
         edgeL    = { TileData };
@@ -317,7 +345,7 @@ namespace level {
         }
         CoinVramReset();
 
-        ppu::SetScroll({0, 0});
+        if (!suppressNmiScroll) ppu::SetScroll({0, 0});
         if (levelStreamCommand & STREAM_LEVEL_DONE) {
             levelStreamCommand = {};
         }
