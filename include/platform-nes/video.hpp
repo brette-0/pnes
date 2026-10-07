@@ -35,10 +35,12 @@ using namespace br0::intsh;
 // includes itself in src/wiiu; it must not pull in SDL3. The PSP backend writes
 // straight into VRAM with no GU/SDL at all -- see src/psp/video.cpp. The DS and
 // GBA backends drive the libnds/libgba 2D hardware directly, with no SDL at
-// all.) All are "non-NES", so
+// all. The PS2 backend (src/ps2) presents through the GS via gsKit -- a real
+// GPU, like GX/libnx, not raw VRAM like PSP -- so it must not see SDL3
+// either.) All are "non-NES", so
 // the SDL3-only includes/globals are gated on
-// (!TARGET_NES && !OGC && !CTR && !NX && !WIIU && !PSP && !NDS && !GBA).
-#if !defined(TARGET_NES) && !defined(TARGET_OGC) && !defined(TARGET_CTR) && !defined(TARGET_NX) && !defined(TARGET_WIIU) && !defined(TARGET_PSP) && !defined(TARGET_NDS) && !defined(TARGET_GBA)
+// (!TARGET_NES && !OGC && !CTR && !NX && !WIIU && !PSP && !NDS && !GBA && !PS2).
+#if !defined(TARGET_NES) && !defined(TARGET_OGC) && !defined(TARGET_CTR) && !defined(TARGET_NX) && !defined(TARGET_WIIU) && !defined(TARGET_PSP) && !defined(TARGET_NDS) && !defined(TARGET_GBA) && !defined(TARGET_PS2)
 #include <SDL3/SDL_video.h>
 #endif
 
@@ -632,7 +634,7 @@ namespace ppu {
  */
 extern bool mirroring;
 #endif
-#if !defined(TARGET_NES) && !defined(TARGET_OGC) && !defined(TARGET_CTR) && !defined(TARGET_NX) && !defined(TARGET_WIIU) && !defined(TARGET_PSP) && !defined(TARGET_NDS) && !defined(TARGET_GBA)
+#if !defined(TARGET_NES) && !defined(TARGET_OGC) && !defined(TARGET_CTR) && !defined(TARGET_NX) && !defined(TARGET_WIIU) && !defined(TARGET_PSP) && !defined(TARGET_NDS) && !defined(TARGET_GBA) && !defined(TARGET_PS2)
 /** @brief Current desktop display mode (window + refresh info). SDL backend only. */
 extern const SDL_DisplayMode* mode;
 /** @brief Integer upscaling factor applied to the NES virtual framebuffer. SDL backend only. */
@@ -752,6 +754,26 @@ namespace video {
     /** @brief Viewport width in pixels (tiles * 8). */
     constexpr u16 viewport_px() { return viewport_tx() << 3; }
     /** @brief Viewport height in pixels (tiles * 8). */
+    constexpr u16 viewport_py() { return viewport_ty() << 3; }
+#elif defined(TARGET_PS2)
+    // Unlike every other console backend here, the PS2's display hardware (the
+    // GS) never limits this choice: it presents through a textured quad (gsKit,
+    // see src/ps2/video.cpp) whose destination corners are arbitrary floats, so
+    // scaling the rendered frame up to fill the TV costs the GPU nothing and
+    // needs no "render more world" or "match the panel exactly" decision the
+    // way GC/3DS/Switch/Wii U/PSP each had to make for their own fixed-function
+    // display path. So this just stays at the NES's own native 32x30/256x240 --
+    // the most period-accurate choice available, not a workaround for any
+    // limit -- and src/ps2/video.cpp scales that quad to fill a 4:3 area of the
+    // real screen, pillarboxed (matching the NES's own non-square pixel aspect
+    // stretched to 4:3, same as most NES emulators' default display mode).
+    /** @brief Viewport width in tiles (PS2: 32, NES-native -- the GS scales freely, so there is no reason to render more or less). */
+    constexpr u16 viewport_tx() { return 32; }
+    /** @brief Viewport height in tiles (PS2: 30, NES-native). */
+    constexpr u16 viewport_ty() { return 30; }
+    /** @brief Viewport width in pixels (tiles * 8 = 256). */
+    constexpr u16 viewport_px() { return viewport_tx() << 3; }
+    /** @brief Viewport height in pixels (tiles * 8 = 240). */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
 #elif defined(TARGET_PSP)
     // The PSP's panel is a fixed 480x272. Width matches it EXACTLY (480 is a

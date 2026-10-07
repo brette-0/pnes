@@ -139,18 +139,22 @@ using namespace br0::intsh;
  *        column offsets, generated UI anchors, ...) is resolved at runtime;
  *        0 on a target where it's a fixed, compile-time constant.
  *
- * NES, GBA and PSP are the only fixed-panel trio -- see ::video::viewport_tx /
+ * NES, GBA, PSP and PS2 have fixed panels -- see ::video::viewport_tx /
  * ::video::viewport_ty (video.hpp): theirs are `constexpr`, baked in at
  * compile time, so e.g. a generated Button's position can be `constexpr`
- * too and needs no runtime setup. Every other target (OGC/GC/Wii, 3DS,
- * Switch, Wii U, NDS/DSi, desktop/LANDSCAPE) resolves at least one of those
- * at runtime, so its generated position is instead a mutable `atomic vec2<u16>`
- * that a `Make_*` call must fill in before anything draws at it. This
- * mirrors uitk's own `kVariadicTargets` grouping (tools/uitk/main.cpp) --
- * the same NES/GBA/PSP exclusion decides whether genButtonDecl emits a
- * `constexpr` position or an `atomic` one + `Make_*`.
+ * too and needs no runtime setup. (PS2's is fixed by choice, not a hardware
+ * limit like the other three -- the GS scales freely, see video.hpp's
+ * TARGET_PS2 branch -- but the *position* is just as much a compile-time
+ * constant either way, which is all this macro cares about.) Every other
+ * target (OGC/GC/Wii, 3DS, Switch, Wii U, NDS/DSi, desktop/LANDSCAPE)
+ * resolves at least one of those at runtime, so its generated position is
+ * instead a mutable `atomic vec2<u16>` that a `Make_*` call must fill in
+ * before anything draws at it. This mirrors uitk's own `kVariadicTargets`
+ * grouping (tools/uitk/main.cpp) -- the same NES/GBA/PSP/PS2 exclusion
+ * decides whether genButtonDecl emits a `constexpr` position or an `atomic`
+ * one + `Make_*`.
  */
-#if defined(TARGET_NES) || defined(TARGET_GBA) || defined(TARGET_PSP)
+#if defined(TARGET_NES) || defined(TARGET_GBA) || defined(TARGET_PSP) || defined(TARGET_PS2)
   #define TARGET_VARIADIC_DISPLAY 0
 #else
   #define TARGET_VARIADIC_DISPLAY 1
