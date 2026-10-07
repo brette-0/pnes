@@ -9,6 +9,7 @@
 #       docker compose run --rm build-nes      # == the `nes` job
 #       PRESET=nes-pal-release docker compose run --rm build-nes  # == the `nes-pal` job
 #       docker compose run --rm build-gc       # == the `gc` job
+#       PRESET=gc-pal-release docker compose run --rm build-gc  # == the `gc-pal` job
 #       docker compose run --rm build-wii      # == the `wii` job
 #       docker compose run --rm build-3ds      # == the `ctr` job
 #       docker compose run --rm build-switch   # == the `switch` job
@@ -24,6 +25,7 @@
 #       act -j nes
 #       act -j nes-pal
 #       act -j gc
+#       act -j gc-pal
 #       act -j wii
 #       act -j ctr
 #       act -j switch
@@ -198,6 +200,40 @@ jobs:
         with:
           name: demo-gamecube
           path: cmake-build-ci-gc-release/demo.dol
+          if-no-files-found: error
+
+  gc-pal:
+    name: GameCube PAL (.dol)
+    needs: codegen-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # demo/gen/ (uitk's output) is gitignored -- codegen-check is the only
+      # job that builds/runs uitk itself (it needs Qt); every other job just
+      # downloads what it produced instead of installing Qt itself.
+      - name: Download generated UI code
+        uses: actions/download-artifact@v7
+        with:
+          name: demo-gen
+          path: demo/gen
+
+      - name: Cache build tree
+        uses: actions/cache@v5
+        with:
+          path: cmake-build-ci-gc-pal-release
+          key: gc-pal-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'docker/Dockerfile.ogc') }}
+          restore-keys: gc-pal-
+
+      # Same image/service as the `gc` job, just pointed at the gc-pal-release
+      # preset (TARGET_PLATFORM=gc_pal -> REGION=1, native 50Hz PAL video mode).
+      - name: Build demo.dol (PAL)
+        run: docker compose run --rm --build -e PRESET=gc-pal-release build-gc
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: demo-gamecube-pal
+          path: cmake-build-ci-gc-pal-release/demo.dol
           if-no-files-found: error
 
   wii:

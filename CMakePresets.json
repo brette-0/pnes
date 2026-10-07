@@ -271,6 +271,19 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
+      "name": "gc-pal-release",
+      "inherits": "gc-release",
+      "displayName": "GameCube PAL (Release)",
+      "description": "Same GameCube .dol build as gc-release, but TARGET_PLATFORM=gc_pal sets REGION=1 -- src/ogc/video.cpp's irq::init() then keeps the console's native 50Hz PAL video mode instead of forcing NTSC 60Hz (see that function's own comment).",
+      "cacheVariables": { "TARGET_PLATFORM": "gc_pal" }
+    },
+    {
+      "name": "gc-pal-debug",
+      "inherits": "gc-pal-release",
+      "displayName": "GameCube PAL (Debug)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
       "name": "wii-release",
       "inherits": "_base",
       "displayName": "Wii (Release)",

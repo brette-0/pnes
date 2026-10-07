@@ -1109,13 +1109,23 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # Platform/libogc.cmake, the arch flags, the -logc -lm link line (plus
     # -lwiiuse -lbte on Wii) and the ogc_create_dol() helper used below.
     # ----------------------------------------------------------------------
-elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "wii")
+elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TARGET_PLATFORM STREQUAL "wii")
     project(platform-nes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
     _fixup_fetched_cxx_std_targets()
 
-    if(TARGET_PLATFORM STREQUAL "gc")
+    # gc_pal builds exactly the "gc" branch below (same PLATFORM_DEFINE/
+    # DEMO_TITLE_DIR -- there is no separate TARGET_GC_PAL define, same as
+    # nes_pal above has no TARGET_NES_PAL) -- it only flips REGION to 1, which
+    # src/ogc/video.cpp's irq::init() reads to decide whether to keep the
+    # console's native 50Hz PAL video mode instead of forcing NTSC 60Hz (see
+    # that function's own comment).
+    if(TARGET_PLATFORM STREQUAL "gc_pal")
+        set(REGION 1)
+    endif()
+
+    if(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal")
         set(PLATFORM_DEFINE TARGET_GC)
         set(DEMO_TITLE_DIR gcn)
     else()
