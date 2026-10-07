@@ -1,2 +1,10 @@
 #pragma once
+// ps2sdk's tamtypes.h (u8/u16/u32/u64/s8/s16/s32/s64) goes in here, not in
+// intsh.hpp -- see that file's doc comment. Every engine header's own
+// `#include <intsh>` is the one thing guaranteed to run before it uses any
+// of those names, on every platform including this one, so piggybacking on
+// that include is more robust than trying to force tamtypes.h in some other
+// way (e.g. a compiler -include flag, whose ordering against the demo
+// target's own -include <charmaps.hpp> is not guaranteed).
+#include <tamtypes.h>
 #include "intsh.hpp"

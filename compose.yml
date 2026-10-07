@@ -7,7 +7,7 @@
 #   docker compose run --rm build-gc        # GameCube demo.dol
 #   docker compose run --rm build-wii       # Wii demo.dol (also runs on Wii U / vWii)
 #   docker compose run --rm build-3ds       # Nintendo 3DS demo.3dsx
-#   docker compose run --rm build-ps2       # PS2 toolchain sanity check (no CMake build yet)
+#   docker compose run --rm build-ps2
 #
 # Override the preset by setting PRESET in the environment:
 #
@@ -334,11 +334,11 @@ services:
         echo "Built: cmake-build-ci-$$PRESET/demo.nds"
 
   # PlayStation 2 (ps2sdk / EE+IOP), via the official prebuilt ps2dev/ps2dev
-  # image -- see docker/Dockerfile.ps2. No CMake preset/toolchain file exists
-  # for this target yet, so this just confirms the cross-toolchain itself
-  # runs (no project code is compiled). Once a ps2-release preset and
-  # CMakeLists branch land, this becomes a `cmake --preset`/`cmake --build`
-  # pair like every other build-* service here.
+  # image -- see docker/Dockerfile.ps2. ps2-release's condition checks PS2DEV,
+  # which this image exports, so no explicit -DCMAKE_TOOLCHAIN_FILE is needed
+  # (same shape as build-3ds/build-switch/build-wiiu above). cmake/PS2.cmake
+  # is this project's own toolchain file -- ps2dev ships no CMake toolchain of
+  # its own, unlike devkitPro/pspdev.
   build-ps2:
     build:
       context: docker
@@ -346,7 +346,7 @@ services:
     image: platform-nes-ps2:latest
     # ps2dev/ps2dev is Alpine-based, so this uses sh, not the bash every other
     # build-* service here shells out to -- bash isn't installed on Alpine by
-    # default and this image doesn't need it for a toolchain sanity check.
+    # default.
     # network_mode: host works around this host's bridge driver being unable
     # to create veth pairs for new containers/networks (confirmed separately);
     # harmless here either way since this target does no network I/O at run time.
@@ -356,12 +356,13 @@ services:
     volumes:
       - .:/tmp/platform-nes
     environment:
+      PRESET: ${PRESET:-ps2-release}
       HOME: /tmp
     command:
       - sh
       - -c
       - |
         set -eu
-        mips64r5900el-ps2-elf-gcc -v
-        mips64r5900el-ps2-elf-g++ -v
-        echo "PS2 toolchain OK (PS2DEV=$$PS2DEV, PS2SDK=$$PS2SDK)"
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
+        echo "Built: cmake-build-ci-$$PRESET/demo.elf"

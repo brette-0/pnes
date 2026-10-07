@@ -1889,6 +1889,175 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         )
 
     # ----------------------------------------------------------------------
+    # Sony PlayStation 2 target (ps2dev/ps2sdk + gsKit), via cmake/PS2.cmake
+    # (ps2dev ships no CMake toolchain of its own -- see that file).
+    #
+    # Unlike every emulated-PPU backend above, the PS2 does NOT run the shared
+    # software rasteriser (emu::GenerateFrame) and is not widescreen: the GS
+    # (Graphics Synthesizer) uploads the NES's native 256x240 frame as one
+    # texture and draws it as a single hardware-scaled, pillarboxed quad onto
+    # the fixed 640x448 NTSC screen, so video.hpp's viewport_tx()/viewport_ty()
+    # for TARGET_PS2 are 32x30 -- identical to the real NES -- rather than a
+    # "render more world" widescreen expansion. That's also why this branch
+    # reuses the PSP's demo/gen/title and demo/gen/gameOptions art instead of
+    # needing its own (see the DEMO_TITLE_DIR comment below for why PSP's,
+    # not the NES's own, despite the PS2's viewport matching the NES exactly).
+    #
+    # ps2sdk's own tamtypes.h already typedefs u8/u16/u32/u64/s8/s16/s32/s64 as
+    # ordinary global typedefs, so the real intsh dependency (whose
+    # `using namespace br0::intsh` would make those names ambiguous, breaking
+    # even ps2sdk's own headers -- see src/ps2/intsh_shim/intsh.hpp) is never
+    # fetched for this target. br0::intsh is aliased to a local shim instead,
+    # which supplies only the signed i8/i16/i32/i64 names tamtypes.h lacks
+    # (and #includes tamtypes.h itself, ahead of everything else -- see
+    # src/ps2/intsh_shim/intsh's own comment), so every shared engine header's
+    # unconditional `#include <intsh>; using namespace br0::intsh;` keeps
+    # working completely unmodified.
+    # ----------------------------------------------------------------------
+    elseif(TARGET_PLATFORM STREQUAL "ps2")
+        project(platform-nes CXX)
+
+        add_library(ps2_intsh_shim INTERFACE)
+        target_include_directories(ps2_intsh_shim INTERFACE ${CMAKE_SOURCE_DIR}/src/ps2/intsh_shim)
+        add_library(br0::intsh ALIAS ps2_intsh_shim)
+
+        FetchContent_MakeAvailable(tuple)
+        _fixup_fetched_cxx_std_targets()
+
+        # Reuse the PSP's generated title/options art, NOT the NES's: the
+        # NES's demo/gen/title|gameOptions|options/nes headers additionally
+        # #error without SYSMEM/TITLE/TITLE_DATA/OPTIONS/OPTIONS_DATA, which
+        # only mean anything for the real cartridge's bank-switched ROM
+        # layout (set in a developer's local.cmake) -- nonsensical for a PS2
+        # ELF with no such memory map. The PSP's own generated headers have
+        # no such requirement (same shared video.hpp/text.hpp calls, just
+        # without the NES-only bank placement), and PSP's panel is a
+        # superset of the PS2's native 32x30 (480x272 vs this branch's
+        # 256x240), so the same absolute tile coordinates fit here too.
+        set(DEMO_TITLE_DIR psp)
+
+        if(NOT DEFINED ENV{PS2SDK} OR NOT DEFINED ENV{GSKIT})
+            message(FATAL_ERROR
+                "PS2 build requires the PS2SDK and GSKIT env vars (set by the "
+                "ps2dev/ps2dev Docker image -- see docker/Dockerfile.ps2).")
+        endif()
+        set(PS2SDK_ROOT "$ENV{PS2SDK}")
+        set(GSKIT_ROOT  "$ENV{GSKIT}")
+
+        # The PS2 backend presents the shared software PPU (src/emu): the
+        # emulator and all the nametable/OAM/palette write functions are
+        # platform-agnostic and compiled here alongside the gsKit video/
+        # present, the libpad input, and the audsrv streaming audio.
+        file(GLOB PS2_SOURCES CONFIGURE_DEPENDS src/ps2/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
+        file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
+        add_library(platform-nes STATIC ${PS2_SOURCES} ${ALL_SOURCES})
+        target_include_directories(platform-nes PUBLIC
+                ${CMAKE_SOURCE_DIR}/include
+                ${CMAKE_SOURCE_DIR}/include/umbrella
+                ${PS2SDK_ROOT}/ee/include
+                ${PS2SDK_ROOT}/common/include
+                ${GSKIT_ROOT}/include
+        )
+        # TARGET_PS2 is the group the engine headers gate on (NES-native
+        # 32x30 viewport, no SDL headers -- see this branch's header comment).
+        # _EE is what tamtypes.h/every ps2sdk header gates its EE-side
+        # declarations on; src/ps2/internal.hpp includes tamtypes.h before any
+        # engine header, so it must be visible from the very first TU, not
+        # just within src/ps2/.
+        target_compile_definitions(platform-nes PUBLIC TARGET_PS2 _EE)
+        # Alternative nametable wiring (see the TARGET_NES branch's own comment,
+        # near the top of this file): a fact about which board a build is
+        # modeling, not something exclusive to the NES target itself.
+        if(DEFINED ALTERNATIVE_NAMETABLE)
+            target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+        endif()
+        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+
+        # Same reasoning as the PSP branch: transcode the desktop pc_audio.wav
+        # to a small Vorbis OGG at build time and #embed it (src/ps2/audio.cpp
+        # decodes it with stb_vorbis, streaming from a dedicated EE thread).
+        find_program(FFMPEG ffmpeg REQUIRED)
+        FetchContent_Declare(
+                stb
+                GIT_REPOSITORY https://github.com/nothings/stb.git
+                GIT_TAG        master
+                GIT_SHALLOW    TRUE
+        )
+        FetchContent_MakeAvailable(stb)
+        target_include_directories(platform-nes PRIVATE ${stb_SOURCE_DIR})
+
+        set(PS2_ASSET_DIR ${CMAKE_BINARY_DIR}/ps2-assets)
+        set(PS2_OGG ${PS2_ASSET_DIR}/pc_audio.ogg)
+        set(PS2_WAV ${CMAKE_SOURCE_DIR}/demo/audio/tracks/pc_audio.wav)
+        file(MAKE_DIRECTORY ${PS2_ASSET_DIR})
+        add_custom_command(
+                OUTPUT ${PS2_OGG}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${PS2_ASSET_DIR}
+                COMMAND ${FFMPEG} -y -loglevel error -i ${PS2_WAV}
+                        -ar 44100 -ac 2 -c:a libvorbis -q:a 4 ${PS2_OGG}
+                DEPENDS ${PS2_WAV}
+                COMMENT "Encoding PS2 audio: pc_audio.wav -> pc_audio.ogg (Vorbis, embedded)"
+                VERBATIM)
+        add_custom_target(ps2-assets DEPENDS ${PS2_OGG})
+        add_dependencies(platform-nes ps2-assets)
+
+        # audio.cpp also #embeds ps2sdk's prebuilt audsrv.irx (see its file
+        # header for why audsrv -- unlike the BIOS-resident SIO2MAN/PADMAN/
+        # LIBSD -- needs to be loaded this way); --embed-dir takes a single
+        # directory, so both embeds need their own dir on the search list.
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/src/ps2/audio.cpp
+                PROPERTIES
+                    OBJECT_DEPENDS  ${PS2_OGG}
+                    COMPILE_OPTIONS "--embed-dir=${PS2_ASSET_DIR};--embed-dir=${PS2SDK_ROOT}/iop/irx")
+
+        file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+        file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
+
+        # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
+        # editing the art retriggers a recompile.
+        file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
+                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+
+        add_executable(demo ${DEMO_SOURCES})
+        # ps2sdk's own linking wants the raw ELF extension, same as the PSP
+        # branch's EBOOT packing step wants a bare .elf to pack from.
+        set_target_properties(demo PROPERTIES SUFFIX ".elf")
+        target_link_directories(demo PRIVATE ${PS2SDK_ROOT}/ee/lib ${GSKIT_ROOT}/lib)
+        # gskit/gskit_toolkit/dmakit (gsKit + its DMA helper) and pad/audsrv
+        # are the only ps2sdk/gsKit libs this backend needs beyond what the
+        # compiler's own specs already link (libkernel/libcglue/libpthread*/
+        # libcdvd -- see cmake/PS2.cmake's header comment).
+        target_link_libraries(demo PRIVATE platform-nes
+                gskit gskit_toolkit dmakit
+                pad audsrv
+        )
+
+        # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
+        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
+
+        # CHR art is pulled in with #embed (C23); keep the Clang-only silencer
+        # for parity with the other branches (no-op under ee-g++/GCC).
+        target_compile_options(demo PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
+
+        # Enable LTO for release-type configs, mirroring the other branches.
+        include(CheckIPOSupported)
+        check_ipo_supported(RESULT _ipo_ok OUTPUT _ipo_err)
+        if(_ipo_ok)
+            foreach(_cfg Release MinSizeRel RelWithDebInfo)
+                string(TOUPPER ${_cfg} _CFG)
+                set_property(TARGET demo platform-nes
+                        PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
+            endforeach()
+        else()
+            message(STATUS "IPO/LTO not supported by this toolchain: ${_ipo_err}")
+        endif()
+
+    # ----------------------------------------------------------------------
     # Nintendo DS / DSi target (devkitARM + libnds), via the NDS.cmake toolchain.
     #
     # Unlike every other emulated-PPU backend (SDL/OGC/CTR/NX/WIIU), the DS does

@@ -379,6 +379,28 @@
       "inherits": "dsi-release",
       "displayName": "Nintendo DSi (Debug)",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "ps2-release",
+      "inherits": "_base",
+      "displayName": "PlayStation 2 (Release)",
+      "description": "Sony PlayStation 2 ELF via the ps2dev toolchain (mips64r5900el-ps2-elf-gcc/g++ + ps2sdk + gsKit). Requires ps2dev installed and PS2DEV/PS2SDK/GSKIT set -- see docker/Dockerfile.ps2 and compose.yml's ps2-* services for a ready-made container, since building ps2dev from source is slow. The toolchain file (cmake/PS2.cmake, since ps2dev ships no CMake toolchain of its own) only points at the compiler; ps2sdk/gsKit's own include/link dirs are added in the ps2 branch of CMakeLists.txt.",
+      "cacheVariables": {
+        "TARGET_PLATFORM": "ps2",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/PS2.cmake"
+      },
+      "condition": {
+        "type": "notEquals",
+        "lhs": "$env{PS2DEV}",
+        "rhs": ""
+      }
+    },
+    {
+      "name": "ps2-debug",
+      "inherits": "ps2-release",
+      "displayName": "PlayStation 2 (Debug)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     }
   ]
 }
