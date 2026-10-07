@@ -54,6 +54,31 @@ template <> struct mmc3::bank_layout<actor_tag> {
 
 #define COLD CREATE_SEGMENT_KEYWORD(".prg_rom_cold")
 
+/**
+ * @brief Pins a variable into MMC3's PRG-RAM ("cartridge memory",
+ *        $6000-$7FFF).
+ *
+ * Explicit placement, the same way ::FIXED pins code into $E000-$FFFF: use
+ * for state that should live in cartridge RAM specifically (e.g. a battery-
+ * backed save struct) rather than wherever ordinary .bss/.data happens to
+ * land. Backed by `.cartmem`, NOLOAD (mmc3-helper.ld) -- runtime storage
+ * only, nothing is loaded into it from the ROM file. Expands to nothing
+ * off-NES.
+ */
+#define CARTMEM CREATE_SEGMENT_KEYWORD(".cartmem")
+
+/**
+ * @brief Pins a variable into the NES's own onboard system RAM, explicitly.
+ *
+ * Ordinary globals already land in system RAM via .bss/.data's default
+ * placement; ::SYSMEM exists for state that specifically must NOT drift
+ * into ::CARTMEM or any other region by accident -- an explicit statement
+ * of intent, not a different physical destination than the untagged
+ * default. Backed by `.sysmem`, NOLOAD (mmc3-helper.ld). Expands to nothing
+ * off-NES.
+ */
+#define SYSMEM CREATE_SEGMENT_KEYWORD(".sysmem")
+
 // On TARGET_NES, TITLE and TITLE_DATA are NOT defined here -- CMakeLists.txt
 // injects them as whole compile definitions (from local.cmake's TITLE) onto
 // the `demo` target instead, so they reach every demo .cpp/generated header

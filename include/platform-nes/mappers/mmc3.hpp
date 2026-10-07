@@ -1,7 +1,7 @@
 /**
  * @file mmc3.hpp
  * @brief MMC3 mapper (mapper 4): PRG/CHR bank switching, scanline IRQ, and
- *        the ::FIXED / ::CARTMEM / ::SYSMEM segment keywords.
+ *        the ::FIXED segment keyword.
  *
  * MMC3 hardware, as this module uses it (PRG mode 0, CHR mode 0 -- the only
  * combination this module supports; see mmc3.cpp's ::_reset):
@@ -10,7 +10,7 @@
  *   $A000-$BFFF  8 KiB PRG-ROM, switchable (register R7, via $8000/$8001)
  *   $C000-$DFFF  8 KiB PRG-ROM, FIXED to the second-to-last physical bank
  *   $E000-$FFFF  8 KiB PRG-ROM, FIXED to the last physical bank
- *   $6000-$7FFF  up to 8 KiB PRG-RAM ("cartridge memory", see ::CARTMEM)
+ *   $6000-$7FFF  up to 8 KiB PRG-RAM ("cartridge memory")
  *   $0000-$07FF  CHR-ROM, six windows: two 2 KiB (R0/R1), four 1 KiB (R2-R5)
  *
  * Only TWO registers can be pointed anywhere: R6 ($8000) and R7 ($A000).
@@ -67,31 +67,6 @@ static_assert(ALTERNATIVE_NAMETABLE == 0 || ALTERNATIVE_NAMETABLE == 1,
  * off-NES.
  */
 #define FIXED CREATE_SEGMENT_KEYWORD(".prg_rom_fixed")
-
-/**
- * @brief Pins a variable into MMC3's PRG-RAM ("cartridge memory",
- *        $6000-$7FFF).
- *
- * Explicit placement, the same way ::FIXED pins code into $E000-$FFFF: use
- * for state that should live in cartridge RAM specifically (e.g. a battery-
- * backed save struct) rather than wherever ordinary .bss/.data happens to
- * land. Backed by `.cartmem`, NOLOAD (mmc3-helper.ld) -- runtime storage
- * only, nothing is loaded into it from the ROM file. Expands to nothing
- * off-NES.
- */
-#define CARTMEM CREATE_SEGMENT_KEYWORD(".cartmem")
-
-/**
- * @brief Pins a variable into the NES's own onboard system RAM, explicitly.
- *
- * Ordinary globals already land in system RAM via .bss/.data's default
- * placement; ::SYSMEM exists for state that specifically must NOT drift
- * into ::CARTMEM or any other region by accident -- an explicit statement
- * of intent, not a different physical destination than the untagged
- * default. Backed by `.sysmem`, NOLOAD (mmc3-helper.ld). Expands to nothing
- * off-NES.
- */
-#define SYSMEM CREATE_SEGMENT_KEYWORD(".sysmem")
 
 /**
  * @brief MMC3 mapper (mapper 4) scoping class: PRG/CHR bank registers,

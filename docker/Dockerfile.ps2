@@ -1,0 +1,35 @@
+# PlayStation 2 (ps2sdk / EE+IOP) build image for platform-nes.
+#
+# Built on the official PS2DEV image (Alpine-based, not Debian like the other
+# docker/Dockerfile.* here), which ships the prebuilt MIPS EE/IOP cross-toolchain
+# (mips64r5900el-ps2-elf-gcc/g++, iop-gcc, ...) and ps2sdk, with PS2DEV, PS2SDK,
+# GSKIT already exported and their bin/ dirs on PATH -- building that toolchain
+# from source takes 30-60+ minutes, so this pulls the prebuilt one instead of
+# running ps2dev/ps2dev's own build-all.sh.
+#
+# No CMake toolchain/preset wiring exists for this target yet (that lands with
+# the actual PS2 backend work) -- for now this image just gets the SDK itself
+# onto a machine and confirms the cross-compiler runs:
+#
+#   docker compose run --rm build-ps2
+#
+# The same image will back CI once a ps2-release preset exists, mirroring every
+# other docker/Dockerfile.* here.
+FROM ps2dev/ps2dev:latest
+
+# Alpine's own cmake package (4.2.3 as of writing) already clears the intsh/tuple
+# floor (4.2) and CMakePresets.json's 3.21+ requirement, and -- unlike every
+# other docker/Dockerfile.* here -- it's musl-native, so the Kitware glibc
+# binary the other images pin can't run on this base at all. ninja is the
+# preset generator; git/wget/ca-certificates support FetchContent of
+# intsh/tuple; file lets a build-verify step sniff the produced ELF.
+RUN apk add --no-cache \
+        cmake \
+        ninja \
+        git \
+        wget \
+        ca-certificates \
+        xz \
+        file
+
+WORKDIR /src

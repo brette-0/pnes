@@ -13,14 +13,6 @@ namespace ui::impl {
         Disabled
     };
 
-    constexpr void DrawDotBoxDisabled(const u16 pos) {
-        ppu::WriteSingleToNameTable(pos, chrUnselected_tile);
-    }
-
-    constexpr void DrawDotBoxEnabled(const u16 pos) {
-        ppu::WriteSingleToNameTable(pos, chrSelected_tile);
-    }
-
     constexpr void DrawTextBox(const u16 pos, const vec2<u8>& box) {
         // TODO: create actual graphics and use it normally
         constexpr u8 ULCornerGraphic   = chrButtonBoxUL_tile;
