@@ -22,7 +22,11 @@ FROM ps2dev/ps2dev:latest
 # intsh/tuple; file lets a build-verify step sniff the produced ELF; ffmpeg
 # transcodes demo/audio/tracks/pc_audio.wav to the Vorbis OGG src/ps2/audio.cpp
 # #embeds (same requirement as the PSP branch).
+# bash is otherwise absent on this Alpine base (build-ps2 itself uses sh);
+# it's needed here because IDE Docker toolchains (e.g. CLion) exec bash
+# inside the container to run their compiler/build-tool auto-detection.
 RUN apk add --no-cache \
+        bash \
         cmake \
         ninja \
         git \

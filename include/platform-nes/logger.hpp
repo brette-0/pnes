@@ -183,6 +183,55 @@ extern const float silentStackAmount;
             };                                                                  \
     } while (0)
 
+#elif defined(TARGET_PS2) && !defined(NDEBUG)
+
+// ps2sdk's EE side has no hosted libc stdio behind it (no filesystem, no
+// attached terminal) -- <iostream>'s global static-init (the real
+// std::cout's ios_base::Init object) jumped through an unpopulated pointer
+// and crashed the EE before main() ever ran when this used the generic
+// branch below, so this never includes <iostream> at all. sio_init/sio_puts
+// (ps2sdk's own low-level serial driver, <sio.h>) write straight to the EE's
+// real serial port hardware instead -- no stream objects, no locale
+// globals, nothing but the port itself -- which is exactly what PCSX2's "EE
+// SIO output" logging option (and a real serial cable on hardware) reads.
+// Formatting reuses plain snprintf (libc's buffer formatter, same reasoning:
+// no stream objects) straight into a fixed buffer, so a caller passes
+// ordinary printf-style specifiers (%d/%x/%u/...) matching its own argument
+// types -- same contract as printf itself, unlike the generic LogFormat
+// below, which auto-formats an arbitrary type through operator<<.
+#include <sio.h>
+#include <cstdio>
+
+namespace log_detail {
+/// Lazy, not tied to RESET/EnsureConsoleOnce: sio_puts() needs the port
+/// configured first, but unlike the desktop console there's no "more
+/// expensive to create later" concern -- it's just register writes.
+inline void EnsureSioOnce() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    sio_init(38400, 0, 0, 0, 0);
+}
+} // namespace log_detail
+
+#define log(msg, ...)                                                 \
+    do {                                                              \
+        ::log_detail::EnsureSioOnce();                                \
+        char _pnes_sio_buf[192];                                      \
+        std::snprintf(_pnes_sio_buf, sizeof(_pnes_sio_buf),           \
+                      "log: " msg __VA_OPT__(,) __VA_ARGS__);         \
+        sio_puts(_pnes_sio_buf);                                      \
+    } while (0)
+
+/// No interactive stdin on PS2 to block on (contrast
+/// ::tech::WaitForKeypress's POSIX/Windows implementations) -- logs that
+/// this was hit and carries straight on, rather than hanging forever.
+#define pause()                                                       \
+    do {                                                              \
+        ::log_detail::EnsureSioOnce();                                \
+        sio_puts("log: pause() hit -- no stdin on PS2, continuing");  \
+    } while (0)
+
 #elif !defined(NDEBUG)
 
 #include <iostream>

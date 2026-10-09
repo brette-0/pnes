@@ -31,6 +31,7 @@ IRQ(FIXED) {
 }
 
 RESET {
+    log("RESET: entered");
     apu::DisableFrameIRQ();
     apu::DisableDMCIRQ();
 
@@ -38,23 +39,28 @@ RESET {
     // and buffers the whole music + SFX library). Must run exactly once at
     // boot, not per level -- see level.cpp's EnterLevelSetup for why it used
     // to live there and what that cost.
+    log("RESET: audio::Init starting");
     mmc3::CallInBlock<audio_tag>([] {
         mmc3::CallInBlock<audio_data_tag>([] {
             audio::Init(REGION);
         });
     });
+    log("RESET: audio::Init returned");
 
     while (!quit) {
         switch (gameMode) {
             case eGameModes::Level:
+                log("RESET: entering level::main");
                 mmc3::CallInBlock<level_code_tag>(level::main);
                 continue;
 
             case eGameModes::World:
+                log("RESET: entering world::main");
                 world::main();
                 continue;
 
             case eGameModes::Title:
+                log("RESET: entering title::main");
                 mmc3::CallInBlock<title_tag>(title::main);
         }
     }

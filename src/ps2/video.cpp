@@ -59,6 +59,7 @@
 
 #include <platform-nes/video.hpp>
 #include <platform-nes/interrupts.hpp>
+#include <platform-nes/logger.hpp>
 #include "../emu/emu.hpp"
 
 #include <cstring>
@@ -150,33 +151,62 @@ void WaitForPresent() {
 
 }   // namespace video
 
+// Temporary boot-progress instrumentation: log() (now backed by ps2sdk's
+// sio_puts(), see logger.hpp's TARGET_PS2 branch) produces no visible output
+// under PCSX2 even with "EE SIO output" logging enabled, for reasons still
+// unclear -- so this uses the one output channel already confirmed working
+// (gsKit_clear/queue_exec/sync_flip, exercised every frame once rendering
+// starts) as the diagnostic instead: holds a solid, distinct colour on
 void irq::init() {
+    log("irq::init: entered");
     // Brings up the IOP side RPC link; every SifLoadModule/pad/audsrv call
     // below depends on it, so it has to be the very first thing this does.
     sceSifInitRpc(0);
+    log("irq::init: sceSifInitRpc returned");
 
     // The core owns VideoRAM/paletteRAM. video::vram_bytes() (video.hpp): the
     // viewport is the NES's own native 32x30, so this resolves to the
     // NES-hardware minimum (2 pages/0x800 bytes), same as the plain SDL path.
     emu::InitMemory(video::vram_bytes());
+    log("irq::init: emu::InitMemory returned");
 
     gsGlobal = gsKit_init_global();
+    log("irq::init: gsKit_init_global returned");
     gsGlobal->Mode            = gsKit_check_rom();   // GS_MODE_NTSC or GS_MODE_PAL, from the console's own ROM
+    // 640x448 is the standard NTSC *interlaced* display size -- gsKit_init_
+    // global_custom() leaves these two at 0 (GS_NONINTERLACED/GS_FIELD), an
+    // interlace/field combination that doesn't match a 448-line framebuffer.
+    // Every gsKit sample sets this pair explicitly for exactly that reason;
+    // leaving it unset is an invalid video-timing combination that some
+    // displays/emulators show as no signal at all rather than a garbled
+    // picture.
+    gsGlobal->Interlace       = GS_INTERLACED;
+    gsGlobal->Field           = GS_FIELD;
     gsGlobal->Width           = static_cast<int>(SCREEN_W);
     gsGlobal->Height          = static_cast<int>(SCREEN_H);
     gsGlobal->PSM             = GS_PSM_CT24;
     gsGlobal->PSMZ            = GS_PSMZ_16S;
     gsGlobal->DoubleBuffering = GS_SETTING_ON;
     gsGlobal->ZBuffering      = GS_SETTING_OFF;       // flat 2D textured quad; no depth test needed
-    gsGlobal->PrimAlphaEnable = GS_SETTING_ON;
+    // The single quad this backend draws is fully opaque (every pixel's
+    // alpha byte is a constant 0xFF -- see emu::GenerateFrame) and the
+    // screen's own PSM (GS_PSM_CT24) carries no alpha channel at all, so
+    // enabling GS alpha blending here bought nothing but a destination
+    // format/blend-equation mismatch that gsKit doesn't configure an
+    // explicit GS_SETREG_ALPHA for -- in practice that left the quad
+    // blending to black instead of just drawing over the cleared buffer.
+    gsGlobal->PrimAlphaEnable = GS_SETTING_OFF;
 
     dmaKit_init(D_CTRL_RELE_OFF, D_CTRL_MFD_OFF, D_CTRL_STS_UNSPEC,
                 D_CTRL_STD_OFF, D_CTRL_RCYC_8, 1 << DMA_CHANNEL_GIF);
     dmaKit_chan_init(DMA_CHANNEL_GIF);
+    log("irq::init: dmaKit init returned");
 
     gsKit_init_screen(gsGlobal);
+    log("irq::init: gsKit_init_screen returned");
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
     gsKit_clear(gsGlobal, GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x00, 0x00));
+    log("irq::init: gsKit_clear returned");
 
     frameTex.Width  = VP_W;
     frameTex.Height = VP_H;
@@ -188,8 +218,10 @@ void irq::init() {
                                         GSKIT_ALLOC_USERBUFFER);
 
     std::memset(frameBuf, 0, sizeof(frameBuf));
+    log("irq::init: texture/frameBuf setup done");
 
     input_init();
+    log("irq::init: input_init returned");
 }
 
 void irq::post() {

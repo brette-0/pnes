@@ -6,7 +6,10 @@
       "name": "_base",
       "hidden": true,
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/builds/cmake-build-${presetName}"
+      "binaryDir": "${sourceDir}/builds/cmake-build-${presetName}",
+      "warnings": {
+        "dev": false
+      }
     },
     {
       "name": "nes-release",
@@ -407,6 +410,11 @@
         "type": "notEquals",
         "lhs": "$env{PS2DEV}",
         "rhs": ""
+      },
+      "vendor": {
+        "jetbrains.com/clion": {
+          "toolchain": "ps2dev"
+        }
       }
     },
     {

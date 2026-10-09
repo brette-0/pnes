@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="QtSettings">
-    <option name="myCurrentProfile" value="nes-pal-release" />
+    <option name="myCurrentProfile" value="ps2-release" />
     <option name="mySettingsPerProfile">
       <map>
         <entry key="ctr-debug">
@@ -37,6 +37,22 @@
           </value>
         </entry>
         <entry key="gc-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="gc-pal-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="gc-pal-release">
           <value>
             <PerProfileState>
               <option name="myQmlPath" value="/usr/lib/qt6/qml" />
@@ -109,6 +125,22 @@
           </value>
         </entry>
         <entry key="nes-release">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="ps2-debug">
+          <value>
+            <PerProfileState>
+              <option name="myQmlPath" value="/usr/lib/qt6/qml" />
+              <option name="myQtBinPath" value="/usr/lib/qt6/bin" />
+            </PerProfileState>
+          </value>
+        </entry>
+        <entry key="ps2-release">
           <value>
             <PerProfileState>
               <option name="myQmlPath" value="/usr/lib/qt6/qml" />

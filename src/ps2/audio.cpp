@@ -34,11 +34,19 @@
 #include <loadfile.h>
 #include <kernel.h>
 #include <audsrv.h>
+#include <sbv_patches.h>
 #include <cstring>
 
 #define STB_VORBIS_NO_PUSHDATA_API
 #define STB_VORBIS_NO_STDIO
 #include <stb_vorbis.c>
+
+// MUST come after stb_vorbis.c: that drags in <math.h>, and libstdc++'s
+// <cmath> #undefs any macro named `log` before declaring its own
+// std::log(double) overloads (the two would otherwise collide) -- defining
+// ::log() before that point, not after, left it silently erased for the
+// rest of this file the moment stb_vorbis.c's own #include <math.h> ran.
+#include <platform-nes/logger.hpp>
 
 // The Vorbis-encoded music, baked into the ELF at build time. ffmpeg
 // produces pc_audio.ogg (encoded straight to this backend's playback rate,
@@ -131,10 +139,32 @@ alignas(16) u8 audio_thread_stack[0x4000];
 } // namespace
 
 void audio::Init(u8) {
+    log("audio::Init: entered");
     SifLoadModule("rom0:LIBSD", 0, nullptr);
-    SifExecModuleBuffer(const_cast<unsigned char *>(audsrv_irx), audsrv_irx_len, 0, nullptr, nullptr);
+    log("audio::Init: SifLoadModule(LIBSD) returned");
 
-    if (audsrv_init() != 0) return;
+    // rom0:LOADFILE's default RPC service doesn't support loading a module
+    // from an EE RAM buffer at all (only from a real path) -- without this
+    // patch, SifExecModuleBuffer below *looks* like it succeeds (it has no
+    // way to report otherwise) but audsrv.irx never actually starts running
+    // on the IOP, so audsrv_init()'s RPC bind to it then blocks forever with
+    // no timeout. sbv_patch_disable_prefix_check() separately disables
+    // MODLOAD's own protected-device allowlist, which can otherwise block
+    // loading an unprotected executable from a source (an EE RAM buffer)
+    // it doesn't recognise.
+    const int lmbPatchResult = sbv_patch_enable_lmb();
+    const int prefixPatchResult = sbv_patch_disable_prefix_check();
+    log("audio::Init: lmbPatchResult=%d prefixPatchResult=%d", lmbPatchResult, prefixPatchResult);
+
+    int audsrvModRes = -999;
+    const int audsrvExecResult = SifExecModuleBuffer(const_cast<unsigned char *>(audsrv_irx), audsrv_irx_len, 0, nullptr, &audsrvModRes);
+    log("audio::Init: SifExecModuleBuffer result=%d modRes=%d", audsrvExecResult, audsrvModRes);
+
+    if (audsrv_init() != 0) {
+        log("audio::Init: audsrv_init failed, bailing");
+        return;
+    }
+    log("audio::Init: audsrv_init succeeded");
 
     audsrv_fmt_t format;
     format.bits     = 16;
@@ -145,7 +175,11 @@ void audio::Init(u8) {
 
     int err = 0;
     vorbis = stb_vorbis_open_memory(ogg_data, ogg_len, &err, nullptr);
-    if (!vorbis) return;
+    if (!vorbis) {
+        log("audio::Init: vorbis open failed, err=%d, bailing", err);
+        return;
+    }
+    log("audio::Init: vorbis opened");
 
     if (nTracks > 0) {
         loop_frame = tracks[0].loop_start > 0.0f
@@ -155,7 +189,13 @@ void audio::Init(u8) {
 
     running = true;
 
-    ee_thread_t thread;
+    // Zero-initialized, not just field-by-field: ee_thread_t::status (the
+    // struct's first member) is an output-only field CreateThread fills in,
+    // but it's never set here before the call, so it was left as whatever
+    // garbage happened to be on the stack -- if that garbage landed on a
+    // recognized nonzero THS_* status value, the kernel could plausibly
+    // treat this as describing an already-live thread instead of a new one.
+    ee_thread_t thread{};
     thread.func             = reinterpret_cast<void *>(audio_thread);
     thread.stack            = audio_thread_stack;
     thread.stack_size       = sizeof(audio_thread_stack);
@@ -165,7 +205,9 @@ void audio::Init(u8) {
     thread.option           = 0;
 
     const s32 tid = CreateThread(&thread);
+    log("audio::Init: CreateThread tid=%d", tid);
     if (tid >= 0) StartThread(tid, nullptr);
+    log("audio::Init: fully completed");
 }
 
 void audio::Update() {

@@ -20,6 +20,7 @@
 // context exists for it.
 #include "../../ui/impl/buttons.hpp"
 #include "../main.hpp"
+#include "platform-nes/logger.hpp"
 #include "../banks.hpp"
 #include "../graphics/colours.hpp"
 #include "../graphics/strings.hpp"
@@ -273,11 +274,13 @@ namespace title {
 
 
     TITLE NI void main() {
+        log("title::main: entered");
         kMenuNT = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
 
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);
         pIRQ = irq_handler;
         pNMI = nmi_handler;
+        log("title::main: pIRQ/pNMI set");
 
         mmc3::SwitchCHRBank(mmc3::chr0Control, 4);
         mmc3::SwitchCHRBank(mmc3::chr1Control, 5);
@@ -298,7 +301,9 @@ namespace title {
         ppu::Flush(chrHUDWhitespace_tile, 0xff);
         ppu::pal::WriteFromBuffer(13, titleScreenColours, 3);
 
+        log("title::main: before DrawLevelPreview");
         DrawLevelPreview();
+        log("title::main: after DrawLevelPreview");
 
         // Every phase of the Options fade, computed once up front from the
         // same colours DrawLevelPreview just uploaded -- see
@@ -347,6 +352,7 @@ namespace title {
         ppu::SetScroll({0, 0xff});
         ppu::EnableRendering(ppu::ctrl::SPRITE_ADDR | ppu::ctrl::SPRITE_SIZE | ppu::ctrl::GEN_NMI, ppu::mask::BG_L | ppu::mask::SPRITE_L);
         irq::EnableInterrupts();
+        log("title::main: entering input loop");
 
         u8 prevInputs = 0;
         while (true) {
@@ -415,6 +421,13 @@ namespace title {
             }
 
             video::WaitForPresent();
+            {
+                static bool firstPresentLogged = false;
+                if (!firstPresentLogged) {
+                    firstPresentLogged = true;
+                    log("title::main: first WaitForPresent returned");
+                }
+            }
             if (quit) return;
         }
     }

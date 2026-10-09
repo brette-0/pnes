@@ -314,6 +314,21 @@ enable_language(CXX)
 # the host values the uitk swap leaves behind.
 set(_MOS_ENV_CXX "$ENV{CXX}")
 set(_MOS_ENV_CC "$ENV{CC}")
+# On nes/nes_pal (and any other bare-metal preset whose toolchain file sets
+# CMAKE_SYSTEM_NAME to a non-host value, e.g. ps2/gc/wii/3ds), that value is
+# already latched in by enable_language(CXX) above by the time find_package
+# below runs in this same process. Qt5/6's own CMake config declares its
+# imported libraries SHARED, so add_library()'s generic "this platform
+# doesn't support dynamic linking" check fires for every one of them (~30
+# warnings) on any machine that actually has Qt installed -- spurious here,
+# since find_package below is a plain HOST tool lookup (for building
+# tools/uitk), not part of the cross-compile. These are CMake dev/author
+# warnings ("Warning (author)", "Use -Wno-author to suppress"); suppressing
+# them needs the real -Wno-dev behavior, which only takes effect from the
+# command line/presets (CMAKE_SUPPRESS_DEVELOPER_WARNINGS as a script-side
+# set() does NOT work -- confirmed empirically, despite what its docs
+# imply), so that's set via "warnings": {"dev": false} on CMakePresets.json's
+# _base preset instead of here.
 find_package(Qt6 QUIET COMPONENTS Widgets)
 if(NOT Qt6Widgets_FOUND)
     find_package(Qt5 QUIET COMPONENTS Widgets)
@@ -390,7 +405,11 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
         unset(ENV{CC})
     endif()
 elseif(EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/title AND EXISTS ${CMAKE_SOURCE_DIR}/demo/gen/gameOptions)
-    message(WARNING
+    # STATUS, not WARNING: expected on every Docker/CI build (none of those
+    # images install Qt), so a WARNING here would just be permanent build
+    # noise. Still surfaced so a local configure without Qt says why it's
+    # using the checked-in demo/gen/ output instead of regenerating it.
+    message(STATUS
         "Qt Widgets not found; using whatever's already under demo/gen/ "
         "instead of regenerating it from demo/ui/*.uis (e.g. a "
         "downloaded demo-gen CI artifact, or an earlier Qt-equipped local "
@@ -2041,10 +2060,13 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # gskit/gskit_toolkit/dmakit (gsKit + its DMA helper) and pad/audsrv
         # are the only ps2sdk/gsKit libs this backend needs beyond what the
         # compiler's own specs already link (libkernel/libcglue/libpthread*/
-        # libcdvd -- see cmake/PS2.cmake's header comment).
+        # libcdvd -- see cmake/PS2.cmake's header comment). patches (libpatches,
+        # sbv_patches.h) is needed on top of those: see audio.cpp's own comment
+        # on sbv_patch_enable_lmb() for why loading audsrv.irx from an EE RAM
+        # buffer (SifExecModuleBuffer, not a real rom0:/host: path) requires it.
         target_link_libraries(demo PRIVATE platform-nes
                 gskit gskit_toolkit dmakit
-                pad audsrv
+                pad audsrv patches
         )
 
         # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
