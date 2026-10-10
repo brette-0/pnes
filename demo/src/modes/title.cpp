@@ -275,6 +275,11 @@ namespace title {
 
     TITLE NI void main() {
         log("title::main: entered");
+#if defined(TARGET_PS2)
+        // TEMPORARY: bisecting a release-only regression -- see video.cpp's
+        // own comment on video::DebugFlash for why this, not log().
+        video::DebugFlash();
+#endif
         kMenuNT = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
 
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);

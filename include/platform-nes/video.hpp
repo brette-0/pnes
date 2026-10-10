@@ -775,6 +775,15 @@ namespace video {
     constexpr u16 viewport_px() { return viewport_tx() << 3; }
     /** @brief Viewport height in pixels (tiles * 8 = 240). */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
+
+    /** @brief TEMPORARY boot-progress diagnostic (PS2 only): blips the
+     *  screen the given colour then black once (white by default). Plain
+     *  gsKit calls, no NDEBUG gating, so unlike log() this works identically
+     *  in release and debug -- the one channel usable for bisecting a
+     *  release-only hang/regression. The colour lets a single checkpoint
+     *  also carry a pass/fail bit (e.g. green vs red) rather than just
+     *  marking "execution reached here". */
+    void DebugFlash(u8 r = 0xFF, u8 g = 0xFF, u8 b = 0xFF);
 #elif defined(TARGET_PSP)
     // The PSP's panel is a fixed 480x272. Width matches it EXACTLY (480 is a
     // clean 60 tiles): unlike the Switch/Wii U branch above, this is not scaled

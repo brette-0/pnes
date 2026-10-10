@@ -85,6 +85,29 @@ bool        paused     = false;
 SceUID      athread;
 bool        running = false;
 
+// TrackPlay() runs on the main thread while audio_thread() is concurrently
+// mid-decode on `vorbis` -- stb_vorbis's decoder object is not safe to call
+// into from two threads at once (a seek landing mid stb_vorbis_get_samples_
+// short_interleaved() call can corrupt its internal state, after which every
+// decode call returns 0 samples forever and fill() below zero-fills every
+// chunk from then on: permanent silence with no error, no crash). See
+// src/ps2/audio.cpp's own copy of this comment, where this was first caught.
+//
+// So TrackPlay() never touches `vorbis` itself: it only posts the requested
+// index here, and audio_thread() -- the only thread allowed to call any
+// stb_vorbis_* function -- applies it at the top of its own loop. -1 means
+// no request pending.
+//
+// Plain `volatile int`, not std::atomic: the PSP's Allegrex core (like the
+// PS2's EE -- see src/ps2/audio.cpp's own copy of this comment) has no
+// hardware word-CAS, so std::atomic<int>::exchange needs libatomic, which
+// isn't wired into this toolchain's link either. A naturally-aligned int is
+// already indivisible on this single-core CPU -- `volatile` only stops the
+// compiler caching either side's read/write in a register -- and with
+// exactly one writer (TrackPlay) and one reader (audio_thread, the only one
+// that ever clears it back to -1), there's no partial-update to race on.
+volatile int pending_track = -1;
+
 // Fills chunk[which] with CHUNK_FRAMES stereo frames, looping back to
 // loop_frame on EOF (mirrors src/ogc/audio.cpp's fill()).
 void fill(const int which) {
@@ -110,6 +133,22 @@ void fill(const int which) {
 int audio_thread(SceSize, void *) {
     int next = 0;
     while (running) {
+        // Apply any TrackPlay() request posted from the main thread -- see
+        // ::pending_track's own comment for why this, and not TrackPlay
+        // itself, is what calls stb_vorbis_seek_start().
+        const int req = pending_track;
+        if (req >= 0) {
+            pending_track = -1;
+        }
+        if (req >= 0 && vorbis) {
+            stb_vorbis_seek_start(vorbis);
+            loop_frame = tracks[req].loop_start > 0.0f
+                ? static_cast<u32>(tracks[req].loop_start * static_cast<float>(SAMPLE_RATE))
+                : 0;
+            playing = true;
+            paused  = false;
+        }
+
         if (!vorbis || !playing || paused) {
             memset(chunk[next], 0, sizeof(chunk[next]));
         } else {
@@ -149,13 +188,10 @@ void audio::Update() {
 }
 
 void audio::TrackPlay(const u8 index) {
+    // Does NOT touch `vorbis` or `loop_frame`/`playing`/`paused` directly --
+    // only audio_thread() may call into the decoder; see ::pending_track.
     if (!vorbis || index >= nTracks) return;
-    stb_vorbis_seek_start(vorbis);
-    loop_frame = tracks[index].loop_start > 0.0f
-        ? static_cast<u32>(tracks[index].loop_start * static_cast<float>(SAMPLE_RATE))
-        : 0;
-    playing = true;
-    paused  = false;
+    pending_track = index;
 }
 
 void audio::TrackStop() {
