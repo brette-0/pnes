@@ -151,19 +151,6 @@ void WaitForPresent() {
 
 }   // namespace video
 
-void video::DebugFlash(const u8 r, const u8 g, const u8 b) {
-    for (int i = 0; i < 20; i++) {
-        gsKit_clear(gsGlobal, GS_SETREG_RGBAQ(r, g, b, 0x80, 0x00));
-        gsKit_queue_exec(gsGlobal);
-        gsKit_sync_flip(gsGlobal);
-    }
-    for (int i = 0; i < 20; i++) {
-        gsKit_clear(gsGlobal, GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x80, 0x00));
-        gsKit_queue_exec(gsGlobal);
-        gsKit_sync_flip(gsGlobal);
-    }
-}
-
 void irq::init() {
     log("irq::init: entered");
     // Brings up the IOP side RPC link; every SifLoadModule/pad/audsrv call
@@ -229,13 +216,6 @@ void irq::init() {
 
     input_init();
     log("irq::init: input_init returned");
-
-    // TEMPORARY: bisecting a release-only regression (title screen never
-    // appears) where log() gives no signal at all (NDEBUG strips it to a
-    // no-op in release). video::DebugFlash works identically in both
-    // configs, so it's the one channel that can actually tell us whether
-    // release gets this far.
-    video::DebugFlash();
 }
 
 void irq::post() {

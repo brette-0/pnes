@@ -46,11 +46,6 @@ RESET {
         });
     });
     log("RESET: audio::Init returned");
-#if defined(TARGET_PS2)
-    // TEMPORARY: bisecting a release-only regression -- see video.cpp's own
-    // comment on video::DebugFlash for why this, not log().
-    video::DebugFlash();
-#endif
 
     while (!quit) {
         switch (gameMode) {

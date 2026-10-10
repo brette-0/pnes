@@ -35,6 +35,7 @@
 #include <kernel.h>
 #include <audsrv.h>
 #include <sbv_patches.h>
+#include <delaythread.h>
 #include <cstring>
 
 #define STB_VORBIS_NO_PUSHDATA_API
@@ -47,18 +48,6 @@
 // ::log() before that point, not after, left it silently erased for the
 // rest of this file the moment stb_vorbis.c's own #include <math.h> ran.
 #include <platform-nes/logger.hpp>
-// TEMPORARY: bisecting the same release-only hang video.cpp's own
-// video::DebugFlash() is already being used for (see its header comment) --
-// log() below is a no-op in a release build (NDEBUG), so DebugFlash() is the
-// only checkpoint signal that survives there. irq::init() ends by firing one
-// flash; main.cpp's RESET body fires another right after this file's
-// audio::Init() returns. Confirmed the build only ever reaches the FIRST of
-// those two, i.e. the hang is somewhere inside audio::Init() itself -- so
-// this sprinkles one flash after each of its blocking calls to narrow down
-// which one never returns. Counting total flashes seen (including irq::
-// init()'s own) localizes it: irq::init()'s flash is #1, and each checkpoint
-// below is the next consecutive number in source order.
-#include <platform-nes/video.hpp>
 
 // The Vorbis-encoded music, baked into the ELF at build time. ffmpeg
 // produces pc_audio.ogg (encoded straight to this backend's playback rate,
@@ -79,7 +68,9 @@ static constexpr int ogg_len = static_cast<int>(sizeof(ogg_data));
 // alignment of its own (1 byte), so whatever address it landed on was pure
 // luck of the compiler's .rodata layout; a non-LTO per-TU debug build and a
 // whole-program LTO release build pack .rodata differently, so "it happened
-// to land aligned" was never something either build actually guaranteed.
+// to land aligned" was never something either build actually guaranteed --
+// an unlucky release layout here left the module looking like it loaded
+// while never actually starting on the IOP, hanging audsrv_init() forever.
 alignas(16) static const unsigned char audsrv_irx[] = {
 #embed <audsrv.irx>
 };
@@ -138,33 +129,6 @@ bool        running    = false;
 // ever clears it back to -1), there's no partial-update to race on.
 volatile int pending_track = -1;
 
-// TEMPORARY: boot now reaches title, but tracks are still silent in-level.
-// These three single-shot flags let audio_thread() (which must never call
-// video::DebugFlash() itself -- it isn't safe to touch gsKit's state from a
-// thread other than the one driving present_frame()/WaitForPresent(), see
-// main.cpp's ::audio::Update() which is what actually fires the flash)
-// report back whether TrackPlay()'s request was ever applied, and whether
-// the FIRST real (non-silence-filler) audsrv_play_audio() call reported
-// success or failure. -1 = not yet observed.
-volatile int debug_track_applied = -1;     // becomes the applied track index once seen
-volatile int debug_first_play_result = -0x7fffffff;   // becomes audsrv_play_audio()'s actual return
-// CreateThread()/StartThread() both reported success (confirmed: blue
-// flash, no orange/yellow), yet no white "track applied" flash ever fires
-// in-level -- so it's still unconfirmed that audio_thread() ever executes
-// even its first loop iteration (a crash on entry, e.g. a bad ::_gp/stack
-// setup that only misbehaves under -O3/-flto, would look identical from
-// the outside: thread "started" successfully as far as the kernel's
-// bookkeeping goes, then silently dies). This is set true before anything
-// else happens on the very first iteration, independent of TrackPlay()
-// ever being called at all.
-volatile bool debug_thread_alive = false;
-// TEMPORARY: confirmed no purple flash either -- audio_thread() never
-// executes even its first statement despite CreateThread()/StartThread()
-// both reporting success. Stored here so audio::Update() (main thread) can
-// ask the kernel directly, via ReferThreadStatus(), what state the thread
-// is actually sitting in, instead of guessing blind.
-volatile s32 debug_audio_tid = -1;
-
 // Fills chunk[] with CHUNK_FRAMES stereo frames, looping back to
 // loop_frame on EOF (mirrors src/psp/audio.cpp's fill()).
 void fill() {
@@ -189,8 +153,6 @@ void fill() {
 
 void audio_thread(void *) {
     while (running) {
-        debug_thread_alive = true;   // TEMPORARY: see its own declaration
-
         // Apply any TrackPlay() request posted from the main thread -- see
         // ::pending_track's own comment for why this, and not TrackPlay
         // itself, is what calls stb_vorbis_seek_start().
@@ -205,11 +167,9 @@ void audio_thread(void *) {
                 : 0;
             playing = true;
             paused  = false;
-            debug_track_applied = req;   // TEMPORARY: see its own declaration
         }
 
-        const bool realChunk = vorbis && playing && !paused;
-        if (!realChunk) {
+        if (!vorbis || !playing || paused) {
             memset(chunk, 0, sizeof(chunk));
         } else {
             fill();
@@ -218,12 +178,23 @@ void audio_thread(void *) {
         // call that paces this whole thread at the hardware's real playback
         // rate, no sleep/poll needed (see the file header).
         audsrv_wait_audio(CHUNK_BYTES);
-        const int playResult = audsrv_play_audio(reinterpret_cast<const char *>(chunk), CHUNK_BYTES);
-        // TEMPORARY: capture the first real (non-silence-filler) call's
-        // result once -- see ::debug_first_play_result's own declaration.
-        if (realChunk && debug_first_play_result == -0x7fffffff) {
-            debug_first_play_result = playResult;
-        }
+        audsrv_play_audio(reinterpret_cast<const char *>(chunk), CHUNK_BYTES);
+
+        // This thread has to run at higher priority than main just to be
+        // scheduled at all (see the priority comment in Init() -- equal or
+        // lower priority left it sitting in THS_READY forever, since
+        // nothing here makes the main/render loop yield through a real
+        // kernel wait the scheduler recognises). Being strictly higher
+        // priority then meant it could fully preempt the render thread
+        // instead of sharing time with it, dropping frame rate in-level.
+        // DelayThread() is a genuine kernel-blocking sleep (unlike a
+        // busy-loop), so this forces a deterministic yield window back to
+        // main every chunk regardless of what audsrv_wait_audio() or
+        // gsKit_sync_flip() do internally. One chunk is ~46ms of playback
+        // (2048 frames / 44100Hz); 2ms here is a small fraction of that
+        // budget, nowhere near enough to risk an audsrv ring-buffer
+        // underrun.
+        DelayThread(2000);
     }
     ExitThread();
 }
@@ -233,10 +204,7 @@ alignas(16) u8 audio_thread_stack[0x4000];
 } // namespace
 
 void audio::Init(u8) {
-    log("audio::Init: entered");
     SifLoadModule("rom0:LIBSD", 0, nullptr);
-    log("audio::Init: SifLoadModule(LIBSD) returned");
-    video::DebugFlash();   // checkpoint #2: SifLoadModule("rom0:LIBSD") returned
 
     // rom0:LOADFILE's default RPC service doesn't support loading a module
     // from an EE RAM buffer at all (only from a real path) -- without this
@@ -247,58 +215,15 @@ void audio::Init(u8) {
     // MODLOAD's own protected-device allowlist, which can otherwise block
     // loading an unprotected executable from a source (an EE RAM buffer)
     // it doesn't recognise.
-    const int lmbPatchResult = sbv_patch_enable_lmb();
-    const int prefixPatchResult = sbv_patch_disable_prefix_check();
-    log("audio::Init: lmbPatchResult=%d prefixPatchResult=%d", lmbPatchResult, prefixPatchResult);
-    video::DebugFlash();   // checkpoint #3: both sbv_patches applied
+    sbv_patch_enable_lmb();
+    sbv_patch_disable_prefix_check();
 
-    int audsrvModRes = -999;
-    const int audsrvExecResult = SifExecModuleBuffer(const_cast<unsigned char *>(audsrv_irx), audsrv_irx_len, 0, nullptr, &audsrvModRes);
-    log("audio::Init: SifExecModuleBuffer result=%d modRes=%d", audsrvExecResult, audsrvModRes);
-    // checkpoint #4a/#4b: confirmed hanging between here and #5 (inside
-    // audsrv_init() itself) with no visibility into *why* -- these two
-    // colour-coded flashes carry the two return values log() can't show in
-    // release. Green = that result looked like success (>= 0); red = it
-    // didn't. #4a is SifExecModuleBuffer's own return value (the EE-side
-    // DMA/RPC call); #4b is audsrvModRes, the IOP-side module's own result
-    // from actually running (what the file header's "*looks* like it
-    // succeeds" warning is about -- #4a can be green while #4b is red).
-    video::DebugFlash(audsrvExecResult < 0 ? 0xFF : 0x00, audsrvExecResult < 0 ? 0x00 : 0xFF, 0x00);
-    video::DebugFlash(audsrvModRes     < 0 ? 0xFF : 0x00, audsrvModRes     < 0 ? 0x00 : 0xFF, 0x00);
-
-    // TEMPORARY: audsrvModRes >= 0 (checkpoint #4b, above) means audsrv.irx's
-    // own _start() really did run and return success on the IOP -- so the
-    // module loaded fine. audsrv_init() then hangs forever anyway (no
-    // return, no timeout -- see this function's own comment on
-    // sbv_patch_enable_lmb() for that exact failure shape). The likely gap:
-    // _start() returning isn't the same as the module's RPC server thread
-    // having finished sceSifRegisterRpc() yet -- a startup race audsrv_init()
-    // apparently has no retry/backoff for. In the debug build this never
-    // showed up because every sio_puts() log() call between here and there
-    // burns tens of milliseconds over the real serial line, accidentally
-    // giving the module time to finish registering before audsrv_init() ever
-    // asks. This burns the same kind of wall-clock time on purpose instead
-    // of by accident -- gsKit_sync_flip-paced, no visible flash (black on
-    // black) -- to see if it's really just a race and not a hard failure.
-    // 3 calls * 40 vsyncs each =~ 2s at 60Hz: generous but not a real wait.
-    for (int i = 0; i < 3; i++) video::DebugFlash(0x00, 0x00, 0x00);
+    SifExecModuleBuffer(const_cast<unsigned char *>(audsrv_irx), audsrv_irx_len, 0, nullptr, nullptr);
 
     if (audsrv_init() != 0) {
         log("audio::Init: audsrv_init failed, bailing");
-        // TEMPORARY: this early return used to be silent in release (log()
-        // is a no-op there) -- title still reaches the screen either way
-        // since main.cpp's own post-Init flash fires unconditionally, so
-        // reaching title proves Init() RETURNED, not that it succeeded.
-        // Distinct colour from checkpoint #4's audsrvExecResult/modRes
-        // flashes (magenta, not plain red) so it can't be confused with
-        // those -- this is audsrv_init() itself failing, after the alignment
-        // fix already got SifExecModuleBuffer/the module's own _start() past
-        // where they used to hang.
-        video::DebugFlash(0xFF, 0x00, 0xFF);
         return;
     }
-    log("audio::Init: audsrv_init succeeded");
-    video::DebugFlash();   // checkpoint #5: audsrv_init() succeeded
 
     audsrv_fmt_t format;
     format.bits     = 16;
@@ -306,20 +231,13 @@ void audio::Init(u8) {
     format.channels = CHANNELS;
     audsrv_set_format(&format);
     audsrv_set_volume(MAX_VOLUME);
-    video::DebugFlash();   // checkpoint #6: audsrv_set_format/set_volume returned
 
     int err = 0;
     vorbis = stb_vorbis_open_memory(ogg_data, ogg_len, &err, nullptr);
     if (!vorbis) {
         log("audio::Init: vorbis open failed, err=%d, bailing", err);
-        // TEMPORARY: same reasoning as the audsrv_init() failure flash
-        // above -- cyan, not magenta, so the two early-return paths are
-        // distinguishable from each other and from checkpoint #4's flashes.
-        video::DebugFlash(0x00, 0xFF, 0xFF);
         return;
     }
-    log("audio::Init: vorbis opened");
-    video::DebugFlash();   // checkpoint #7: stb_vorbis_open_memory returned
 
     if (nTracks > 0) {
         loop_frame = tracks[0].loop_start > 0.0f
@@ -341,136 +259,31 @@ void audio::Init(u8) {
     thread.stack_size       = sizeof(audio_thread_stack);
     thread.gp_reg           = &_gp;
 
-    // Confirmed via ReferThreadStatus() from the main loop: a flat
-    // initial_priority = 50 here left the thread sitting in THS_READY
-    // forever -- the EE kernel never preempts a strictly-lower-priority
-    // (bigger number = less urgent) thread in favour of one that's higher
-    // priority and never actually blocks through a real kernel wait call,
-    // and gsKit_sync_flip() in the main render loop apparently just polls a
-    // GS status register rather than doing that. 50 was a guessed constant
-    // with no idea what the main thread's own priority actually is, so
-    // instead of guessing again, ask: a few points more urgent than
-    // whatever's calling Init() (this runs on the main thread, so that's
-    // the main thread's own priority) guarantees audio_thread() is always
-    // at least as eligible to run, and its own blocking call
-    // (audsrv_wait_audio(), in its loop) is what yields it back promptly --
-    // same shape as every other backend's audio thread, just finally with a
-    // priority that doesn't starve it.
+    // A flat priority constant here (guessed, with no idea what the main
+    // thread's own priority actually is) left this thread sitting in
+    // THS_READY forever: the EE kernel never preempts a strictly-lower-
+    // priority (bigger number = less urgent) thread in favour of one that's
+    // higher priority and never actually blocks through a real kernel wait
+    // call -- and gsKit_sync_flip() in the main render loop apparently just
+    // polls a GS status register rather than doing that. Equal priority
+    // produced the exact same silent starvation (this kernel/config isn't
+    // timer-preempting same-priority ready threads into a round robin
+    // either), so this has to be genuinely more urgent than main just to
+    // run at all; DelayThread() in its own loop above is what keeps it from
+    // then dominating the render thread in return.
     ee_thread_status_t mainStatus{};
-    const s32 mainTid = GetThreadId();
-    const s32 referResult = ReferThreadStatus(mainTid, &mainStatus);
+    const s32 referResult = ReferThreadStatus(GetThreadId(), &mainStatus);
     const s32 mainPriority = referResult >= 0 ? mainStatus.current_priority : 50;
     thread.initial_priority = mainPriority > 5 ? mainPriority - 5 : 0;
     thread.attr             = 0;
     thread.option           = 0;
 
     const s32 tid = CreateThread(&thread);
-    debug_audio_tid = tid;   // TEMPORARY: see its own declaration
-    log("audio::Init: CreateThread tid=%d", tid);
-    // TEMPORARY: checkpoint #8 (the plain white flash below) fires no matter
-    // what tid is -- it never actually proved CreateThread() succeeded, only
-    // that Init() reached this line. No white "TrackPlay reached the audio
-    // thread" flash ever fires in-level, which is exactly what you'd expect
-    // if tid < 0 here: StartThread() is skipped, audio_thread() never runs,
-    // and nothing is left to ever drain ::pending_track. Blue = tid >= 0
-    // (thread genuinely created), orange = tid < 0 (CreateThread itself
-    // failed -- distinct from every other colour used so far).
-    video::DebugFlash(tid >= 0 ? 0x00 : 0xFF, tid >= 0 ? 0x00 : 0x80, tid >= 0 ? 0xFF : 0x00);
-    s32 startResult = -1;
-    if (tid >= 0) startResult = StartThread(tid, nullptr);
-    log("audio::Init: StartThread result=%d", startResult);
-    // Yellow = StartThread() itself reported failure (only reachable when
-    // tid >= 0, i.e. the blue flash above already fired).
-    if (tid >= 0 && startResult < 0) video::DebugFlash(0xFF, 0xFF, 0x00);
-    log("audio::Init: fully completed");
-    video::DebugFlash();   // checkpoint #8: CreateThread/StartThread returned, Init() about to return
+    if (tid >= 0) StartThread(tid, nullptr);
 }
 
 void audio::Update() {
-    // Streaming is driven by the dedicated audio thread; nothing to do per
-    // frame -- except the TEMPORARY in-level silence diagnostic below.
-
-    // TEMPORARY: audio_thread() cannot safely call video::DebugFlash()
-    // itself (gsKit's state is only safe to touch from the one thread that
-    // also drives present_frame()/WaitForPresent() -- this function, called
-    // once per frame from the main loop, is that thread). These two
-    // one-shot flags (set from audio_thread(), see their own declarations)
-    // are drained here instead, each firing exactly once:
-    //   - debug_track_applied: confirms TrackPlay()'s request actually
-    //     reached audio_thread() (white flash). If this never fires after
-    //     entering a level, the bug is upstream of this file entirely.
-    //   - debug_first_play_result: the first REAL (non-silence-filler)
-    //     audsrv_play_audio() call's own return value, colour-coded green
-    //     (>= 0, looked like success) or red (< 0, it's failing outright,
-    //     e.g. CHUNK_BYTES not fitting audsrv's ring buffer).
-    //   - debug_thread_alive: confirms audio_thread() executed at least one
-    //     loop iteration at all, independent of TrackPlay() ever being
-    //     called (purple flash). If THIS never fires despite the boot-time
-    //     blue/no-orange-no-yellow flashes already confirming CreateThread()
-    //     /StartThread() both reported success, the thread is dying
-    //     silently right after those kernel calls succeed -- a crash on
-    //     entry (bad ::_gp/stack setup), not a logic bug in this loop.
-    //   - debug_audio_tid + ReferThreadStatus(): confirmed no purple flash
-    //     either, so ask the kernel directly what state the thread is
-    //     actually in, rather than keep guessing. One-shot, a few frames in
-    //     (give the thread a moment to actually get scheduled at least
-    //     once before asking) so it's not just catching it still READY.
-    //       DORMANT (gray)  -- thread exited/was never really running;
-    //                          CreateThread/StartThread's success was a lie,
-    //                          or it ran once and immediately ExitThread()'d.
-    //       WAIT    (teal)  -- blocked on something (a semaphore/RPC call)
-    //                          without ever reaching debug_thread_alive = true
-    //                          first -- shouldn't be reachable given that's
-    //                          the very first statement in the loop, but
-    //                          would mean it died/blocked INSIDE that first
-    //                          statement somehow.
-    //       READY   (lime)  -- genuinely just starved: created, runnable,
-    //                          but the scheduler has never actually given it
-    //                          a timeslice -- a real priority/yield problem
-    //                          in the main loop, not a crash.
-    //       RUN     (pink)  -- was literally running at the exact instant
-    //                          this sampled it, yet debug_thread_alive is
-    //                          still false -- contradiction, means that flag
-    //                          itself isn't being observed correctly.
-    //       anything else   -- unexpected status bits; dumped as a raw
-    //                          flash so it isn't silently misreported.
-    static bool aliveFlashDone = false;
-    static bool trackFlashDone = false;
-    static bool playFlashDone  = false;
-    static bool statusFlashDone = false;
-    static int  framesSinceStart = 0;
-    framesSinceStart++;
-    if (!aliveFlashDone && debug_thread_alive) {
-        aliveFlashDone = true;
-        video::DebugFlash(0x80, 0x00, 0xFF);   // purple: audio_thread() is alive
-    }
-    if (!statusFlashDone && !aliveFlashDone && framesSinceStart == 30 && debug_audio_tid >= 0) {
-        statusFlashDone = true;
-        ee_thread_status_t status{};
-        const s32 referResult = ReferThreadStatus(debug_audio_tid, &status);
-        if (referResult < 0) {
-            video::DebugFlash(0x40, 0x40, 0x40);   // dark gray: ReferThreadStatus() itself failed
-        } else if (status.status & THS_DORMANT) {
-            video::DebugFlash(0x80, 0x80, 0x80);   // gray: dormant
-        } else if (status.status & THS_WAIT) {
-            video::DebugFlash(0x00, 0x80, 0x80);   // teal: waiting
-        } else if (status.status & THS_READY) {
-            video::DebugFlash(0x80, 0xFF, 0x00);   // lime: starved, never scheduled
-        } else if (status.status & THS_RUN) {
-            video::DebugFlash(0xFF, 0x80, 0xC0);   // pink: running right now (contradiction)
-        } else {
-            video::DebugFlash(0x80, 0x40, 0x00);   // brown: unexpected status bits
-        }
-    }
-    if (!trackFlashDone && debug_track_applied >= 0) {
-        trackFlashDone = true;
-        video::DebugFlash();   // white: TrackPlay() reached audio_thread()
-    }
-    if (!playFlashDone && debug_first_play_result != -0x7fffffff) {
-        playFlashDone = true;
-        const bool ok = debug_first_play_result >= 0;
-        video::DebugFlash(ok ? 0x00 : 0xFF, ok ? 0xFF : 0x00, 0x00);
-    }
+    // Streaming is driven by the dedicated audio thread; nothing to do per frame.
 }
 
 void audio::TrackPlay(const u8 index) {
