@@ -40,7 +40,9 @@
  * affects playback timing/tables on this backend, never the screen mode.
  *
  * Only NTSC/no-region-switch is implemented. The present is vsync-paced by
- * gsKit_sync_flip, providing 60Hz frame pacing.
+ * an INTC vblank handler and a kernel semaphore rather than gsKit_sync_flip
+ * -- see ::vblank_sema for why that distinction matters well beyond this
+ * file.
  */
 #include "internal.hpp"
 
@@ -54,6 +56,7 @@
 // entirely -- no other backend's SDK has a symbol named RESET, so this
 // ordering requirement is PS2-only.
 #include <sifrpc.h>
+#include <kernel.h>
 #include <gsKit.h>
 #include <dmaKit.h>
 
@@ -93,6 +96,96 @@ static constexpr float QUAD_W  = QUAD_H * 4.0f / 3.0f;
 static constexpr float QUAD_X0 = (SCREEN_W - QUAD_W) / 2.0f;
 static constexpr float QUAD_Y0 = 0.0f;
 
+// ---------------------------------------------------------------------------
+// Frame pacing.
+//
+// gsKit's own gsKit_sync_flip() paces by busy-polling the GS CSR vsync bit
+// (that's all gsKit_vsync_wait does), which never enters an EE kernel wait.
+// A main thread that only ever spins is impossible for the kernel to schedule
+// around: there is no point at which it hands control back, so a worker
+// thread at equal or lower priority is never picked up at all.
+//
+// So vblank is taken as a real interrupt here and turned into a semaphore.
+// WaitForPresent() blocks in WaitSema, parking the main thread in the kernel
+// for the gap between "frame submitted" and "next vblank" instead of burning
+// the EE on a register poll for it.
+//
+// Note what this does NOT buy, because an earlier revision of src/ps2/audio.
+// cpp assumed it did: it is not a way to run a background thread below main.
+// WaitSema returns immediately whenever a vblank is already pending, which is
+// exactly the case when a frame overruns its budget -- so the donated window
+// shrinks to nothing under load, and a strictly-lower-priority worker starves
+// precisely when the frame is heaviest. The audio decode thread therefore
+// sits ABOVE main and blocks on its own hardware event; see that file's
+// Init() comment.
+//
+// max_count 1: the count saturates instead of accumulating a vblank backlog,
+// so a frame that overruns its budget costs exactly one frame of pacing
+// rather than leaving behind a queue of instantly-satisfied waits. A vblank
+// landing while main is still rendering is still recorded, so the next
+// WaitSema returns immediately rather than idling an entire extra field.
+static s32 vblank_sema = -1;
+
+// Interrupt context: iSignalSema, not SignalSema (the i-prefixed variants are
+// the ones callable from an ISR). A signal past max_count is rejected by the
+// kernel, which is exactly the saturation described above -- there is nothing
+// to report, so the return value is deliberately ignored.
+//
+// ExitHandler() is not optional: ps2sdk documents it (ee/include/kernel.h) as
+// a workaround for an EE kernel bug that must be run immediately before
+// returning from ANY interrupt handler. It expands to `sync; ei`, nothing
+// heavier.
+static s32 vblank_handler(s32) {
+    iSignalSema(vblank_sema);
+    ExitHandler();
+    return 0;
+}
+
+// Installed from irq::init(); leaves ::vblank_sema at -1 if either half fails,
+// which present_flip() below falls back on.
+static void vblank_pacing_init() {
+    ee_sema_t sema{};
+    sema.init_count = 0;
+    sema.max_count  = 1;
+    const s32 sid = CreateSema(&sema);
+    if (sid < 0) {
+        log("irq::init: CreateSema failed (%d), falling back to gsKit CSR spin", sid);
+        return;
+    }
+    vblank_sema = sid;
+
+    if (AddIntcHandler(INTC_VBLANK_S, vblank_handler, 0) < 0) {
+        log("irq::init: AddIntcHandler(INTC_VBLANK_S) failed, falling back to gsKit CSR spin");
+        vblank_sema = -1;
+        return;
+    }
+    EnableIntc(INTC_VBLANK_S);
+}
+
+// Stands in for gsKit_sync_flip(): the same double-buffer swap, but the wait
+// ahead of it is the kernel semaphore above rather than gsKit's CSR spin.
+//
+// gsKit_sync_flip() cannot simply be called after the semaphore wait instead:
+// its internal gsKit_vsync_wait() clears the CSR vsync flag and then waits
+// for the NEXT one, so calling it from inside vblank would block out a whole
+// additional field and halve the frame rate. The two documented halves of its
+// double-buffer body are called directly instead -- gsKit_display_buffer
+// points the GS at the buffer just drawn, gsKit_switch_context moves drawing
+// to the other one. gsKit_setactive() is then called explicitly: switch_
+// context is documented to establish the new active buffer itself, and
+// re-writing the same FRAME/SCISSOR register values is idempotent, so this is
+// correct whether or not it already did.
+static void present_flip() {
+    gsKit_queue_exec(gsGlobal);
+
+    if (vblank_sema >= 0) WaitSema(vblank_sema);
+    else                  gsKit_vsync_wait();
+
+    gsKit_display_buffer(gsGlobal);
+    gsKit_switch_context(gsGlobal);
+    gsKit_setactive(gsGlobal);
+}
+
 // The core fills ARGB8888 (0xAARRGGBB); GS_PSM_CT32 wants byte order
 // R,G,B,A in memory (0xAABBGGRR as a LE u32) -- see the file header.
 static inline u32 argb_to_rgba(const u32 p) {
@@ -108,7 +201,7 @@ static void present_frame() {
     for (int i = 0; i < VP_W * VP_H; i++) frameBuf[i] = argb_to_rgba(frameBuf[i]);
 
     // gsKit_texture_upload is a synchronous GIF/DMA transfer (it waits for
-    // its own DMA to finish before returning), and gsKit_sync_flip below
+    // its own DMA to finish before returning), and present_flip below
     // blocks until the GS has actually finished drawing this frame before
     // the next present_frame() call is reached -- so re-uploading the same
     // VRAM texture region every frame is safe with no double buffering of
@@ -122,14 +215,12 @@ static void present_frame() {
                                QUAD_X0 + QUAD_W, QUAD_Y0 + QUAD_H, static_cast<float>(VP_W), static_cast<float>(VP_H),
                                1, GS_SETREG_RGBAQ(0x80, 0x80, 0x80, 0x80, 0x00));
 
-    gsKit_queue_exec(gsGlobal);
-    gsKit_sync_flip(gsGlobal);
+    present_flip();
 }
 
 static void present_blank() {
     gsKit_clear(gsGlobal, GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x00, 0x00));
-    gsKit_queue_exec(gsGlobal);
-    gsKit_sync_flip(gsGlobal);
+    present_flip();
 }
 
 namespace video {
@@ -201,6 +292,17 @@ void irq::init() {
     gsKit_mode_switch(gsGlobal, GS_ONESHOT);
     gsKit_clear(gsGlobal, GS_SETREG_RGBAQ(0x00, 0x00, 0x00, 0x00, 0x00));
     log("irq::init: gsKit_clear returned");
+
+    // gsKit_init_screen leaves FirstFrame set so that the first gsKit_sync_
+    // flip() skips its vsync-and-swap; present_flip() doesn't consult it (it
+    // always swaps, which is correct from the very first frame -- there is
+    // nothing displayed yet that the swap could discard), so clear it here
+    // rather than leave a stale "no frame presented yet" flag behind for any
+    // other gsKit entry point to read.
+    gsGlobal->FirstFrame = GS_SETTING_OFF;
+
+    vblank_pacing_init();
+    log("irq::init: vblank pacing installed (sema=%d)", vblank_sema);
 
     frameTex.Width  = VP_W;
     frameTex.Height = VP_H;

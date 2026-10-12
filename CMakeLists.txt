@@ -1978,6 +1978,24 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # platform-agnostic and compiled here alongside the gsKit video/
         # present, the libpad input, and the audsrv streaming audio.
         file(GLOB PS2_SOURCES CONFIGURE_DEPENDS src/ps2/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
+
+        # Music backend. src/ps2/audio.cpp (vorbis) decodes Ogg on the EE;
+        # src/ps2/audio_spu2.cpp (adpcm) hands a sample to the SPU2 and costs
+        # the EE nothing per frame -- see that file's header for the tradeoff,
+        # which is SPU2 RAM, not quality-per-bit. Both define the whole audio::
+        # surface, so exactly one may be compiled.
+        set(PS2_MUSIC "adpcm" CACHE STRING
+                "PS2 music backend: adpcm (SPU2 hardware voice) or vorbis (stb_vorbis on the EE)")
+        set_property(CACHE PS2_MUSIC PROPERTY STRINGS adpcm vorbis)
+        if(PS2_MUSIC STREQUAL "adpcm")
+            list(REMOVE_ITEM PS2_SOURCES ${CMAKE_SOURCE_DIR}/src/ps2/audio.cpp)
+            set(PS2_AUDIO_SOURCE ${CMAKE_SOURCE_DIR}/src/ps2/audio_spu2.cpp)
+        elseif(PS2_MUSIC STREQUAL "vorbis")
+            list(REMOVE_ITEM PS2_SOURCES ${CMAKE_SOURCE_DIR}/src/ps2/audio_spu2.cpp)
+            set(PS2_AUDIO_SOURCE ${CMAKE_SOURCE_DIR}/src/ps2/audio.cpp)
+        else()
+            message(FATAL_ERROR "PS2_MUSIC must be 'adpcm' or 'vorbis', got '${PS2_MUSIC}'")
+        endif()
         file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
         add_library(platform-nes STATIC ${PS2_SOURCES} ${ALL_SOURCES})
         target_include_directories(platform-nes PUBLIC
@@ -2002,41 +2020,107 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         endif()
         target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
 
-        # Same reasoning as the PSP branch: transcode the desktop pc_audio.wav
-        # to a small Vorbis OGG at build time and #embed it (src/ps2/audio.cpp
-        # decodes it with stb_vorbis, streaming from a dedicated EE thread).
         find_program(FFMPEG ffmpeg REQUIRED)
-        FetchContent_Declare(
-                stb
-                GIT_REPOSITORY https://github.com/nothings/stb.git
-                GIT_TAG        master
-                GIT_SHALLOW    TRUE
-        )
-        FetchContent_MakeAvailable(stb)
-        target_include_directories(platform-nes PRIVATE ${stb_SOURCE_DIR})
-
         set(PS2_ASSET_DIR ${CMAKE_BINARY_DIR}/ps2-assets)
-        set(PS2_OGG ${PS2_ASSET_DIR}/pc_audio.ogg)
         set(PS2_WAV ${CMAKE_SOURCE_DIR}/demo/audio/tracks/pc_audio.wav)
         file(MAKE_DIRECTORY ${PS2_ASSET_DIR})
-        add_custom_command(
-                OUTPUT ${PS2_OGG}
-                COMMAND ${CMAKE_COMMAND} -E make_directory ${PS2_ASSET_DIR}
-                COMMAND ${FFMPEG} -y -loglevel error -i ${PS2_WAV}
-                        -ar 44100 -ac 2 -c:a libvorbis -q:a 4 ${PS2_OGG}
-                DEPENDS ${PS2_WAV}
-                COMMENT "Encoding PS2 audio: pc_audio.wav -> pc_audio.ogg (Vorbis, embedded)"
-                VERBATIM)
-        add_custom_target(ps2-assets DEPENDS ${PS2_OGG})
+
+        if(PS2_MUSIC STREQUAL "adpcm")
+            # Downmix to mono at PS2_ADPCM_RATE, then encode to SPU2 ADPCM with
+            # ps2sdk's own bin/adpenc. -L sets the loop flag in the output's
+            # header and in the first ADPCM block, which is what makes the
+            # hardware voice loop with no software involvement at all.
+            #
+            # The rate is the whole budget question: SPU2 ADPCM is 16 bytes per
+            # 28 samples and the sample has to be resident in the SPU2's 2MB of
+            # sound RAM, so rate * seconds * 0.571 must stay under it. For the
+            # current 4m29s pc_audio.wav that means ~13.6kHz is the ceiling and
+            # 11025 (1.69MB, ~81% of SPU2 RAM) is the safe default. Trimming the
+            # asset to its musical loop is what buys fidelity back -- see
+            # src/ps2/audio_spu2.cpp's file header.
+            set(PS2_ADPCM_RATE "11025" CACHE STRING
+                    "Source sample rate for the SPU2 ADPCM music sample (mono; must fit SPU2's 2MB)")
+
+            # Diagnostic knob: 0 encodes the whole track, anything else
+            # truncates to that many seconds. ps2sdk's own playadpcm sample only
+            # ever loads a ~30KB sample, so a full-length one asks
+            # audsrv_load_adpcm() to do something ~56x larger than the path is
+            # demonstrated with -- if a short sample plays and a long one does
+            # not, the ceiling is SPU2 RAM or audsrv's RPC upload, not anything
+            # in src/ps2/audio_spu2.cpp.
+            # Defaults to 120s, not the whole track, because the whole track does
+            # not fit -- see PS2_ADPCM_MAX_BYTES below. 120s at 11025Hz is the
+            # largest configuration measured working on hardware.
+            set(PS2_ADPCM_SECONDS "120" CACHE STRING
+                    "Truncate the SPU2 ADPCM sample to N seconds (0 = whole track)")
+
+            # Measured on hardware, not derived from the SPU2's nominal 2MB:
+            # 756032 bytes plays correctly, 1134032 hangs the console during
+            # audio::Init. audsrv also reserves part of SPU2 sound RAM for its
+            # own PCM ring, which is why the usable ceiling is well under 2MB.
+            # Enforced by cmake/ps2_check_adpcm_size.cmake -- see that file for
+            # why this is a build error rather than something checked at runtime.
+            set(PS2_ADPCM_MAX_BYTES "786432" CACHE STRING
+                    "Hard limit for the encoded SPU2 ADPCM sample, in bytes")
+            if(PS2_ADPCM_SECONDS STREQUAL "0")
+                set(PS2_ADPCM_TRUNCATE "")
+            else()
+                set(PS2_ADPCM_TRUNCATE -t ${PS2_ADPCM_SECONDS})
+            endif()
+
+            find_program(PS2_ADPENC adpenc HINTS ${PS2SDK_ROOT}/bin REQUIRED)
+
+            set(PS2_ADP     ${PS2_ASSET_DIR}/pc_audio.adp)
+            set(PS2_ADP_WAV ${PS2_ASSET_DIR}/pc_audio_mono.wav)
+            add_custom_command(
+                    OUTPUT ${PS2_ADP}
+                    COMMAND ${CMAKE_COMMAND} -E make_directory ${PS2_ASSET_DIR}
+                    COMMAND ${FFMPEG} -y -loglevel error -i ${PS2_WAV}
+                            -ar ${PS2_ADPCM_RATE} -ac 1 ${PS2_ADPCM_TRUNCATE} ${PS2_ADP_WAV}
+                    COMMAND ${PS2_ADPENC} -L ${PS2_ADP_WAV} ${PS2_ADP}
+                    COMMAND ${CMAKE_COMMAND} -DADP=${PS2_ADP} -DMAX=${PS2_ADPCM_MAX_BYTES}
+                            -P ${CMAKE_SOURCE_DIR}/cmake/ps2_check_adpcm_size.cmake
+                    DEPENDS ${PS2_WAV} ${CMAKE_SOURCE_DIR}/cmake/ps2_check_adpcm_size.cmake
+                    COMMENT "Encoding PS2 audio: pc_audio.wav -> pc_audio.adp (SPU2 ADPCM @ ${PS2_ADPCM_RATE}Hz mono, ${PS2_ADPCM_SECONDS}s=0:all, embedded)"
+                    VERBATIM)
+            add_custom_target(ps2-assets DEPENDS ${PS2_ADP})
+            set(PS2_AUDIO_ASSET ${PS2_ADP})
+        else()
+            # Same reasoning as the PSP branch: transcode the desktop
+            # pc_audio.wav to a small Vorbis OGG at build time and #embed it
+            # (src/ps2/audio.cpp decodes it with stb_vorbis, streaming from a
+            # dedicated EE thread).
+            FetchContent_Declare(
+                    stb
+                    GIT_REPOSITORY https://github.com/nothings/stb.git
+                    GIT_TAG        master
+                    GIT_SHALLOW    TRUE
+            )
+            FetchContent_MakeAvailable(stb)
+            target_include_directories(platform-nes PRIVATE ${stb_SOURCE_DIR})
+
+            set(PS2_OGG ${PS2_ASSET_DIR}/pc_audio.ogg)
+            add_custom_command(
+                    OUTPUT ${PS2_OGG}
+                    COMMAND ${CMAKE_COMMAND} -E make_directory ${PS2_ASSET_DIR}
+                    COMMAND ${FFMPEG} -y -loglevel error -i ${PS2_WAV}
+                            -ar 44100 -ac 2 -c:a libvorbis -q:a 4 ${PS2_OGG}
+                    DEPENDS ${PS2_WAV}
+                    COMMENT "Encoding PS2 audio: pc_audio.wav -> pc_audio.ogg (Vorbis, embedded)"
+                    VERBATIM)
+            add_custom_target(ps2-assets DEPENDS ${PS2_OGG})
+            set(PS2_AUDIO_ASSET ${PS2_OGG})
+        endif()
         add_dependencies(platform-nes ps2-assets)
 
-        # audio.cpp also #embeds ps2sdk's prebuilt audsrv.irx (see its file
-        # header for why audsrv -- unlike the BIOS-resident SIO2MAN/PADMAN/
-        # LIBSD -- needs to be loaded this way); --embed-dir takes a single
-        # directory, so both embeds need their own dir on the search list.
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/src/ps2/audio.cpp
+        # Either audio backend also #embeds ps2sdk's prebuilt audsrv.irx (see
+        # their file headers for why audsrv -- unlike the BIOS-resident
+        # SIO2MAN/PADMAN/LIBSD -- needs to be loaded this way); --embed-dir
+        # takes a single directory, so both embeds need their own dir on the
+        # search list.
+        set_source_files_properties(${PS2_AUDIO_SOURCE}
                 PROPERTIES
-                    OBJECT_DEPENDS  ${PS2_OGG}
+                    OBJECT_DEPENDS  ${PS2_AUDIO_ASSET}
                     COMPILE_OPTIONS "--embed-dir=${PS2_ASSET_DIR};--embed-dir=${PS2SDK_ROOT}/iop/irx")
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
