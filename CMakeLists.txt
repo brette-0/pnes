@@ -1979,23 +1979,43 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # present, the libpad input, and the audsrv streaming audio.
         file(GLOB PS2_SOURCES CONFIGURE_DEPENDS src/ps2/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
 
-        # Music backend. src/ps2/audio.cpp (vorbis) decodes Ogg on the EE;
-        # src/ps2/audio_spu2.cpp (adpcm) hands a sample to the SPU2 and costs
-        # the EE nothing per frame -- see that file's header for the tradeoff,
-        # which is SPU2 RAM, not quality-per-bit. Both define the whole audio::
-        # surface, so exactly one may be compiled.
-        set(PS2_MUSIC "adpcm" CACHE STRING
-                "PS2 music backend: adpcm (SPU2 hardware voice) or vorbis (stb_vorbis on the EE)")
-        set_property(CACHE PS2_MUSIC PROPERTY STRINGS adpcm vorbis)
-        if(PS2_MUSIC STREQUAL "adpcm")
-            list(REMOVE_ITEM PS2_SOURCES ${CMAKE_SOURCE_DIR}/src/ps2/audio.cpp)
+        # Music backend. Each of the three defines the whole audio:: surface, so
+        # exactly one is compiled and the rest are dropped from the glob.
+        #
+        #   stream (default) src/ps2/audio_stream.cpp -- SPU2-format ADPCM
+        #                    decoded on the EE. Uses the shared pc_audio.wav at
+        #                    any length with no asset constraint and no size
+        #                    knob to get right, for a fraction of a percent of
+        #                    the EE. The portable default.
+        #   spu2             src/ps2/audio_spu2.cpp -- resident SPU2 hardware
+        #                    voice. Costs the EE literally nothing, but the
+        #                    sample must fit SPU2 sound RAM (~756KB measured),
+        #                    so it needs an asset trimmed to a short loop.
+        #   vorbis           src/ps2/audio.cpp -- stb_vorbis on the EE. Best
+        #                    compression, but the decode is what held this
+        #                    backend at ~55fps. Kept as a reference path.
+        set(PS2_MUSIC "stream" CACHE STRING
+                "PS2 music backend: stream (EE-decoded ADPCM), spu2 (SPU2 hardware voice), vorbis")
+        set_property(CACHE PS2_MUSIC PROPERTY STRINGS stream spu2 vorbis)
+
+        set(PS2_AUDIO_ALL
+                ${CMAKE_SOURCE_DIR}/src/ps2/audio_stream.cpp
+                ${CMAKE_SOURCE_DIR}/src/ps2/audio_spu2.cpp
+                ${CMAKE_SOURCE_DIR}/src/ps2/audio.cpp)
+        if(PS2_MUSIC STREQUAL "stream")
+            set(PS2_AUDIO_SOURCE ${CMAKE_SOURCE_DIR}/src/ps2/audio_stream.cpp)
+        elseif(PS2_MUSIC STREQUAL "spu2")
             set(PS2_AUDIO_SOURCE ${CMAKE_SOURCE_DIR}/src/ps2/audio_spu2.cpp)
         elseif(PS2_MUSIC STREQUAL "vorbis")
-            list(REMOVE_ITEM PS2_SOURCES ${CMAKE_SOURCE_DIR}/src/ps2/audio_spu2.cpp)
             set(PS2_AUDIO_SOURCE ${CMAKE_SOURCE_DIR}/src/ps2/audio.cpp)
         else()
-            message(FATAL_ERROR "PS2_MUSIC must be 'adpcm' or 'vorbis', got '${PS2_MUSIC}'")
+            message(FATAL_ERROR "PS2_MUSIC must be stream, spu2 or vorbis, got '${PS2_MUSIC}'")
         endif()
+        foreach(_unused IN LISTS PS2_AUDIO_ALL)
+            if(NOT _unused STREQUAL PS2_AUDIO_SOURCE)
+                list(REMOVE_ITEM PS2_SOURCES ${_unused})
+            endif()
+        endforeach()
         file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
         add_library(platform-nes STATIC ${PS2_SOURCES} ${ALL_SOURCES})
         target_include_directories(platform-nes PUBLIC
@@ -2025,7 +2045,46 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         set(PS2_WAV ${CMAKE_SOURCE_DIR}/demo/audio/tracks/pc_audio.wav)
         file(MAKE_DIRECTORY ${PS2_ASSET_DIR})
 
-        if(PS2_MUSIC STREQUAL "adpcm")
+        if(PS2_MUSIC STREQUAL "stream")
+            # Downmix to mono at PS2_STREAM_RATE and encode to SPU2 ADPCM with
+            # ps2sdk's bin/adpenc. No -L: the loop flags it would set are
+            # instructions to the SPU2's voice hardware, and this backend
+            # doesn't play through a voice -- audio_stream.cpp loops in
+            # software, which also lets it honour a per-track loop_start.
+            #
+            # No size ceiling applies here (nothing has to fit SPU2 RAM), so the
+            # rate costs only ELF size: rate * seconds * 16/28 bytes, i.e.
+            # ~6.8MB for the current 4m29s track at 44.1kHz.
+            #
+            # 44100 rather than something smaller because the rate is NOT a free
+            # choice -- it is handed to audsrv_set_format(), which rejects
+            # formats it does not support, and 44100 is the rate the vorbis
+            # backend already proved works on this console. 22050 is the other
+            # safe value (ps2sdk's own playwav/playwav2 samples use it) and
+            # halves the size. An unproven 32000 produced silence.
+            set(PS2_STREAM_RATE "44100" CACHE STRING
+                    "Sample rate for the EE-decoded ADPCM music stream (44100 and 22050 are proven on hardware)")
+            find_program(PS2_ADPENC adpenc HINTS ${PS2SDK_ROOT}/bin REQUIRED)
+
+            set(PS2_ADP     ${PS2_ASSET_DIR}/pc_audio.adp)
+            set(PS2_ADP_WAV ${PS2_ASSET_DIR}/pc_audio_mono.wav)
+            add_custom_command(
+                    OUTPUT ${PS2_ADP}
+                    COMMAND ${CMAKE_COMMAND} -E make_directory ${PS2_ASSET_DIR}
+                    COMMAND ${FFMPEG} -y -loglevel error -i ${PS2_WAV}
+                            -ar ${PS2_STREAM_RATE} -ac 1 ${PS2_ADP_WAV}
+                    COMMAND ${PS2_ADPENC} ${PS2_ADP_WAV} ${PS2_ADP}
+                    DEPENDS ${PS2_WAV}
+                    COMMENT "Encoding PS2 audio: pc_audio.wav -> pc_audio.adp (ADPCM stream @ ${PS2_STREAM_RATE}Hz mono, embedded)"
+                    VERBATIM)
+            add_custom_target(ps2-assets DEPENDS ${PS2_ADP})
+            set(PS2_AUDIO_ASSET ${PS2_ADP})
+            # audio_stream.cpp needs the rate the asset was actually encoded at
+            # to configure audsrv's output format; a mismatch plays at the
+            # wrong speed, so it is passed rather than guessed.
+            set_source_files_properties(${PS2_AUDIO_SOURCE}
+                    PROPERTIES COMPILE_DEFINITIONS "PS2_STREAM_RATE=${PS2_STREAM_RATE}")
+        elseif(PS2_MUSIC STREQUAL "spu2")
             # Downmix to mono at PS2_ADPCM_RATE, then encode to SPU2 ADPCM with
             # ps2sdk's own bin/adpenc. -L sets the loop flag in the output's
             # header and in the first ADPCM block, which is what makes the
