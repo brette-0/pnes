@@ -198,6 +198,38 @@ FetchContent_Declare(
         SOURCE_SUBDIR  br0
 )
 
+# ----------------------------------------------------------------------
+# br0::consh — header-only concept shorthands for integer types, used via
+# #include <consh>. A required library for every target, so it is fetched in
+# every TARGET_PLATFORM branch below -- including PS2/PS3, which shim intsh
+# rather than fetching it: consh only declares concepts inside
+# namespace br0::concepts, includes nothing but <type_traits> and carries no
+# `using namespace` of its own, so it has none of the global-typedef
+# collisions that made those shims necessary.
+#
+# Upstream is a single header at the repo root with no CMakeLists.txt, so
+# FetchContent_MakeAvailable() just populates it -- there is no upstream
+# target to link against. _make_consh_available() below wraps that
+# population and defines the br0::consh INTERFACE target this project links
+# instead; it is idempotent, since the same branch may reach it more than
+# once.
+# ----------------------------------------------------------------------
+FetchContent_Declare(
+        consh
+        GIT_REPOSITORY https://github.com/brette-0/consh.git
+        GIT_TAG        master
+        GIT_SHALLOW    TRUE
+)
+
+macro(_make_consh_available)
+    FetchContent_MakeAvailable(consh)
+    if(NOT TARGET consh_headers)
+        add_library(consh_headers INTERFACE)
+        target_include_directories(consh_headers INTERFACE ${consh_SOURCE_DIR})
+        add_library(br0::consh ALIAS consh_headers)
+    endif()
+endmacro()
+
 # intsh and br0::tuple each declare their own INTERFACE
 # target_compile_features(... cxx_std_20) -- reasonable in isolation, but it
 # routes through CMake's own compile-feature verification
@@ -603,6 +635,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     list(TRANSFORM PLATFORM_DEFINE PREPEND "-D" OUTPUT_VARIABLE PLATFORM_DEFINE_FLAGS)
 
     FetchContent_MakeAvailable(intsh tuple)
+    _make_consh_available()
     _fixup_fetched_cxx_std_targets()
 
     # FamiStudio sound engine sources are fetched directly from upstream
@@ -914,7 +947,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             # above). PLATFORM_NES_AUDIO_SECTION is the only placement value
             # the C++ side still takes, and it goes to famistudio.cpp alone.
     )
-    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
 
     # TITLE/TITLE_DATA/SYSMEM, once as a list so both compile paths that see
     # demo/*.cpp stay in sync: the real `demo` target below (normal
@@ -983,6 +1016,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             -I${CMAKE_BINARY_DIR}/famistudio_include
             -I${intsh_SOURCE_DIR}
             -I${tuple_SOURCE_DIR}
+            -I${consh_SOURCE_DIR}
             ${DEMO_C_SOURCES}
             # Stop forcing the C++ frontend before the archive/object inputs
             # so the driver treats them as link inputs, not source files.
@@ -1132,6 +1166,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     project(platform-nes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
+    _make_consh_available()
     _fixup_fetched_cxx_std_targets()
 
     # gc_pal builds exactly the "gc" branch below (same PLATFORM_DEFINE/
@@ -1186,7 +1221,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     target_compile_definitions(platform-nes PRIVATE $<$<CONFIG:Debug>:OGC_PROFILER>)
     # asnd: libogc's ASND audio library (src/ogc/audio.cpp), not pulled in by
     # OGC_STANDARD_LIBRARIES (-logc -lm) on its own.
-    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple asnd)
+    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh asnd)
 
     # The music is EMBEDDED in the .dol, not loaded from disk: a Homebrew
     # Channel/loader .dol has no guaranteed content path the way a packaged
@@ -1300,6 +1335,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     project(platform-nes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
+    _make_consh_available()
     _fixup_fetched_cxx_std_targets()
 
     set(DEMO_TITLE_DIR 3ds)
@@ -1324,7 +1360,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     if(DEFINED ALTERNATIVE_NAMETABLE)
         target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
     endif()
-    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
     list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
@@ -1413,6 +1449,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _make_consh_available()
         _fixup_fetched_cxx_std_targets()
 
         set(DEMO_TITLE_DIR switch)
@@ -1437,7 +1474,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(DEFINED ALTERNATIVE_NAMETABLE)
             target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
@@ -1542,6 +1579,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _make_consh_available()
         _fixup_fetched_cxx_std_targets()
 
         set(DEMO_TITLE_DIR "wii u")
@@ -1572,7 +1610,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(DEFINED ALTERNATIVE_NAMETABLE)
             target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC SDL2::SDL2-static br0::intsh br0::tuple)
+        target_link_libraries(platform-nes PUBLIC SDL2::SDL2-static br0::intsh br0::tuple br0::consh)
 
         # The music is EMBEDDED in the .rpx, not loaded from disk: a native Wii U
         # title only has a /vol/content mount when launched with its packaged
@@ -1799,6 +1837,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _make_consh_available()
         _fixup_fetched_cxx_std_targets()
 
         set(DEMO_TITLE_DIR psp)
@@ -1826,7 +1865,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(DEFINED ALTERNATIVE_NAMETABLE)
             target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
 
         # The PSP Fat/Slim's 32-64MB of RAM can't hold the 47MB desktop
         # pc_audio.wav decoded to raw PCM, so this follows the GameCube/Wii U
@@ -1951,6 +1990,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         add_library(br0::intsh ALIAS ps2_intsh_shim)
 
         FetchContent_MakeAvailable(tuple)
+        _make_consh_available()
         _fixup_fetched_cxx_std_targets()
 
         # Reuse the PSP's generated title/options art, NOT the NES's: the
@@ -2038,7 +2078,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(DEFINED ALTERNATIVE_NAMETABLE)
             target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
 
         find_program(FFMPEG ffmpeg REQUIRED)
         set(PS2_ASSET_DIR ${CMAKE_BINARY_DIR}/ps2-assets)
@@ -2285,6 +2325,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         add_library(br0::intsh ALIAS ps3_intsh_shim)
 
         FetchContent_MakeAvailable(tuple)
+        _make_consh_available()
         _fixup_fetched_cxx_std_targets()
 
         # Reuse the PSP's generated title/options art, NOT the NES's -- for the
@@ -2344,7 +2385,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         set(PS3_BOOT_TRACE 1 CACHE STRING "Trace PS3 init steps to the lv2 TTY (bring-up aid)")
         target_compile_definitions(platform-nes PUBLIC "PS3_BOOT_TRACE=${PS3_BOOT_TRACE}")
 
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
 
         # src/ps3/audio.cpp #embeds the music asset, so the backend library
         # needs this silencer too -- not just the demo target the way the other
@@ -2509,6 +2550,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _make_consh_available()
         _fixup_fetched_cxx_std_targets()
 
         # The DS backend maps the shared PPU bookkeeping (src/emu) onto libnds 2D
@@ -2538,7 +2580,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(DEFINED ALTERNATIVE_NAMETABLE)
             target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
@@ -2629,6 +2671,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         project(platform-nes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
+        _make_consh_available()
         _fixup_fetched_cxx_std_targets()
 
         set(DEMO_TITLE_DIR gba)
@@ -2653,7 +2696,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(DEFINED ALTERNATIVE_NAMETABLE)
             target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
@@ -2713,6 +2756,7 @@ else()
     project(platform-nes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
+    _make_consh_available()
     _fixup_fetched_cxx_std_targets()
 
     set(DEMO_TITLE_DIR pc)
@@ -2903,7 +2947,7 @@ else()
     )
     target_compile_definitions(platform-nes PUBLIC ${PLATFORM_DEFINE})
     target_link_libraries(platform-nes PUBLIC SDL3::SDL3-static)
-    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
 
     if(TARGET_PLATFORM STREQUAL "linux")
         target_link_libraries(platform-nes PUBLIC PkgConfig::LibUSB)
