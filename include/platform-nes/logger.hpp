@@ -232,6 +232,56 @@ inline void EnsureSioOnce() {
         sio_puts("log: pause() hit -- no stdin on PS2, continuing");  \
     } while (0)
 
+#elif defined(TARGET_PS3) && !defined(NDEBUG)
+
+// Same problem the PS2 branch above exists to avoid, and the same shape of
+// answer. PSL1GHT's newlib has no filesystem and no terminal behind stdio, so
+// the generic <iostream> branch below would run std::ios_base::Init's global
+// constructor before main() against a libc that has nowhere to put the bytes
+// -- which is exactly what crashed the EE and is why the PS2 branch was
+// written. Rather than find out whether the PPU survives it, this takes the
+// serial-port equivalent: sysTtyWrite (sys/tty.h) is a static-inline lv2
+// syscall, so there is no library to link, no stream object, no locale
+// globals, nothing that has to be initialised before the first log() call.
+// RPCS3 surfaces channel 0 in its TTY log; on hardware it is what ps3load's
+// console captures.
+//
+// Formatting reuses snprintf into a fixed buffer for the same reason the PS2
+// branch does, which means a caller passes ordinary printf-style specifiers
+// (%d/%x/%u/...) matching its own argument types -- the same contract as
+// printf, unlike the generic LogFormat below, which auto-formats an arbitrary
+// type through operator<<.
+//
+// There is no EnsureSioOnce() counterpart: unlike the EE's serial port, the
+// lv2 TTY needs no setting up before it is written to.
+#include <sys/tty.h>
+// <stdio.h>, and unqualified snprintf below, not <cstdio>/std::snprintf as the
+// PS2 branch uses: ps3dev's newlib declares snprintf in the global namespace
+// only, and this libstdc++'s <cstdio> does not re-export it into std, so the
+// qualified spelling does not compile here at all.
+#include <stdio.h>
+#include <cstring>
+
+namespace log_detail {
+inline void TtyPuts(const char *msg) {
+    u32 written = 0;
+    sysTtyWrite(0, msg, static_cast<u32>(std::strlen(msg)), &written);
+}
+} // namespace log_detail
+
+#define log(msg, ...)                                                 \
+    do {                                                              \
+        char _pnes_tty_buf[192];                                      \
+        snprintf(_pnes_tty_buf, sizeof(_pnes_tty_buf),           \
+                      "log: " msg "\n" __VA_OPT__(,) __VA_ARGS__);    \
+        ::log_detail::TtyPuts(_pnes_tty_buf);                         \
+    } while (0)
+
+/// No interactive stdin to block on here (same as the PS2 branch) -- logs
+/// that this was hit and carries straight on, rather than hanging forever.
+#define pause()                                                       \
+    ::log_detail::TtyPuts("log: pause() hit -- no stdin on PS3, continuing\n")
+
 #elif !defined(NDEBUG)
 
 #include <iostream>

@@ -7,7 +7,7 @@
 #   docker compose run --rm build-gc        # GameCube demo.dol
 #   docker compose run --rm build-wii       # Wii demo.dol (also runs on Wii U / vWii)
 #   docker compose run --rm build-3ds       # Nintendo 3DS demo.3dsx
-#   docker compose run --rm build-ps2
+#   docker compose run --rm build-ps2      # PlayStation 2 demo.elf
 #
 # Override the preset by setting PRESET in the environment:
 #
@@ -363,6 +363,49 @@ services:
       - -c
       - |
         set -eu
-        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET"
+        # ALTERNATIVE_NAMETABLE=1 -- see build-nes's comment on it: this demo's
+        # board wiring (four real nametables), needed by every backend that
+        # renders this same title screen. The ps2 branch of CMakeLists.txt
+        # honours it exactly like the other console branches do.
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
         cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
         echo "Built: cmake-build-ci-$$PRESET/demo.elf"
+
+  # PlayStation 3 (ps3dev/PSL1GHT). Unlike every other build-* service here,
+  # the first `docker compose build build-ps3` is a from-source cross-compiler
+  # build and takes 30-60+ minutes -- there is no usable prebuilt PS3 toolchain
+  # image to start FROM (the only published one is pinned to a 2018 GCC 7.2
+  # that cannot compile gnu++23 at all). See docker/Dockerfile.ps3.
+  #
+  # This image is Debian-based (not Alpine like build-ps2), so bash is used
+  # here the same way the devkitPro services use it. The build compiles with
+  # Clang against ps3dev's newlib/libstdc++ and links with ppu-g++ -- see
+  # cmake/PS3.cmake for why that split exists.
+  build-ps3:
+    build:
+      context: docker
+      dockerfile: Dockerfile.ps3
+    image: platform-nes-ps3:latest
+    # Same workaround as build-ps2: this host's bridge driver can't create
+    # veth pairs for new containers/networks, and the configure step does real
+    # network I/O (FetchContent of intsh/tuple/stb).
+    network_mode: host
+    user: "${UID:-0}:${GID:-0}"
+    working_dir: /tmp/platform-nes
+    volumes:
+      - .:/tmp/platform-nes
+    environment:
+      PRESET: ${PRESET:-ps3-release}
+      HOME: /tmp
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        # ALTERNATIVE_NAMETABLE=1 -- see build-nes's comment on it: this demo's
+        # board wiring (four real nametables), needed by every backend that
+        # renders this same title screen. The ps3 branch of CMakeLists.txt
+        # honours it exactly like the other console branches do.
+        cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" -DALTERNATIVE_NAMETABLE=1
+        cmake --build "cmake-build-ci-$$PRESET" -j"$$(nproc)"
+        echo "Built: cmake-build-ci-$$PRESET/EBOOT.BIN"

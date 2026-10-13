@@ -1,0 +1,165 @@
+# PlayStation 3 (ps3dev / PSL1GHT) build image for platform-nes.
+#
+# Two-stage, and for a specific reason: unlike ps2dev (docker/Dockerfile.ps2)
+# there is no usable prebuilt PS3 toolchain image to start FROM. The only one
+# published is flipacholas/ps3devextra, which is pinned to a 2018 ps3dev and
+# ships powerpc64-ps3-elf-gcc 7.2.0 -- that compiler rejects -std=gnu++23
+# outright (verified: "unrecognized command line option"), so it cannot build
+# this engine at all. So stage 1 builds ps3dev from source via ps3dev's own
+# ps3toolchain, the 30-60+ minute cost that Dockerfile.ps2 explicitly avoids
+# by pulling ps2dev/ps2dev prebuilt.
+#
+# The compiler used for the actual build is Clang, NOT the ppu-g++ that
+# ps3toolchain produces. ps3toolchain's current PPU GCC is 13.2.0, and while
+# that accepts -std=gnu++23 it has no #embed -- a GCC 15+ feature (see
+# src/wiiu/audio.cpp's own note about devkitPPC needing GCC 15+ for it).
+# #embed is not optional here: demo/src/graphics/graphics.hpp pulls the CHR
+# art in with it and every target compiles that header. Clang has supported
+# #embed since 19, and Clang already cross-compiles cleanly to the PS3's exact
+# ABI -- verified that `clang++ --target=powerpc64-unknown-elf` emits "ELF
+# 64-bit MSB relocatable, 64-bit PowerPC, Power ELF V1 ABI", which is what the
+# PPU wants. ps3dev is still what supplies everything else: binutils, newlib,
+# libstdc++, the PSL1GHT libraries/headers, and the SELF packaging tools.
+# cmake/PS3.cmake wires clang up as the compiler and keeps ppu-g++ as the
+# link driver, so the GCC side still owns crt/spec/linker-script handling.
+#
+# ps3-release/ps3-debug (CMakePresets.json, gated on PS3DEV being set -- it is,
+# below) build the demo via the ps3 branch of CMakeLists.txt:
+#
+#   docker compose run --rm build-ps3
+
+# ---------------------------------------------------------------------------
+# Stage 1: build ps3dev (binutils + GCC/newlib PPU & SPU + PSL1GHT) from source
+# ---------------------------------------------------------------------------
+# Debian Bookworm, not the Trixie that stage 2 and docker/Dockerfile.linux use:
+# this is the base ps3toolchain's own Dockerfile targets, so it's the host GCC
+# (12) that upstream actually builds PPU GCC 13.2.0 against. Trixie's GCC 14 is
+# a newer host compiler than upstream tests, and a cross-GCC bootstrap is
+# exactly the kind of build that turns new host-compiler warnings into errors.
+# Nothing from this stage's userland is kept -- only /usr/local/ps3dev is
+# copied forward -- so the older base costs nothing at run time.
+FROM debian:12-slim AS toolchain
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PS3DEV=/usr/local/ps3dev
+ENV PSL1GHT=${PS3DEV}
+ENV PATH=${PATH}:${PS3DEV}/bin:${PS3DEV}/ppu/bin:${PS3DEV}/spu/bin
+
+# Package set is ps3toolchain's own Dockerfile list, plus python3-dev: PSL1GHT's
+# tools/ directory builds pkgcrypt as a Python extension module, which needs
+# Python.h. depends/check-*.sh gate the build on autoconf/automake/bison/flex/
+# gcc/gmp/libelf/libtool/make/makeinfo/ncurses/patch/pkg-config/wget/zlib being
+# present and will refuse to start without them.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        bison \
+        build-essential \
+        ca-certificates \
+        flex \
+        git \
+        libelf-dev \
+        libgmp-dev \
+        libncurses-dev \
+        libssl-dev \
+        libtool-bin \
+        patch \
+        pkg-config \
+        python3-dev \
+        texinfo \
+        wget \
+        xz-utils \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned rather than tracking master: this is a from-source compiler build, and
+# an unpinned clone would silently change the compiler under the project. Bump
+# deliberately, or override with --build-arg for a one-off.
+ARG PS3TOOLCHAIN_REF=de85d7d5d11dc0a99d823ece3d440eea46c34d0f
+RUN git clone https://github.com/ps3dev/ps3toolchain.git /build/ps3toolchain \
+    && git -C /build/ps3toolchain checkout --detach ${PS3TOOLCHAIN_REF}
+
+WORKDIR /build/ps3toolchain
+
+# toolchain.sh takes step numbers (matched numerically against each script's
+# NNN- prefix) and runs only those. The set below is everything this project
+# needs and nothing else:
+#
+#   001 binutils PPU        002 gcc+newlib PPU      004 ppu-* symlinks
+#   005 binutils SPU        006 gcc+newlib SPU      008 PSL1GHT
+#
+# Deliberately skipped:
+#   003/007 gdb (PPU/SPU) -- nothing here debugs on-console, and ps3toolchain
+#           issue #128 has the gdb step failing outright on newer hosts, so
+#           building it would only add a way for the image to break.
+#   009 ps3libraries -- zlib/libpng/libjpeg/freetype etc. built from source,
+#           another long leg. The audio backend decodes Vorbis with stb_vorbis
+#           (FetchContent, header-only, same as the PS2/PSP/Wii U branches), so
+#           none of it is linked.
+#
+# The SPU steps are NOT optional despite nothing in this project running SPU
+# code: PSL1GHT's top-level Makefile recurses into spu/ as well as ppu/common/
+# tools/, so `make install` at step 008 fails without an SPU compiler present.
+RUN ./toolchain.sh 1 2 4 5 6 8
+
+# ---------------------------------------------------------------------------
+# Stage 2: the actual build image
+# ---------------------------------------------------------------------------
+# Debian Trixie for the same reason docker/Dockerfile.linux picks it: it ships
+# Clang 19, the first release with #embed, and this image's whole point is
+# having a #embed-capable compiler in front of ps3dev.
+FROM debian:trixie
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PS3DEV=/usr/local/ps3dev
+ENV PSL1GHT=${PS3DEV}
+ENV PATH=${PATH}:${PS3DEV}/bin:${PS3DEV}/ppu/bin:${PS3DEV}/spu/bin
+
+# The cross toolchain is relocatable and self-contained (its own newlib,
+# libstdc++, PSL1GHT libs and host-side SELF tools all live under this one
+# prefix), so the whole tree copies forward as-is. The ppu-*/spu-* driver
+# binaries are x86-64 ELFs linked against Bookworm's glibc; Trixie's glibc is
+# newer, so they run here unchanged.
+COPY --from=toolchain /usr/local/ps3dev /usr/local/ps3dev
+
+# clang/lld: the compiler this project actually builds PS3 code with (see the
+# header comment). ninja is the preset generator. git/wget/ca-certificates
+# support FetchContent of intsh/tuple/stb. file lets a build-verify step sniff
+# the produced ELF. ffmpeg transcodes demo/audio/tracks/pc_audio.wav to the
+# Vorbis OGG that src/ps3/audio.cpp #embeds (same requirement as the PSP and
+# Wii U branches). python3 is kept for PSL1GHT's own host tooling; note the
+# current PSL1GHT installs these as compiled binaries (fself, pkg) rather than
+# the fself.py/pkg.py of older releases, and the ps3 CMake branch uses the
+# make_self/sprxlinker binaries regardless. bash is
+# present on this Debian base already, but is listed by the PS2 image for IDE
+# Docker toolchains (CLion execs bash in-container for compiler autodetection)
+# and the same applies here.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        clang \
+        lld \
+        ninja-build \
+        git \
+        wget \
+        ca-certificates \
+        file \
+        ffmpeg \
+        python3 \
+        make \
+    && rm -rf /var/lib/apt/lists/*
+
+# Trixie's CMake is older than the cmake_minimum_required(VERSION 4.2) that the
+# intsh/tuple dependencies declare, so pull a current one from Kitware's
+# official Linux binary release -- identical to docker/Dockerfile.linux, and
+# the CI overrides the pin via --build-arg the same way. (Dockerfile.ps2 can't
+# do this: its ps2dev base is Alpine/musl and the Kitware build is glibc-only.
+# This stage is glibc, so the shared approach works.)
+ARG CMAKE_VERSION=4.3.3
+RUN wget -qO- https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz \
+        | tar -xz -C /opt \
+    && ln -s /opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/cmake /usr/local/bin/cmake \
+    && ln -s /opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/ctest /usr/local/bin/ctest \
+    && ln -s /opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/cpack /usr/local/bin/cpack \
+    && ln -s /opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/cmake /usr/bin/cmake
+
+WORKDIR /src

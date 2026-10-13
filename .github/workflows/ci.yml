@@ -1,8 +1,9 @@
 # Build matrix for platform-nes: NES ROM + GameCube/Wii .dol + 3DS .3dsx +
-# desktop targets (Linux x64/x86/arm64, macOS arm64/x64, Windows x64/x86/arm64).
+# PlayStation 2 .elf + desktop targets (Linux x64/x86/arm64, macOS arm64/x64,
+# Windows x64/x86/arm64).
 #
 # Local reproduction:
-#   The `nes`, `gc`, `wii`, `ctr`, `linux-x64` and `linux-x86` jobs are just
+#   The `nes`, `gc`, `wii`, `ctr`, `ps2`, `linux-x64` and `linux-x86` jobs are just
 #   `docker compose run` against the images in docker/, so they reproduce
 #   locally byte-for-byte:
 #
@@ -15,6 +16,7 @@
 #       docker compose run --rm build-switch   # == the `switch` job
 #       docker compose run --rm build-nds      # == the `nds` job
 #       docker compose run --rm build-dsi      # == the `dsi` job
+#       docker compose run --rm build-ps2      # == the `ps2` job
 #       docker compose run --rm build-linux    # == the `linux-x64` job's compile
 #       PRESET=linux-x86-release docker compose run --rm build-linux  # == the `linux-x86` job's compile
 #       PRESET=linux-arm64-release docker compose run --rm build-linux  # == the `linux-arm64` job's compile
@@ -31,6 +33,7 @@
 #       act -j switch
 #       act -j nds
 #       act -j dsi
+#       act -j ps2
 #       act -j linux-x64
 #       act -j linux-x86
 #
@@ -67,7 +70,7 @@ jobs:
   # diff against -- so this is the only job that ever builds/runs uitk
   # itself (most of the other jobs' Docker images/runners don't have Qt at
   # all), and a failed export here (a malformed .uis, say) fails fast before
-  # wasting time on 17 platform builds that would all fail the same way once
+  # wasting time on 19 platform builds that would all fail the same way once
   # they found no demo-gen artifact to download. Reproduce locally with a Qt
   # install: `cmake --build <builddir>` regenerates demo/gen/ as part of its
   # own configure step (see CMakeLists.txt).
@@ -447,6 +450,47 @@ jobs:
             cmake-build-ci-wiiu-release/wup
             cmake-build-ci-wiiu-release/wup-installable
           if-no-files-found: warn
+
+  # PlayStation 2 (ps2sdk / EE+IOP). Unlike the devkitPro jobs above, the
+  # toolchain comes from the official prebuilt ps2dev/ps2dev image (Alpine) and
+  # the CMake toolchain file is this project's own cmake/PS2.cmake -- ps2dev
+  # ships none. The build also transcodes demo/audio/tracks/pc_audio.wav into
+  # the music asset the ELF #embeds, using ffmpeg plus ps2sdk's own adpenc
+  # (both present in the image), so the produced demo.elf is several MB larger
+  # than the other console artifacts here -- that's the asset, not debug info.
+  # PS2_MUSIC is left at its default (stream, the EE-decoded ADPCM backend);
+  # the spu2 and vorbis backends are reference paths and aren't gated here.
+  ps2:
+    name: PlayStation 2 (.elf)
+    needs: codegen-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # demo/gen/ (uitk's output) is gitignored -- codegen-check is the only
+      # job that builds/runs uitk itself (it needs Qt); every other job just
+      # downloads what it produced instead of installing Qt itself.
+      - name: Download generated UI code
+        uses: actions/download-artifact@v7
+        with:
+          name: demo-gen
+          path: demo/gen
+
+      - name: Cache build tree
+        uses: actions/cache@v5
+        with:
+          path: cmake-build-ci-ps2-release
+          key: ps2-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'cmake/PS2.cmake', 'docker/Dockerfile.ps2') }}
+          restore-keys: ps2-
+
+      - name: Build demo.elf
+        run: docker compose run --rm --build build-ps2
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: demo-ps2
+          path: cmake-build-ci-ps2-release/demo.elf
+          if-no-files-found: error
 
   linux-x64:
     name: Linux (x64) (AppImage)

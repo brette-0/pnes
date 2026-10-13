@@ -423,5 +423,35 @@
       "displayName": "PlayStation 2 (Debug)",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     }
+    ,
+    {
+      "name": "ps3-release",
+      "inherits": "_base",
+      "displayName": "PlayStation 3 (Release)",
+      "description": "Sony PlayStation 3 SELF via ps3dev/PSL1GHT. Requires ps3dev installed and PS3DEV/PSL1GHT set -- see docker/Dockerfile.ps3 and compose.yml's build-ps3 service, which is the intended path since no usable prebuilt PS3 toolchain image exists and ps3dev has to be built from source (30-60+ min). Unlike every other preset here, the compiler is Clang rather than the SDK's own GCC: ps3toolchain's PPU GCC is 13.2.0 and has no #embed, which demo/src/graphics/graphics.hpp requires. cmake/PS3.cmake (ps3dev ships no CMake toolchain of its own) wires Clang up against ps3dev's newlib/libstdc++ and keeps ppu-g++ as the link driver; PSL1GHT's own include/link dirs are added in the ps3 branch of CMakeLists.txt.",
+      "cacheVariables": {
+        "TARGET_PLATFORM": "ps3",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/PS3.cmake"
+      },
+      "condition": {
+        "type": "notEquals",
+        "lhs": "$env{PS3DEV}",
+        "rhs": ""
+      },
+      "vendor": {
+        "jetbrains.com/clion": {
+          "toolchain": "ps3dev"
+        }
+      }
+    },
+    {
+      "name": "ps3-debug",
+      "inherits": "ps3-release",
+      "displayName": "PlayStation 3 (Debug)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
   ]
 }

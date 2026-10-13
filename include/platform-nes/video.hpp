@@ -37,10 +37,13 @@ using namespace br0::intsh;
 // GBA backends drive the libnds/libgba 2D hardware directly, with no SDL at
 // all. The PS2 backend (src/ps2) presents through the GS via gsKit -- a real
 // GPU, like GX/libnx, not raw VRAM like PSP -- so it must not see SDL3
-// either.) All are "non-NES", so
-// the SDL3-only includes/globals are gated on
-// (!TARGET_NES && !OGC && !CTR && !NX && !WIIU && !PSP && !NDS && !GBA && !PS2).
-#if !defined(TARGET_NES) && !defined(TARGET_OGC) && !defined(TARGET_CTR) && !defined(TARGET_NX) && !defined(TARGET_WIIU) && !defined(TARGET_PSP) && !defined(TARGET_NDS) && !defined(TARGET_GBA) && !defined(TARGET_PS2)
+// either. The PS3 backend (src/ps3) is back to the PSP's shape rather than
+// the PS2's: it blits into an RSX-mapped buffer and flips it, with no
+// shaders/3D pipeline involved, so it must not see SDL3 either.) All are
+// "non-NES", so the SDL3-only includes/globals are gated on
+// (!TARGET_NES && !OGC && !CTR && !NX && !WIIU && !PSP && !NDS && !GBA &&
+// !PS2 && !PS3).
+#if !defined(TARGET_NES) && !defined(TARGET_OGC) && !defined(TARGET_CTR) && !defined(TARGET_NX) && !defined(TARGET_WIIU) && !defined(TARGET_PSP) && !defined(TARGET_NDS) && !defined(TARGET_GBA) && !defined(TARGET_PS2) && !defined(TARGET_PS3)
 #include <SDL3/SDL_video.h>
 #endif
 
@@ -634,7 +637,7 @@ namespace ppu {
  */
 extern bool mirroring;
 #endif
-#if !defined(TARGET_NES) && !defined(TARGET_OGC) && !defined(TARGET_CTR) && !defined(TARGET_NX) && !defined(TARGET_WIIU) && !defined(TARGET_PSP) && !defined(TARGET_NDS) && !defined(TARGET_GBA) && !defined(TARGET_PS2)
+#if !defined(TARGET_NES) && !defined(TARGET_OGC) && !defined(TARGET_CTR) && !defined(TARGET_NX) && !defined(TARGET_WIIU) && !defined(TARGET_PSP) && !defined(TARGET_NDS) && !defined(TARGET_GBA) && !defined(TARGET_PS2) && !defined(TARGET_PS3)
 /** @brief Current desktop display mode (window + refresh info). SDL backend only. */
 extern const SDL_DisplayMode* mode;
 /** @brief Integer upscaling factor applied to the NES virtual framebuffer. SDL backend only. */
@@ -770,6 +773,30 @@ namespace video {
     /** @brief Viewport width in tiles (PS2: 32, NES-native -- the GS scales freely, so there is no reason to render more or less). */
     constexpr u16 viewport_tx() { return 32; }
     /** @brief Viewport height in tiles (PS2: 30, NES-native). */
+    constexpr u16 viewport_ty() { return 30; }
+    /** @brief Viewport width in pixels (tiles * 8 = 256). */
+    constexpr u16 viewport_px() { return viewport_tx() << 3; }
+    /** @brief Viewport height in pixels (tiles * 8 = 240). */
+    constexpr u16 viewport_py() { return viewport_ty() << 3; }
+#elif defined(TARGET_PS3)
+    // Same conclusion as the PS2 branch above, reached a different way. The PS3
+    // has no fixed panel either, but unlike the PS2 this backend does NOT get
+    // free scaling from the display hardware: src/ps3/video.cpp blits into an
+    // RSX-mapped buffer and flips it (no shaders, no textured quad -- see that
+    // file's header for why a first pass skips the RSX 3D pipeline, the same
+    // call the PSP and Switch backends each made for theirs), so whatever
+    // scaling happens is the PPU's own work, pixel by pixel.
+    //
+    // That makes the NES-native 32x30 the *only* sensible viewport here, and
+    // for a better reason than "it fits": 240 goes into 720p's 720 lines
+    // exactly 3 times, so a 256x240 frame scales to 768x720 at an integer 3x
+    // on both axes and every destination pixel is exactly one source pixel --
+    // the same guarantee the PSP branch below spells out at 1x, which it calls
+    // the only way to be sure there is no warping. The leftover 256px each side
+    // of 1280 is pillarboxing, matching the NES's own 4:3 display aspect.
+    /** @brief Viewport width in tiles (PS3: 32, NES-native -- scales to 768px at an exact 3x, see above). */
+    constexpr u16 viewport_tx() { return 32; }
+    /** @brief Viewport height in tiles (PS3: 30, NES-native -- 240 * 3 == 720p exactly). */
     constexpr u16 viewport_ty() { return 30; }
     /** @brief Viewport width in pixels (tiles * 8 = 256). */
     constexpr u16 viewport_px() { return viewport_tx() << 3; }

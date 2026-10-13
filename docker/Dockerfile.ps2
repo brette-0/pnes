@@ -20,8 +20,13 @@ FROM ps2dev/ps2dev:latest
 # binary the other images pin can't run on this base at all. ninja is the
 # preset generator; git/wget/ca-certificates support FetchContent of
 # intsh/tuple; file lets a build-verify step sniff the produced ELF; ffmpeg
-# transcodes demo/audio/tracks/pc_audio.wav to the Vorbis OGG src/ps2/audio.cpp
-# #embeds (same requirement as the PSP branch).
+# transcodes demo/audio/tracks/pc_audio.wav into the music asset the ELF
+# #embeds (same requirement as the PSP branch). Which asset depends on
+# PS2_MUSIC: the default `stream` backend (src/ps2/audio_stream.cpp) has ffmpeg
+# downmix to mono and then encodes SPU2 ADPCM with ps2sdk's own bin/adpenc,
+# already on PATH in this image; `spu2` does the same with adpenc -L; only the
+# `vorbis` reference backend (src/ps2/audio.cpp) needs the libvorbis encoder,
+# which Alpine's ffmpeg build provides.
 # bash is otherwise absent on this Alpine base (build-ps2 itself uses sh);
 # it's needed here because IDE Docker toolchains (e.g. CLion) exec bash
 # inside the container to run their compiler/build-tool auto-detection.

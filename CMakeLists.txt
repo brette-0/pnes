@@ -2262,6 +2262,249 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # ARM9 arch flags and the nds_create_rom() helper used below. libnds is linked
     # explicitly as -lnds9 (calico's ARM7 + linker script come in via the toolchain).
     # ----------------------------------------------------------------------
+    # Sony PlayStation 3 target (ps3dev/PSL1GHT), via cmake/PS3.cmake (ps3dev
+    # ships no CMake toolchain of its own -- see that file).
+    #
+    # The compiler for this branch is Clang, not the ppu-g++ that ps3dev
+    # builds: ps3toolchain's PPU GCC is 13.2.0, which has no #embed, and
+    # demo/src/graphics/graphics.hpp needs it. cmake/PS3.cmake sets that up and
+    # keeps ppu-g++ as the link driver; docker/Dockerfile.ps3 is what puts both
+    # in one image.
+    #
+    # PSL1GHT's ppu-types.h already typedefs u8/u16/u32/u64/s8/s16/s32/s64, so
+    # the real intsh (whose `using namespace br0::intsh` would make those names
+    # ambiguous unqualified -- breaking PSL1GHT's own headers, not just this
+    # project's) is never fetched here either; src/ps3/intsh_shim/intsh stands
+    # in, exactly as the ps2 branch does for ps2sdk's tamtypes.h. See that
+    # shim's own comment.
+    elseif(TARGET_PLATFORM STREQUAL "ps3")
+        project(platform-nes CXX)
+
+        add_library(ps3_intsh_shim INTERFACE)
+        target_include_directories(ps3_intsh_shim INTERFACE ${CMAKE_SOURCE_DIR}/src/ps3/intsh_shim)
+        add_library(br0::intsh ALIAS ps3_intsh_shim)
+
+        FetchContent_MakeAvailable(tuple)
+        _fixup_fetched_cxx_std_targets()
+
+        # Reuse the PSP's generated title/options art, NOT the NES's -- for the
+        # identical reason the ps2 branch does (see its own comment): the NES's
+        # demo/gen/*/nes headers #error without SYSMEM/TITLE/TITLE_DATA/
+        # OPTIONS/OPTIONS_DATA, which only describe the real cartridge's
+        # bank-switched ROM layout and mean nothing for a PS3 SELF. The PSP's
+        # generated headers make the same shared video.hpp/text.hpp calls with
+        # no bank placement, and its panel is a superset of this branch's
+        # NES-native 256x240, so the same absolute tile coordinates fit.
+        set(DEMO_TITLE_DIR psp)
+
+        if(NOT DEFINED ENV{PSL1GHT})
+            message(FATAL_ERROR
+                "PS3 build requires the PSL1GHT env var (set alongside PS3DEV by "
+                "the platform-nes-ps3 Docker image -- see docker/Dockerfile.ps3).")
+        endif()
+        set(PS3DEV_ROOT  "$ENV{PS3DEV}")
+        set(PSL1GHT_ROOT "$ENV{PSL1GHT}")
+
+        # The PS3 backend presents the shared software PPU (src/emu): the
+        # emulator and all the nametable/OAM/palette write functions are
+        # platform-agnostic and compiled here alongside the RSX-mapped
+        # framebuffer present, the libio pad input, and the libaudio streaming
+        # audio.
+        file(GLOB PS3_SOURCES CONFIGURE_DEPENDS src/ps3/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
+        file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
+        add_library(platform-nes STATIC ${PS3_SOURCES} ${ALL_SOURCES})
+        target_include_directories(platform-nes PUBLIC
+                ${CMAKE_SOURCE_DIR}/include
+                ${CMAKE_SOURCE_DIR}/include/umbrella
+                ${PSL1GHT_ROOT}/ppu/include
+        )
+        # TARGET_PS3 is the group the engine headers gate on (NES-native 32x30
+        # viewport, no SDL headers -- see video.hpp's own TARGET_PS3 branch).
+        # Unlike the PS2's _EE, PSL1GHT needs no equivalent "this is the PPU"
+        # define: its headers are unconditional.
+        target_compile_definitions(platform-nes PUBLIC TARGET_PS3)
+        # Alternative nametable wiring (see the TARGET_NES branch's own comment,
+        # near the top of this file): a fact about which board a build is
+        # modeling, not something exclusive to the NES target itself.
+        if(DEFINED ALTERNATIVE_NAMETABLE)
+            target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+        endif()
+        # Boot tracing: ps3_trace() (src/ps3/internal.hpp) writes one line per
+        # init step straight to lv2's TTY channel 0, in RELEASE as well as
+        # debug -- deliberately not NDEBUG-gated, unlike log(), because the
+        # thing it exists to diagnose is a release build that never reaches a
+        # first frame. Every bail-out in irq::init() and audio::Init() names
+        # itself, so a console that boots to black reports which step failed
+        # instead of leaving it to be guessed at.
+        #
+        # ON while this backend is being brought up on real hardware/RPCS3;
+        # configure with -DPS3_BOOT_TRACE=0 to compile it out to nothing (the
+        # helper becomes an empty inline taking an unused argument). Flip the
+        # default once a first boot is confirmed good.
+        set(PS3_BOOT_TRACE 1 CACHE STRING "Trace PS3 init steps to the lv2 TTY (bring-up aid)")
+        target_compile_definitions(platform-nes PUBLIC "PS3_BOOT_TRACE=${PS3_BOOT_TRACE}")
+
+        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple)
+
+        # src/ps3/audio.cpp #embeds the music asset, so the backend library
+        # needs this silencer too -- not just the demo target the way the other
+        # console branches do it. On those, Clang is never the compiler and the
+        # flag is dead weight kept for parity; here Clang IS the compiler, so
+        # #embed really does warn as a C23 extension in C++ mode.
+        target_compile_options(platform-nes PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
+
+        # Same reasoning as the PSP/PS2 branches: transcode the desktop
+        # pc_audio.wav to a small Vorbis OGG at build time and #embed it
+        # (src/ps3/audio.cpp decodes it with stb_vorbis, streaming from a
+        # dedicated PPU thread).
+        #
+        # 48000, not the 44100 the PSP and PS2 branches encode to: libaudio's
+        # port runs at a fixed 48kHz and takes 32-bit float samples, so encoding
+        # the asset at that rate means the backend neither resamples nor
+        # converts formats. See src/ps3/audio.cpp's file header.
+        find_program(FFMPEG ffmpeg REQUIRED)
+        FetchContent_Declare(
+                stb
+                GIT_REPOSITORY https://github.com/nothings/stb.git
+                GIT_TAG        master
+                GIT_SHALLOW    TRUE
+        )
+        FetchContent_MakeAvailable(stb)
+        target_include_directories(platform-nes PRIVATE ${stb_SOURCE_DIR})
+
+        set(PS3_ASSET_DIR ${CMAKE_BINARY_DIR}/ps3-assets)
+        set(PS3_OGG ${PS3_ASSET_DIR}/pc_audio.ogg)
+        set(PS3_WAV ${CMAKE_SOURCE_DIR}/demo/audio/tracks/pc_audio.wav)
+        file(MAKE_DIRECTORY ${PS3_ASSET_DIR})
+        add_custom_command(
+                OUTPUT ${PS3_OGG}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${PS3_ASSET_DIR}
+                COMMAND ${FFMPEG} -y -loglevel error -i ${PS3_WAV}
+                        -ar 48000 -ac 2 -c:a libvorbis -q:a 4 ${PS3_OGG}
+                DEPENDS ${PS3_WAV}
+                COMMENT "Encoding PS3 audio: pc_audio.wav -> pc_audio.ogg (Vorbis 48kHz, embedded)"
+                VERBATIM)
+        add_custom_target(ps3-assets DEPENDS ${PS3_OGG})
+        add_dependencies(platform-nes ps3-assets)
+
+        # Only one --embed-dir is needed here, unlike the ps2 branch's two:
+        # there is no IOP-side module to embed alongside the music, because
+        # libaudio is PPU-side (see src/ps3/audio.cpp's file header).
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/src/ps3/audio.cpp
+                PROPERTIES
+                    OBJECT_DEPENDS  ${PS3_OGG}
+                    COMPILE_OPTIONS "--embed-dir=${PS3_ASSET_DIR}")
+
+        file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
+        list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
+        file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_TITLE_SOURCES})
+        file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
+        list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
+
+        # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
+        # editing the art retriggers a recompile.
+        file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
+                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+
+        add_executable(demo ${DEMO_SOURCES})
+        # The SELF packing step below wants a bare .elf to pack from, same as
+        # the PSP branch's EBOOT.PBP step and the ps2 branch's raw ELF.
+        set_target_properties(demo PROPERTIES SUFFIX ".elf")
+        target_link_directories(demo PRIVATE ${PSL1GHT_ROOT}/ppu/lib)
+        # PSL1GHT's conventional link set and order. rsx/gcm_sys are the RSX
+        # context + display-buffer/flip side used by src/ps3/video.cpp; io is
+        # libio (pad); sysutil/sysmodule are the XMB exit callback; audio is
+        # libaudio; lv2 is the syscall layer everything above sits on and has
+        # to come last. m is newlib's libm, which stb_vorbis needs (floor/pow).
+        target_link_libraries(demo PRIVATE platform-nes
+                rsx gcm_sys
+                io
+                sysutil sysmodule
+                audio
+                lv2 m
+        )
+
+        # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
+        target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
+
+        # CHR art is pulled in with #embed (C23). Unlike the other console
+        # branches, where this silencer is a no-op kept for parity, Clang IS the
+        # compiler here -- so this is the branch where it actually fires.
+        target_compile_options(demo PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
+
+        # Pack the linked ELF into the SELF homebrew image the console actually
+        # boots. Three steps, all ps3dev host tools:
+        #
+        #   sprxlinker  rewrites the ELF's PRX import/export stubs IN PLACE.
+        #               PSL1GHT links against stub libraries whose relocations
+        #               are not finished by the linker, so this is not optional
+        #               -- it is what PSL1GHT's own ppu_rules runs immediately
+        #               after its link step. In place, and before the two packs
+        #               below, is also what leaves demo.elf itself bootable:
+        #               RPCS3 loads a bare PPU ELF, which is the one way to
+        #               exercise this backend with the SELF layer taken out of
+        #               the picture entirely.
+        #   fself       wraps the result as EBOOT.BIN, the filename the XMB
+        #               expects inside a homebrew folder's USRDIR.
+        #   make_self   wraps it a second time as EBOOT.CEX.BIN.
+        #
+        # fself is the one EBOOT.BIN is built from, and the difference is not
+        # cosmetic -- it is in the SCE header's key_revision field:
+        #
+        #   fself      5343 4500 0000 0002 8000 0001 ...   segments stored raw
+        #   make_self  5343 4500 0000 0002 0001 0001 ...   segments compressed
+        #
+        # 0x8000 is the agreed "this image is unsigned, read the segments
+        # straight out" marker, and it is what loaders check first. make_self
+        # instead emits a retail-SHAPED image -- real key revision, compressed
+        # segments -- which obliges the loader down its decrypt-with-console-
+        # keys path for a file that was never signed by anything. Neither image
+        # is any more genuinely signed than the other (ps3dev has no private
+        # key), so the retail shape buys nothing and costs the raw-load route.
+        #
+        # PSL1GHT's own ppu_rules emits both for exactly this reason: its %.self
+        # rule runs make_self AND then fself into $(basename $@).fake.self. This
+        # just picks the fake one as the default rather than the extra.
+        # EBOOT.CEX.BIN is kept so nothing that wants the other form has to go
+        # looking for a tool.
+        #
+        # Neither pack strips first, unlike ppu_rules (which does $(STRIP) ->
+        # sprxlinker -> make_self). Keeping the symbols is what lets addr2line
+        # turn an RPCS3 backtrace back into a line of this repo, and make_self
+        # only stores PT_LOAD segments anyway, so the DWARF costs size in the
+        # fself image alone.
+        #
+        # POST_BUILD on the demo target rather than a separate add_custom_target
+        # so that `cmake --build` produces the bootable artifact with no extra
+        # target to remember -- matching how the Wii U branch packs its RPX.
+        find_program(PS3_SPRXLINKER sprxlinker HINTS ${PS3DEV_ROOT}/bin REQUIRED)
+        find_program(PS3_FSELF      fself      HINTS ${PS3DEV_ROOT}/bin REQUIRED)
+        find_program(PS3_MAKE_SELF  make_self  HINTS ${PS3DEV_ROOT}/bin REQUIRED)
+        add_custom_command(TARGET demo POST_BUILD
+                COMMAND ${PS3_SPRXLINKER} $<TARGET_FILE:demo>
+                COMMAND ${PS3_FSELF} $<TARGET_FILE:demo> ${CMAKE_BINARY_DIR}/EBOOT.BIN
+                COMMAND ${PS3_MAKE_SELF} $<TARGET_FILE:demo> ${CMAKE_BINARY_DIR}/EBOOT.CEX.BIN
+                COMMENT "Packing PS3 SELF: demo.elf -> EBOOT.BIN (sprxlinker + fself) + EBOOT.CEX.BIN (make_self)"
+                VERBATIM)
+
+        # LTO is deliberately NOT enabled here, unlike every other branch.
+        #
+        # This is the one target where Clang compiles and ppu-g++ links (see
+        # cmake/PS3.cmake). -flto makes Clang emit LLVM bitcode rather than
+        # PowerPC objects, and ps3dev's GCC/binutils has no LLVMgold plugin to
+        # read it, so the link would fail on every object. Worse, it would fail
+        # late and confusingly: check_ipo_supported() asks the COMPILER whether
+        # it supports IPO -- Clang says yes -- and cmake/PS3.cmake sets
+        # CMAKE_TRY_COMPILE_TARGET_TYPE to STATIC_LIBRARY, so that probe never
+        # exercises a real link and never sees the problem.
+        #
+        # Revisit only alongside the compiler split itself: either both halves
+        # become Clang (needs lld plus PSL1GHT's linker scripts verified
+        # against it) or both become GCC (needs #embed, i.e. ps3dev on GCC 15 --
+        # see .ignore/ps3-cmake-build-setup/NOTES.md).
+
     elseif(TARGET_PLATFORM STREQUAL "nds" OR TARGET_PLATFORM STREQUAL "dsi")
         project(platform-nes CXX)
 
