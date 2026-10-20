@@ -40,22 +40,11 @@ namespace {
                   "together");
 }
 
-// INLINE IS LOAD-BEARING, not a style choice. constexpr at namespace scope
-// implies const, which implies INTERNAL linkage -- and a local, unreferenced
-// 16 KiB section is exactly what --gc-sections exists to delete. Nothing names
-// this object: the NES linker script places it by section, and off-NES the
-// library reaches it through the linker's own __start_chr_rom. gnu::retain
-// would protect it, but devkitARM/devkitPPC and clang-cl report
-// `'retain' attribute ignored`, so it cannot be relied on.
-//
-// `inline` gives it external linkage with COMDAT folding, which is what the
-// old per-asset chain (_CHR_EMIT_IMAGE in video.hpp) used and what every
-// devkitPro target and Windows need to keep it alive. Dropping it builds fine
-// on NES (demo/link.ld KEEP()s .chr_rom) and on targets that do not garbage
-// collect sections, then fails at link everywhere that does, with
-// __start_chr_rom undefined.
+// gnu::used + gnu::retain keep it through -ffunction-sections/--gc-sections and
+// LTO: nothing references the image by name, the linker script places it by
+// section.
 [[gnu::section(_CHR_SECTION), gnu::used, gnu::retain]]
-inline constexpr auto chr_rom_image = [] {
+constexpr auto chr_rom_image = [] {
     std::array<u8, chrRomSize> image{};
     for (std::size_t i = 0; i < chrRomSize; i++) {
         image[i] = static_cast<u8>(chrRomRaw[i]);
@@ -67,4 +56,4 @@ inline constexpr auto chr_rom_image = [] {
 // a bank register addressing past what the build embeds cannot read out of
 // bounds (see mmc3::GetTileLMA).
 [[gnu::used, gnu::retain]]
-inline constexpr unsigned ppu::chrRomBytes = chrRomSize;
+constexpr unsigned ppu::chrRomBytes = chrRomSize;
