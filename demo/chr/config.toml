@@ -1,0 +1,60 @@
+[manifest]
+size            = 0x4000    # 16KiB CHR
+
+[normalSprites]
+LMA             = 0x0000    # begin
+VMA             = 0x1000    # sprite begin
+size            = 0x0800    # 2KiB sprite hunk
+includes        = [
+    "./assets/sprites/enemies/mushlet/mushlet_standing.chr",
+    "./assets/sprites/player/player_standing.chr",
+    "./assets/sprites/berries.chr",
+    "./assets/sprites/wand.chr"
+]
+
+[dynamicLevelTiles]
+LMA             = 0x1000    # dynamic tiles begin
+VMA             = 0x0000    # dynamic tiles $8000:d7=0,
+size            = 0x0400    # 1KiB sprite hunk
+includes        = [
+    "./assets/tiles/dynamic/box.chr",
+    "./assets/tiles/dynamic/coin.chr",
+    "./assets/tiles/dynamic/powerbox.chr"
+]
+
+[staticLevelTiles]
+LMA             = 0x1400    # dynamic tiles begin
+VMA             = 0x0400    # dynamic tiles $8000:d7=0,
+size            = 0x0400    # 1KiB sprite hunk
+includes        = [
+    "./assets/tiles/static/air.chr",
+    "./assets/tiles/static/bush.chr",
+    "./assets/tiles/static/cloud.chr",
+    "./assets/tiles/static/liquid.chr",
+    "./assets/tiles/static/pipe.chr",
+    "./assets/tiles/static/terrain.chr"
+]
+
+[ui]
+LMA             = 0x1800    # dynamic tiles begin
+VMA             = 0x0800    # dynamic tiles $8000:d7=0,
+size            = 0x0400    # 1KiB sprite hunk
+includes        = [
+    "./assets/tiles/static/ui/arrow.chr",
+    "./assets/tiles/static/ui/empty.chr",
+    "./assets/tiles/static/ui/font.chr",
+    "./assets/tiles/static/ui/hud_coin.chr",
+    "./assets/tiles/static/ui/hud_whitespace.chr",
+    "./assets/tiles/static/ui/selected.chr",
+    "./assets/tiles/static/ui/slider_cursor.chr",
+    "./assets/tiles/static/ui/slider_left.chr",
+    "./assets/tiles/static/ui/slider_middle.chr",
+    "./assets/tiles/static/ui/slider_right.chr",
+    "./assets/tiles/static/ui/unselected.chr",
+    "./assets/tiles/static/ui/button/box_bl.chr",
+    "./assets/tiles/static/ui/button/box_br.chr",
+    "./assets/tiles/static/ui/button/box_horizontal.chr",
+    "./assets/tiles/static/ui/button/box_ul.chr",
+    "./assets/tiles/static/ui/button/box_ur.chr",
+    "./assets/tiles/static/ui/button/box_vertical.chr",
+]

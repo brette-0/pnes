@@ -5,21 +5,35 @@ The level data is tile based using ``16x16`` 'metatiles' stored in an 'AoS' layo
 c++ compile time technology from an easy to edit base array of ``1280`` bytes of data.
 
 Each metatile is comprised of its four corner graphical tiles ``8x8`` and attribute data.
-The graphical tile data is symbolically referenced from per-asset inclusion technology.
+The graphical tile data is symbolically referenced from the CHR blob's generated header.
 
-From ``demo/src/graphics/graphics.hpp`` using tech from ``platform-nes/video.hpp``:
+``demo/chr/config.toml`` declares where each asset is packed into the CHR ROM, and
+``blobman`` (``tools/blobman``) packs it and emits ``demo/chr/chr.h`` beside the blob:
+
+.. code-block:: toml
+
+ [staticLevelTiles]
+ LMA         = 0x1400
+ VMA         = 0x0400
+ size        = 0x0400
+ includes    = [
+     "./assets/tiles/static/terrain.chr"
+ ]
 
 .. code-block:: cp
 
- CHARACTER_ROM_BEGIN(chrTerrain)
- #embed "../../chr/tiles/static/terrain.chr"
- CHARACTER_ROM_END(chrTerrain, chrPipe);
+ namespace blob {
+     namespace staticLevelTiles {
+         constexpr unsigned char terrain = 0x51;
+         constexpr unsigned long __addr  = 0x1400; // used for BankOf()
+     }
+ }
 
 Using this layout, the metatile data can be easily read at a glance as:
 
 .. code-block:: cp
 
-     MT_SPLIT(chrCoin_tile),    (MetatileCollision::Collect | 0b01),   // $02 (coin)
+     MT_SPLIT(blob::dynamicLevelTiles::coin), (MetatileCollision::Collect | 0b01),   // $02 (coin)
 
 The metatile and graphics data are compiled successfully into the ROM regardless of
 present level data, this can be used to generate a modern image file (png) with the use of

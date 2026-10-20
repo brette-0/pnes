@@ -210,6 +210,44 @@ public:
 #endif
     }
 
+    /**
+     * @brief Size of one VRC1 CHR bank: 4 KiB, one whole pattern table.
+     */
+    static constexpr u32 kChrBankSize = 0x1000;
+
+    /** @brief Highest CHR bank a 5-bit bank number can select (128 KiB). */
+    static constexpr u32 kMaxChrBank = 0x1F;
+
+    /**
+     * @brief The CHR bank number that holds @p Lma -- a byte offset into the
+     *        flat CHR-ROM image -- ready to hand to ::SwitchCHRBank.
+     *
+     * Pairs with blobman's generated header (tools/blobman): each entry there
+     * carries an `__addr` giving where its tiles were packed, so a game banks
+     * an entry in by offset rather than by a hand-counted bank number:
+     *
+     *     VRC1::SwitchCHRBank(VRC1::chr1Control,
+     *                         VRC1::BankOf<blob::ui::__addr>());
+     *
+     * @p Lma is a template parameter, not an argument, so both checks below
+     * are compile-time: an offset that is not on a bank boundary cannot be
+     * mapped to the start of a pattern table at all, and silently truncating
+     * it would bank in the wrong tiles with no diagnostic. The 4 KiB
+     * granularity makes that stricter than MMC3's -- a VRC1 entry has to fill
+     * a whole pattern table's worth of alignment to be bankable.
+     *
+     * @tparam Lma Byte offset into CHR ROM; must be a multiple of
+     *             ::kChrBankSize.
+     */
+    template <u32 Lma>
+    static constexpr u8 BankOf() {
+        static_assert(Lma % kChrBankSize == 0,
+                      "BankOf: CHR offset is not on a 4 KiB bank boundary");
+        static_assert(Lma / kChrBankSize <= kMaxChrBank,
+                      "BankOf: CHR offset is past the 128 KiB VRC1's 5-bit bank number can reach");
+        return static_cast<u8>(Lma / kChrBankSize);
+    }
+
     /*
      * BANKED CALL scaffolding (see BANKED_CALL_THEORY.txt). Kept here rather
      * than in a separate header because bank_layout<Tag> specializations are

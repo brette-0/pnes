@@ -3,7 +3,7 @@
 #include <pnes/types.hpp>
 #include <intsh>
 
-#include "../../src/graphics/graphics.hpp"
+#include "../../chr/chr.h"
 #include STRCAT(../../gen/options/GEN_TARGET_DIR/options.hpp)
 
 // hand written uitk button impls
@@ -15,14 +15,14 @@ namespace ui::impl {
 
     constexpr void DrawTextBox(const u16 pos, const vec2<u8>& box) {
         // TODO: create actual graphics and use it normally
-        constexpr u8 ULCornerGraphic   = chrButtonBoxUL_tile;
-        constexpr u8 URCornerGraphic   = chrButtonBoxUR_tile;
-        constexpr u8 BLCornerGraphic   = chrButtonBoxBL_tile;
-        constexpr u8 BRCornerGraphic   = chrButtonBoxBR_tile;
-        constexpr u8 LeftEdgeGraphic   = chrButtonBoxVertical_tile;
-        constexpr u8 RightEdgeGraphic  = chrButtonBoxVertical_tile;
-        constexpr u8 TopEdgeGraphic    = chrButtonBoxHorizontal_tile;
-        constexpr u8 BottomEdgeGraphic = chrButtonBoxHorizontal_tile;
+        constexpr u8 ULCornerGraphic   = blob::ui::box_ul;
+        constexpr u8 URCornerGraphic   = blob::ui::box_ur;
+        constexpr u8 BLCornerGraphic   = blob::ui::box_bl;
+        constexpr u8 BRCornerGraphic   = blob::ui::box_br;
+        constexpr u8 LeftEdgeGraphic   = blob::ui::box_vertical;
+        constexpr u8 RightEdgeGraphic  = blob::ui::box_vertical;
+        constexpr u8 TopEdgeGraphic    = blob::ui::box_horizontal;
+        constexpr u8 BottomEdgeGraphic = blob::ui::box_horizontal;
 
         // UL
         ppu::WriteSingleToNameTable(pos, ULCornerGraphic);

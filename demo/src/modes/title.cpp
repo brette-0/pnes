@@ -24,7 +24,7 @@
 #include "../banks.hpp"
 #include "../graphics/colours.hpp"
 #include "../graphics/strings.hpp"
-#include "../graphics/graphics.hpp"
+#include "../../chr/chr.h"
 #include "../graphics/metasprites.hpp"
 #include "level.hpp"
 #include "level/levels.hpp"
@@ -282,12 +282,40 @@ namespace title {
         pNMI = nmi_handler;
         log("title::main: pIRQ/pNMI set");
 
-        mmc3::SwitchCHRBank(mmc3::chr0Control, 4);
-        mmc3::SwitchCHRBank(mmc3::chr1Control, 5);
-        mmc3::SwitchCHRBank(mmc3::chr2Control, 0);
-        mmc3::SwitchCHRBank(mmc3::chr3Control, 1);
-        mmc3::SwitchCHRBank(mmc3::chr4Control, 6);
-        mmc3::SwitchCHRBank(mmc3::chr5Control, 7);
+        // CHR banking for the packed blob -- every bank number here is derived
+        // from demo/chr/chr.h's __addr offsets, so repacking the blob
+        // (demo/chr/config.toml) cannot leave these behind. MMC3 mode 0: R0/R1
+        // are 2 KiB windows at PPU $0000/$0800, R2-R5 are 1 KiB windows at
+        // $1000/$1400/$1800/$1C00, and all six count banks in 1 KiB units.
+        //
+        // R0's one 2 KiB window maps dynamicLevelTiles (VMA $0000) and
+        // staticLevelTiles (VMA $0400) together, which only works because they
+        // are packed back to back -- and only if the pair starts 2 KiB-aligned,
+        // since a 2 KiB window ignores its bank number's low bit.
+        static_assert(mmc3::BankOf<blob::staticLevelTiles::__addr>() ==
+                      mmc3::BankOf<blob::dynamicLevelTiles::__addr>() + 1,
+                      "staticLevelTiles must be packed directly after "
+                      "dynamicLevelTiles: R0 maps the pair as one 2 KiB bank");
+        static_assert(mmc3::BankOf<blob::dynamicLevelTiles::__addr>() % 2 == 0,
+                      "dynamicLevelTiles must start 2 KiB-aligned in the blob: "
+                      "R0 is a 2 KiB window and ignores an odd bank's low bit");
+        mmc3::SwitchCHRBank(mmc3::chr0Control,
+                            mmc3::BankOf<blob::dynamicLevelTiles::__addr>());
+
+        // ui (VMA $0800) fills the first half of R1's 2 KiB window; the second
+        // half is the blob's zero padding, which nothing addresses.
+        static_assert(mmc3::BankOf<blob::ui::__addr>() % 2 == 0,
+                      "ui must start 2 KiB-aligned in the blob: R1 is a 2 KiB "
+                      "window and ignores an odd bank's low bit");
+        mmc3::SwitchCHRBank(mmc3::chr1Control, mmc3::BankOf<blob::ui::__addr>());
+
+        // normalSprites is 4 KiB at VMA $1000, so it spans all four of R2-R5's
+        // 1 KiB windows, consecutive from its own base.
+        constexpr u8 spriteBank = mmc3::BankOf<blob::normalSprites::__addr>();
+        mmc3::SwitchCHRBank(mmc3::chr2Control, spriteBank + 0);
+        mmc3::SwitchCHRBank(mmc3::chr3Control, spriteBank + 1);
+        mmc3::SwitchCHRBank(mmc3::chr4Control, spriteBank + 2);
+        mmc3::SwitchCHRBank(mmc3::chr5Control, spriteBank + 3);
         // MUST be set explicitly, same as EnterLevelSetup's (level.cpp): $A000
         // is one of the MMC3 registers power-on leaves undefined (see
         // mmc3.hpp's own comment on why the mapper's ::_reset doesn't seed
@@ -298,7 +326,7 @@ namespace title {
         // power up at 0, corrupted on any that don't (e.g. Mesen's
         // "Randomize power-on state").
         mmc3::SetMirroring(false);
-        ppu::Flush(chrHUDWhitespace_tile, 0xff);
+        ppu::Flush(blob::ui::hud_whitespace, 0xff);
         ppu::pal::WriteFromBuffer(13, titleScreenColours, 3);
 
         log("title::main: before DrawLevelPreview");
@@ -450,7 +478,7 @@ namespace title {
     // hole in it), swap the two menus' labels, then draw the arrow fresh --
     // QueueSelectorDraw's clear-then-arrow onto one tile.
     static void nmi_handler_drawPlayMode() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), chrHUDWhitespace_tile);
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
         gen::title::Erase_TitleOptions();
         gen::gameOptions::Draw_gameOptions();
         QueueSelectorDraw(PlayModeArrowAddr());
@@ -462,7 +490,7 @@ namespace title {
     }
 
     static void nmi_handler_drawMenu() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), chrHUDWhitespace_tile);
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
         gen::gameOptions::Erase_gameOptions();
         gen::title::Draw_TitleOptions();
         QueueSelectorDraw(TitleArrowAddr());
@@ -579,7 +607,7 @@ namespace title {
     // continuing nametable A's own Y-scroll further -- no X-scroll switch,
     // no split, no IRQ at all. Hands off to the reveal animation below.
     static void nmi_handler_lockOptions() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), chrHUDWhitespace_tile);
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
         gen::title::Erase_TitleOptions();
         mmc3::AcknowledgeScanlineIRQ();
         oam::RefreshSprites(OAMBuffer);
@@ -739,7 +767,7 @@ namespace title {
         CallLevelGraphics([] {
             ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(msg_mary)), 0}, SIZED_OBJ(msg_mary), 0);
         });
-        constexpr u8 coinUI[] = {chrHUDCoin_tile, chrFont_tile + 0, chrFont_tile + 0};
+        constexpr u8 coinUI[] = {blob::ui::hud_coin, blob::ui::font + 0, blob::ui::font + 0};
         ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(coinUI)), 1}, SIZED_OBJ(coinUI), 0);
 
         const u16 colsWide  = nColumns < viewport_mx() ? nColumns : viewport_mx();
@@ -801,8 +829,8 @@ namespace title {
 
         const u16 clearAddr  = scratchpad[1] | (scratchpad[2] << 8);
         const u16 arrowAddr  = scratchpad[3] | (scratchpad[4] << 8);
-        ppu::WriteSingleToNameTable(clearAddr, chrHUDWhitespace_tile);
-        ppu::WriteSingleToNameTable(arrowAddr, chrArrow_tile);
+        ppu::WriteSingleToNameTable(clearAddr, blob::ui::hud_whitespace);
+        ppu::WriteSingleToNameTable(arrowAddr, blob::ui::arrow);
         scratchpad[0] = 0;  // clear update flag, update is done
     }
 }

@@ -13,8 +13,8 @@
 # ps3toolchain produces. ps3toolchain's current PPU GCC is 13.2.0, and while
 # that accepts -std=gnu++23 it has no #embed -- a GCC 15+ feature (see
 # src/wiiu/audio.cpp's own note about devkitPPC needing GCC 15+ for it).
-# #embed is not optional here: demo/src/graphics/graphics.hpp pulls the CHR
-# art in with it and every target compiles that header. Clang has supported
+# #embed is not optional here: src/ps3/audio.cpp pulls the music track in with
+# it and every target compiles that file. Clang has supported
 # #embed since 19, and Clang already cross-compiles cleanly to the PS3's exact
 # ABI -- verified that `clang++ --target=powerpc64-unknown-elf` emits "ELF
 # 64-bit MSB relocatable, 64-bit PowerPC, Power ELF V1 ABI", which is what the

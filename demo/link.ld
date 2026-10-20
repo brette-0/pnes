@@ -23,7 +23,16 @@
  * NOT grow the flat resident image ($8000-$DFFF) -- new banks are only
  * reachable through MMC3_BANKED() domains. */
 PROVIDE(__prg_rom_size = 256);
-PROVIDE(__chr_rom_size = 8);
+/* CHR ROM size in KiB. 16 KiB, matching the [manifest] size in
+ * demo/chr/config.toml -- blobman packs exactly that many bytes into
+ * demo/chr/chr.bin, and demo/src/graphics/chr_rom.cpp #embeds the whole blob
+ * into .chr_rom. The PPU only sees 8 KiB at a time, so this is two MMC3 CHR
+ * pages, not one flat image the hardware maps directly.
+ *
+ * TRACK THIS BY HAND, the same way __prg_rom_size is tracked: config.toml's
+ * [manifest] size, chr_rom.cpp's own chrRomSize and demo/src/header.hpp's
+ * HEADER() chr_rom_bytes must all agree. */
+PROVIDE(__chr_rom_size = 16);
 
 /* Eight real banked domains, claiming banks that would otherwise be
  * prg_rom_spare: level code (0), level data (1), audio (2), audio_data (3),

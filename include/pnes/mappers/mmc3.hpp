@@ -305,6 +305,50 @@ public:
     }
 
     /**
+     * @brief Size of one CHR bank as MMC3's CHR registers count them: 1 KiB,
+     *        for EVERY CHR register, R0/R1's 2 KiB windows included -- those
+     *        just ignore the value's low bit (see ::chr0Control). That is what
+     *        lets one ::BankOf serve all six.
+     */
+    static constexpr u32 kChrBankSize = 0x400;
+
+    /** @brief Highest CHR bank an 8-bit CHR register can select (256 KiB). */
+    static constexpr u32 kMaxChrBank = 0xFF;
+
+    /**
+     * @brief The CHR bank number that holds @p Lma -- a byte offset into the
+     *        flat CHR-ROM image -- ready to hand to ::SwitchCHRBank.
+     *
+     * Pairs with blobman's generated header (tools/blobman): each entry there
+     * carries an `__addr` giving where its tiles were packed, so a game banks
+     * an entry in by offset rather than by a hand-counted bank number:
+     *
+     *     mmc3::SwitchCHRBank(mmc3::chr4Control,
+     *                         mmc3::BankOf<blob::ui::__addr>());
+     *
+     * @p Lma is a template parameter, not an argument, so both checks below
+     * are compile-time: an offset that is not on a bank boundary cannot be
+     * mapped to the start of a window at all, and silently truncating it
+     * would bank in the wrong tiles with no diagnostic.
+     *
+     * For chr0Control/chr1Control the result must additionally be even to
+     * select a distinct 2 KiB window; that is a property of the manifest's
+     * layout, not of this translation, so it is left to the caller (and to
+     * whatever packs the blob) rather than asserted here.
+     *
+     * @tparam Lma Byte offset into CHR ROM; must be a multiple of
+     *             ::kChrBankSize.
+     */
+    template <u32 Lma>
+    static constexpr u8 BankOf() {
+        static_assert(Lma % kChrBankSize == 0,
+                      "BankOf: CHR offset is not on a 1 KiB bank boundary");
+        static_assert(Lma / kChrBankSize <= kMaxChrBank,
+                      "BankOf: CHR offset is past the 256 KiB a CHR register can reach");
+        return static_cast<u8>(Lma / kChrBankSize);
+    }
+
+    /**
      * @brief Arms MMC3's scanline IRQ counter to fire after @p scanline more
      *        PPU A12 rising edges (in practice, roughly @p scanline scanlines
      *        with 8x8 sprites/background rendering enabled).

@@ -11,7 +11,7 @@
 # links.
 #
 # Clang compiles because ps3toolchain's PPU GCC is 13.2.0, which has no #embed
-# (GCC 15+), and demo/src/graphics/graphics.hpp needs it. Clang's powerpc64
+# (GCC 15+), and src/ps3/audio.cpp needs it. Clang's powerpc64
 # backend emits exactly what the PPU wants with no coaxing -- verified that
 # `clang++ --target=powerpc64-unknown-elf` produces "ELF 64-bit MSB
 # relocatable, 64-bit PowerPC, Power ELF V1 ABI" objects -- but Clang knows

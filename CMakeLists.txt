@@ -1066,12 +1066,11 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # Final link
     # ------------------------------------------------------------------
 
-    # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
-    # (being the includer) emits the folded CHR ROM image. Declare the art as an
-    # explicit dependency so editing it retriggers a recompile.
-    file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-            PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+    # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+    # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+    # so declare it explicitly: repacking it must retrigger that compile.
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+            PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
     add_executable(demo ${DEMO_C_SOURCES})
     set_target_properties(demo PROPERTIES SUFFIX ".nes")
@@ -1271,12 +1270,11 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-    # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
-    # (being the includer) emits the folded CHR ROM image. Declare the art as an
-    # explicit dependency so editing it retriggers a recompile.
-    file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-            PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+    # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+    # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+    # so declare it explicitly: repacking it must retrigger that compile.
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+            PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
     add_executable(demo ${DEMO_SOURCES})
     set_target_properties(demo PROPERTIES SUFFIX ".elf")
@@ -1369,12 +1367,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-    # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
-    # (being the includer) emits the folded CHR ROM image. Declare the art as an
-    # explicit dependency so editing it retriggers a recompile.
-    file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-            PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+    # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+    # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+    # so declare it explicitly: repacking it must retrigger that compile.
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+            PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
     # THE `demo` TARGET IS THE PACKAGED DELIVERABLE, NOT THE BARE ELF.
     # devkitPro's packaging helpers (ctr_create_3dsx, nx_create_nro,
@@ -1483,11 +1480,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
-        # editing the art retriggers a recompile.
-        file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         # `demo` is the packaged .nro, `demo_elf` the linked ELF -- see the note
         # on the 3DS branch's add_executable for why.
@@ -1661,11 +1658,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
-        # editing the art retriggers a recompile.
-        file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         # `demo` is the packaged .wuhb, `demo_elf` the linked ELF (the .rpx is a
         # POST_BUILD step of it) -- see the note on the 3DS branch's
@@ -1913,11 +1910,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
-        # editing the art retriggers a recompile.
-        file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         add_executable(demo ${DEMO_SOURCES})
         # pspdev's own crt0/linking wants the raw ELF extension for
@@ -2229,11 +2226,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
-        # editing the art retriggers a recompile.
-        file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         add_executable(demo ${DEMO_SOURCES})
         # ps2sdk's own linking wants the raw ELF extension, same as the PSP
@@ -2307,7 +2304,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     #
     # The compiler for this branch is Clang, not the ppu-g++ that ps3dev
     # builds: ps3toolchain's PPU GCC is 13.2.0, which has no #embed, and
-    # demo/src/graphics/graphics.hpp needs it. cmake/PS3.cmake sets that up and
+    # src/ps3/audio.cpp needs it. cmake/PS3.cmake sets that up and
     # keeps ppu-g++ as the link driver; docker/Dockerfile.ps3 is what puts both
     # in one image.
     #
@@ -2443,11 +2440,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
-        # editing the art retriggers a recompile.
-        file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         add_executable(demo ${DEMO_SOURCES})
         # The SELF packing step below wants a bare .elf to pack from, same as
@@ -2589,11 +2586,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
-        # editing the art retriggers a recompile.
-        file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         # `demo` is the packaged .nds ROM, `demo_elf` the linked ARM9 ELF -- see
         # the note on the 3DS branch's add_executable for why.
@@ -2705,11 +2702,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # metatiles.cpp #embeds the demo/chr art; declare it as a dependency so
-        # editing the art retriggers a recompile.
-        file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         add_executable(demo ${DEMO_SOURCES})
         set_target_properties(demo PROPERTIES SUFFIX ".elf")
@@ -2960,12 +2957,11 @@ else()
     file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-    # metatiles.cpp includes chr.hpp, which #embeds the demo/chr art files and
-    # (being the includer) emits the folded CHR ROM image. Declare the art as an
-    # explicit dependency so editing it retriggers a recompile.
-    file(GLOB DEMO_CHR_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/*)
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/metatiles.cpp
-            PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
+    # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+    # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+    # so declare it explicitly: repacking it must retrigger that compile.
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
+            PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
     add_executable(demo ${DEMO_SOURCES})
     target_link_libraries(demo PRIVATE pnes)
