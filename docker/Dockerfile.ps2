@@ -41,4 +41,23 @@ RUN apk add --no-cache \
         file \
         ffmpeg
 
+# g++ is the HOST compiler, not a cross one: ps2dev/ps2dev ships only the
+# mips64r5900el-ps2-elf toolchain, and tools/blobman has to build and RUN on
+# the build machine to pack the CHR ROM -- a required step of every target's
+# build, see the blobman block in CMakeLists.txt. Alpine installs no host
+# compiler by default, so without this the pack fails the build at
+# `CMAKE_CXX_COMPILER not set, after EnableLanguage`.
+#
+# g++ rather than build-base: the nested configure is handed this project's own
+# generator (Ninja, installed above), so make is never needed.
+#
+# DELIBERATELY ITS OWN LAYER rather than folded into the apk add above: that
+# one carries ffmpeg and its ~140 transitive packages, and appending anything
+# to it invalidates its cache and re-downloads the lot. Separate, the compiler
+# costs only the compiler.
+#
+# toml++ comes over the network too -- no Alpine package provides it, so
+# tools/blobman/CMakeLists.txt falls back to FetchContent (hence git, above).
+RUN apk add --no-cache g++
+
 WORKDIR /src
