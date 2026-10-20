@@ -1,7 +1,7 @@
 /*
  * debug-log.ld -- LIBRARY-OWNED, mapper-independent.
  *
- * log()'s call sites (see include/platform-nes/logger.hpp) emit no
+ * log()'s call sites (see include/pnes/logger.hpp) emit no
  * instructions at all -- each one is a `static const` Entry declaration
  * tagged __attribute__((section(".pnes_log"))), carrying __FILE__,
  * __LINE__, and the message string as compiler-generated data.

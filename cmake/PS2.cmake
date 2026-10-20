@@ -21,7 +21,7 @@ set(CMAKE_SYSTEM_PROCESSOR mips)
 if(NOT DEFINED ENV{PS2DEV})
     message(FATAL_ERROR
         "PS2 build requires the PS2DEV env var (ps2dev toolchain root, e.g. "
-        "/usr/local/ps2dev inside the platform-nes-ps2 Docker image -- see "
+        "/usr/local/ps2dev inside the pnes-ps2 Docker image -- see "
         "docker/Dockerfile.ps2 and the ps2-* services in compose.yml).")
 endif()
 

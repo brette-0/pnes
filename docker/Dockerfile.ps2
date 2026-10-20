@@ -1,4 +1,4 @@
-# PlayStation 2 (ps2sdk / EE+IOP) build image for platform-nes.
+# PlayStation 2 (ps2sdk / EE+IOP) build image for pnes.
 #
 # Built on the official PS2DEV image (Alpine-based, not Debian like the other
 # docker/Dockerfile.* here), which ships the prebuilt MIPS EE/IOP cross-toolchain

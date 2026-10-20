@@ -1,4 +1,4 @@
-# Nintendo Switch (libnx) build image for platform-nes.
+# Nintendo Switch (libnx) build image for pnes.
 #
 # Built on devkitPro's official devkitA64 image, which ships the AArch64
 # cross-toolchain (aarch64-none-elf-g++), the dkp-pacman package manager and the

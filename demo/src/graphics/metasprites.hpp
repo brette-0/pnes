@@ -1,5 +1,5 @@
 ﻿#pragma once
-#include <platform-nes/video.hpp>
+#include <pnes/video.hpp>
 #include "../banks.hpp"   // LEVEL_GRAPHICS
 
 LEVEL_GRAPHICS extern const oam::sprite_t msMary[0x02];

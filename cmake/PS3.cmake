@@ -31,7 +31,7 @@ set(CMAKE_SYSTEM_PROCESSOR ppc64)
 if(NOT DEFINED ENV{PS3DEV})
     message(FATAL_ERROR
         "PS3 build requires the PS3DEV env var (ps3dev toolchain root, e.g. "
-        "/usr/local/ps3dev inside the platform-nes-ps3 Docker image -- see "
+        "/usr/local/ps3dev inside the pnes-ps3 Docker image -- see "
         "docker/Dockerfile.ps3 and the ps3-* services in compose.yml).")
 endif()
 

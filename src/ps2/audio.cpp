@@ -56,7 +56,7 @@
  * alongside those backends if/when a non-NES SFX table exists.
  */
 #include "internal.hpp"
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 #include <sifrpc.h>
 #include <loadfile.h>
@@ -75,7 +75,7 @@
 // std::log(double) overloads (the two would otherwise collide) -- defining
 // ::log() before that point, not after, left it silently erased for the
 // rest of this file the moment stb_vorbis.c's own #include <math.h> ran.
-#include <platform-nes/logger.hpp>
+#include <pnes/logger.hpp>
 
 // The Vorbis-encoded music, baked into the ELF at build time. ffmpeg
 // produces pc_audio.ogg (encoded straight to this backend's playback rate,

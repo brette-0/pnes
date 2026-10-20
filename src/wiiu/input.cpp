@@ -12,7 +12,7 @@
  * and the D-pad to the four directions.
  */
 #include "internal.hpp"
-#include <platform-nes/input.hpp>
+#include <pnes/input.hpp>
 
 #include <SDL2/SDL.h>
 

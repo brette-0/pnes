@@ -2,11 +2,11 @@
 #include "collision_map.hpp"   // ColMapColumn: read the composited column the window already built
 #include "../../graphics/metatiles.hpp"
 #include "../../banks.hpp"     // ACTORS, level_graphics_tag
-#include <platform-nes/mappers/mmc3.hpp>  // mmc3::CallInBlock
-#include <platform-nes/video.hpp>         // ppu::WriteFromProviderToNameTable/WriteFromBufferToAttributeTable
+#include <pnes/mappers/mmc3.hpp>  // mmc3::CallInBlock
+#include <pnes/video.hpp>         // ppu::WriteFromProviderToNameTable/WriteFromBufferToAttributeTable
 
 #include <intsh>
-#include <platform-nes/technology.hpp>
+#include <pnes/technology.hpp>
 
 #include "types.hpp"
 using namespace br0::intsh;

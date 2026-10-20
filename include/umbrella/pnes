@@ -1,0 +1,5 @@
+#pragma once
+/* Extensionless umbrella so `#include <pnes>` works. Lives in its own
+ * include root (include/umbrella) to avoid colliding with the pnes/
+ * directory under include/. Forwards to the real aggregate header. */
+#include <pnes/pnes.hpp>

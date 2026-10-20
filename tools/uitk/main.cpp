@@ -1,4 +1,4 @@
-// 'platform NES' UI Toolkit
+// 'pnes' UI Toolkit
 
 #include <QApplication>
 #include <QMainWindow>
@@ -266,7 +266,7 @@ constexpr char kNegSpacePrefix[] = "[N] ";
 constexpr char kSingleChoicePrefix[] = "[SC] ";
 constexpr char kButtonPrefix[] = "[B] ";
 
-// Every backend platform-nes currently supports, in the order they appear in
+// Every backend pnes currently supports, in the order they appear in
 // the Target dropdown. Scene-wide, same as the nametable -- one scene targets
 // one platform at a time. Kept as display names (matched by text, not index)
 // so the .uis format doesn't depend on this list's order.
@@ -279,7 +279,7 @@ const QStringList kRegionNames = {"NTSC", "PAL"};
 
 // Fixed viewport tile counts for each target, mirroring the
 // video::viewport_tx()/viewport_ty() constants each backend actually compiles
-// against (include/platform-nes/video.hpp) -- picking a Target sets the
+// against (include/pnes/video.hpp) -- picking a Target sets the
 // sidebar's Viewport X/Y to whatever that backend's panel really shows, so a
 // scene isn't authored against the wrong resolution by accident. Two targets
 // have no fixed panel size and are deliberately left out: GC/Wii
@@ -912,7 +912,7 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
 
 // `nametable`, `target`, `region`, and `linker_prefix` are all scene-wide
 // (which physical NES nametable the whole UI's tile positions resolve into,
-// which platform-nes backend the scene targets, which TV broadcast standard
+// which pnes backend the scene targets, which TV broadcast standard
 // it's timed against, and what codegen should emit ahead of every generated,
 // non-AI-marked function definition), not per-node properties, so each is
 // stored once at the document's top level alongside "version" rather than on
@@ -1054,7 +1054,7 @@ constexpr int kNametableQuadW = 32;
 constexpr int kNametableQuadH = 30;
 
 // Targets whose viewport size isn't fixed at compile time -- "gamecube
-// onwards", per platform-nes's own generational split, except PSP (which
+// onwards", per pnes's own generational split, except PSP (which
 // keeps a fixed 480x272/letterboxed panel like NES/GBA). Everything NOT in
 // this set bakes a SingleChoice's member positions to plain constants, the
 // same way ctTextBox already does; everything in it re-derives them at
@@ -1796,10 +1796,10 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
         }
     }
 
-    QStringList hppIncludes{"#include <intsh>", "#include <platform-nes/types.hpp>", "#include <platform-nes/video.hpp>",
-                             "#include <platform-nes/extras/ui/text.hpp>"};
+    QStringList hppIncludes{"#include <intsh>", "#include <pnes/types.hpp>", "#include <pnes/video.hpp>",
+                             "#include <pnes/extras/ui/text.hpp>"};
     if (usesSingleChoice) {
-        hppIncludes << "#include <platform-nes/input.hpp>";  // input::UP / input::DOWN, for Pass_
+        hppIncludes << "#include <pnes/input.hpp>";  // input::UP / input::DOWN, for Pass_
     }
 
     QString charmapNote;
@@ -1811,7 +1811,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
 
     // Linker/BSS/Data Prefix macros must be fed in from local.cmake (see
     // CMakeLists.txt's DEMO_PLACEMENT_DEFINES) -- #error here if one's
-    // missing, same #ifndef/#error pattern as PLATFORM_NES_AUDIO_SECTION/UI.
+    // missing, same #ifndef/#error pattern as PNES_AUDIO_SECTION/UI.
     QSet<QString> usedSegmentMacros;
     if (isNes) {
         for (const QString& p : {linkerPrefix.trimmed(), bssPrefix.trimmed(), dataPrefix.trimmed()}) {
@@ -2295,12 +2295,12 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                                 "resolve into in-game -- the same $2000/$2400/$2800/$2C00 quadrant "
                                 "ppu::CartesianToAddress selects from a tile coordinate.");
 
-    // Which platform-nes backend the whole scene targets -- also scene-wide,
+    // Which pnes backend the whole scene targets -- also scene-wide,
     // for the same reason: a scene isn't a mix of platforms, it's authored
     // against one.
     auto* targetCombo = new QComboBox(content);
     targetCombo->addItems(kTargetNames);
-    targetCombo->setToolTip("Which platform-nes backend this scene targets.");
+    targetCombo->setToolTip("Which pnes backend this scene targets.");
 
     // Which TV broadcast standard the scene is timed against -- also
     // scene-wide, for the same reason as target: one scene, one region.

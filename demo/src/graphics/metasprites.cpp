@@ -1,4 +1,4 @@
-#include <platform-nes/video.hpp>
+#include <pnes/video.hpp>
 
 #include "metasprites.hpp"
 #include "graphics.hpp"

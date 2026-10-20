@@ -1,4 +1,4 @@
-# Build matrix for platform-nes: NES ROM + GameCube/Wii .dol + 3DS .3dsx +
+# Build matrix for pnes: NES ROM + GameCube/Wii .dol + 3DS .3dsx +
 # PlayStation 2 .elf + desktop targets (Linux x64/x86/arm64, macOS arm64/x64,
 # Windows x64/x86/arm64).
 #

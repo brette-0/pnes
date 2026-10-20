@@ -29,8 +29,8 @@
 #define SDL_MAIN_HANDLED   // the demo supplies its own main() (RESET macro)
 #include "internal.hpp"
 
-#include <platform-nes/video.hpp>
-#include <platform-nes/interrupts.hpp>
+#include <pnes/video.hpp>
+#include <pnes/interrupts.hpp>
 #include "../emu/emu.hpp"
 
 #include <SDL2/SDL.h>

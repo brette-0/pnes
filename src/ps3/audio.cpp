@@ -37,7 +37,7 @@
  * it. Revisit alongside those if/when a non-NES SFX table exists.
  */
 #include "internal.hpp"
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 #include <audio/audio.h>
 #include <lv2/thread.h>

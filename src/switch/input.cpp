@@ -9,7 +9,7 @@
  * Plus/Minus as Start/Select.
  */
 #include "internal.hpp"
-#include <platform-nes/input.hpp>
+#include <pnes/input.hpp>
 
 #include <switch.h>
 

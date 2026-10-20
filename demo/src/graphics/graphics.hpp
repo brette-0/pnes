@@ -14,7 +14,7 @@
 //
 // #embed paths are relative to THIS header (demo/src/graphics/).
 
-#include <platform-nes/video.hpp>
+#include <pnes/video.hpp>
 
 // player sprite graphics
 CHARACTER_ROM_BEGIN(chrPlayerStanding)

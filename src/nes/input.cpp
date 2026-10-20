@@ -1,7 +1,7 @@
 ﻿#include <intsh>
 using namespace br0::intsh;
-#include <platform-nes/input.hpp>
-#include <platform-nes/technology.hpp>
+#include <pnes/input.hpp>
+#include <pnes/technology.hpp>
 
 // NO PLACEMENT KNOB, deliberately. This module is one ~40-byte function, so
 // there is nothing worth moving out of a bank, and out-of-lining it would cost
@@ -18,7 +18,7 @@ using namespace br0::intsh;
 // the only "use" is the literal symbol name inside opaque asm text, which
 // ordinary use-analysis can't see. Without `used`, LTO's dead-global
 // elimination strips both of these before they even make it into
-// libplatform-nes.a, and the final link fails with "undefined symbol"
+// libpnes.a, and the final link fails with "undefined symbol"
 // (verified: they're absent from the .a's symbol table without this
 // attribute). Same fix this codebase already relies on for the NMI/IRQ vector
 // functions in interrupts.hpp, which are likewise only reachable by a path

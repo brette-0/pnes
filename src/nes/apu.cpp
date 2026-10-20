@@ -1,4 +1,4 @@
-#include <platform-nes/apu.hpp>
+#include <pnes/apu.hpp>
 
 #ifdef TARGET_NES
 

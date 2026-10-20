@@ -10,7 +10,7 @@ into :doc:`api` yet, or when working on platform-nes itself.
    :maxdepth: 1
    :caption: Headers
 
-   advanced/platform-nes
+   advanced/pnes
    advanced/audio
    advanced/input
    advanced/interrupts

@@ -1,7 +1,7 @@
 #include "level.hpp"
 
-#include <platform-nes/apu.hpp>
-#include <platform-nes/mappers/mmc3.hpp>
+#include <pnes/apu.hpp>
+#include <pnes/mappers/mmc3.hpp>
 
 #include "../banks.hpp"
 #include "../main.hpp"

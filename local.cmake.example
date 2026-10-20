@@ -45,14 +45,14 @@ set(CC65_DIR "C:/cc65" CACHE PATH "" FORCE)
 # declare.
 set(TOPLEVEL_LD "${CMAKE_SOURCE_DIR}/demo/link.ld" CACHE FILEPATH "" FORCE)
 
-# ELF section the platform-nes audio module (src/nes/audio.cpp) is placed
+# ELF section the pnes audio module (src/nes/audio.cpp) is placed
 # into. MUST name the same PRG-ROM bank the audio engine is assembled into --
 # demo/famistudio_config.s's FAMISTUDIO_CA65_CODE_SEGMENT is the ca65 side of
 # the same decision. Side by side, audio.cpp calls the engine directly and
 # does no bank switching; the caller long-calls audio::Update() and both come
 # in together. Compulsory: there is no default, because a guessed bank is a
 # crash with no diagnostic.
-set(PLATFORM_NES_AUDIO_SECTION ".prg_rom_audio" CACHE STRING "" FORCE)
+set(PNES_AUDIO_SECTION ".prg_rom_audio" CACHE STRING "" FORCE)
 
 # ELF section the UI toolkit (src/all/extras/ui/*.cpp) is placed into.
 # Compulsory, like audio's above -- there is no default, because a guessed
@@ -63,14 +63,14 @@ set(PLATFORM_NES_AUDIO_SECTION ".prg_rom_audio" CACHE STRING "" FORCE)
 # ::COLD) is a valid choice as long as that bank has room. Your linker
 # script must route the name into a MEMORY region, and the section must be
 # reachable from wherever UI code is called.
-set(PLATFORM_NES_UI_SECTION ".prg_rom_cold" CACHE STRING "" FORCE)
+set(PNES_UI_SECTION ".prg_rom_cold" CACHE STRING "" FORCE)
 
 # ELF sections uitk-generated UI code/data is placed into, plus any other
 # CREATE_SEGMENT_KEYWORD-built placement macro your own banks.hpp hands out.
 # These are DEMO-owned, unlike AUDIO/UI_SECTION above (a library concern) --
 # your own scenes' Linker/BSS/Data Prefix fields in uitk name these macros
 # directly, so they're deliberately bare (TITLE/SYSMEM, no
-# PLATFORM_NES_/_SECTION dressing) rather than namespaced: whatever you type
+# PNES_/_SECTION dressing) rather than namespaced: whatever you type
 # into uitk's prefix fields is exactly the CMake variable you set here.
 #
 # That bareness is a real tradeoff, not a free lunch -- an object-like macro
@@ -110,4 +110,4 @@ set(SYSMEM ".sysmem" CACHE STRING "" FORCE)
 # The functions an interrupt handler can reach are pinned inline regardless and
 # never move; see src/nes/video.cpp.
 #
-# set(PLATFORM_NES_VIDEO_SECTION ".prg_rom_video" CACHE STRING "" FORCE)
+# set(PNES_VIDEO_SECTION ".prg_rom_video" CACHE STRING "" FORCE)

@@ -1,4 +1,4 @@
-#include <platform-nes/apu.hpp>
+#include <pnes/apu.hpp>
 
 u8 apu::sq1_vol, apu::sq1_sweep, apu::sq1_lo, apu::sq1_hi;
 u8 apu::sq2_vol, apu::sq2_sweep, apu::sq2_lo, apu::sq2_hi;

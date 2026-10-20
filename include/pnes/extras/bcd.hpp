@@ -1,11 +1,11 @@
 #pragma once
 
-#include <platform-nes/extras/math.hpp>
+#include <pnes/extras/math.hpp>
 #include <intsh>
 #include <type_traits>
 #include <consh>
 
-#include <platform-nes/video.hpp>
+#include <pnes/video.hpp>
 using namespace br0::intsh;
 using namespace br0::consh;
 

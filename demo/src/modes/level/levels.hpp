@@ -5,8 +5,8 @@
 #include "dynamic.hpp"   // dynEdgeR / dynEdgeL, lockstep with edgeR / edgeL
 
 #include <intsh>
-#include <platform-nes/technology.hpp>
-#include <platform-nes/types.hpp>      // vec2
+#include <pnes/technology.hpp>
+#include <pnes/types.hpp>      // vec2
 using namespace br0::intsh;
 
 namespace level {

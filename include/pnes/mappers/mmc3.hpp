@@ -33,8 +33,8 @@
 #include <intsh>
 #include <utility>
 
-#include <platform-nes/technology.hpp>
-#include <platform-nes/types.hpp>
+#include <pnes/technology.hpp>
+#include <pnes/types.hpp>
 
 using namespace br0::intsh;
 

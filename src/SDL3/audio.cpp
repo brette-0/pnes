@@ -1,5 +1,5 @@
-﻿#include <platform-nes/audio.hpp>
-#include <platform-nes/technology.hpp>
+﻿#include <pnes/audio.hpp>
+#include <pnes/technology.hpp>
 #include <SDL3/SDL.h>
 
 typedef struct {

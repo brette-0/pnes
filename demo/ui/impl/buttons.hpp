@@ -1,6 +1,6 @@
 #pragma once
 
-#include <platform-nes/types.hpp>
+#include <pnes/types.hpp>
 #include <intsh>
 
 #include "../../src/graphics/graphics.hpp"

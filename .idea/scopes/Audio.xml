@@ -1,3 +1,3 @@
 <component name="DependencyValidationManager">
-  <scope name="Audio" pattern="file[platform-nes]:demo/audio/tracks/*||file[platform-nes]:demo/audio/sfx/*||file[platform-nes]:*audio*||file[platform-nes]:demo/tracks.c||file[platform-nes]:demo/tracks.h" />
+  <scope name="Audio" pattern="file[pnes]:demo/audio/tracks/*||file[pnes]:demo/audio/sfx/*||file[pnes]:*audio*||file[pnes]:demo/tracks.c||file[pnes]:demo/tracks.h" />
 </component>

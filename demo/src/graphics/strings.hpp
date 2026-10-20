@@ -1,6 +1,6 @@
 #pragma once
 
-#include <platform-nes/technology.hpp>
+#include <pnes/technology.hpp>
 #include "charmaps.hpp"   // charmap_generic must be in scope to map the string
 #include "../banks.hpp"   // LEVEL_GRAPHICS
 

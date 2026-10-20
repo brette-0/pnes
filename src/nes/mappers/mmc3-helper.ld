@@ -305,7 +305,7 @@ SECTIONS {
 
 /* _nes2_header (see header.hpp's NES2_HEADER()) is otherwise never
  * referenced by any code, so without this the linker would never pull that
- * object out of libplatform-nes.a -- same reasoning as vrc1-helper.ld's
+ * object out of libpnes.a -- same reasoning as vrc1-helper.ld's
  * own EXTERN(_nes2_header). */
 EXTERN(_nes2_header)
 

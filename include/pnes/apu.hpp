@@ -25,7 +25,7 @@
 
 #ifdef TARGET_NES
 
-#include <platform-nes/technology.hpp>
+#include <pnes/technology.hpp>
 
 /**
  * @brief 2A03 APU register file as a namespace.
@@ -101,7 +101,7 @@ extern u8 APU_REGISTERS_snapshot[15];
 
 #else
 
-#include <platform-nes/technology.hpp>
+#include <pnes/technology.hpp>
 
 /**
  * @brief Desktop/non-NES stand-in for the 2A03 APU register file.

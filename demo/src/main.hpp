@@ -1,5 +1,5 @@
 #pragma once
-#include <platform-nes/platform-nes.hpp>
+#include <pnes/pnes.hpp>
 
 #ifdef TARGET_NES
 // See logger.hpp for what this configures. Both attributes are required, not

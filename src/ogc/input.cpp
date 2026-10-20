@@ -13,7 +13,7 @@
  *   Wii state is OR'd onto the matching GC port so either controller works.
  */
 #include "internal.hpp"
-#include <platform-nes/input.hpp>
+#include <pnes/input.hpp>
 
 #include <ogc/pad.h>
 #ifdef TARGET_WII

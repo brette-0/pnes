@@ -1,6 +1,6 @@
 #pragma once
 
-#include <platform-nes/technology.hpp>
+#include <pnes/technology.hpp>
 #include "../graphics/graphics.hpp"
 // Default character map: source token -> CHR tile byte.
 //

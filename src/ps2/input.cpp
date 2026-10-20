@@ -19,7 +19,7 @@
  * the same.
  */
 #include "internal.hpp"
-#include <platform-nes/input.hpp>
+#include <pnes/input.hpp>
 
 #include <sifrpc.h>
 #include <loadfile.h>

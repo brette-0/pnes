@@ -1,4 +1,4 @@
-# NES (6502) build image for platform-nes.
+# NES (6502) build image for pnes.
 #
 # Ships the toolchains the NES target needs and nothing the desktop builds
 # pull in:

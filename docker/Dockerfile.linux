@@ -1,4 +1,4 @@
-# Cross-platform Linux build image for platform-nes.
+# Cross-platform Linux build image for pnes.
 #
 # Debian Trixie ships Clang 19 / GCC 14, needed to compile the engine as
 # gnu++23 (Bullseye's Clang 11 predates C++23). Trixie is also the first

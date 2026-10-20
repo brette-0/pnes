@@ -1,4 +1,4 @@
-# Cross-platform build entry point for platform-nes.
+# Cross-platform build entry point for pnes.
 #
 # Run from the repository root, in any shell (PowerShell, bash, zsh, cmd):
 #
@@ -52,11 +52,11 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.nes
-    image: platform-nes-nes:trixie
+    image: pnes-nes:trixie
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-nes-release}
       HOME: /tmp
@@ -73,7 +73,7 @@ services:
         # dedicated dir so the container never clashes with an
         # IDE-configured cmake-build-nes-* tree (their CMakeCache.txt
         # records a different, host source path).
-        # PLATFORM_NES_AUDIO_SECTION and PLATFORM_NES_UI_SECTION are here for
+        # PNES_AUDIO_SECTION and PNES_UI_SECTION are here for
         # the same reason as TOPLEVEL_LD: all three are mandatory with no
         # default (a guessed section would place the module in whatever bank
         # the library assumed, which is the wrong-bank-with-no-diagnostic
@@ -103,9 +103,9 @@ services:
         cmake --preset "$$PRESET" -B "cmake-build-ci-$$PRESET" \
           -DCMAKE_TOOLCHAIN_FILE="$$LLVM_MOS_SDK/lib/cmake/llvm-mos-sdk/llvm-mos-toolchain.cmake" \
           -DCMAKE_PREFIX_PATH="$$LLVM_MOS_SDK" \
-          -DTOPLEVEL_LD=/tmp/platform-nes/demo/link.ld \
-          -DPLATFORM_NES_AUDIO_SECTION=.prg_rom_audio \
-          -DPLATFORM_NES_UI_SECTION=.prg_rom_cold \
+          -DTOPLEVEL_LD=/tmp/pnes/demo/link.ld \
+          -DPNES_AUDIO_SECTION=.prg_rom_audio \
+          -DPNES_UI_SECTION=.prg_rom_cold \
           -DTITLE=.prg_rom_cold \
           -DSYSMEM=.sysmem \
           -DALTERNATIVE_NAMETABLE=1
@@ -116,11 +116,11 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.linux
-    image: platform-nes-linux:bullseye
+    image: pnes-linux:bullseye
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-linux-release}
       HOME: /tmp
@@ -150,11 +150,11 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.ogc
-    image: platform-nes-ogc:latest
+    image: pnes-ogc:latest
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-gc-release}
       HOME: /tmp
@@ -171,11 +171,11 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.ogc
-    image: platform-nes-ogc:latest
+    image: pnes-ogc:latest
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-wii-release}
       HOME: /tmp
@@ -198,11 +198,11 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.3ds
-    image: platform-nes-3ds:latest
+    image: pnes-3ds:latest
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-ctr-release}
       HOME: /tmp
@@ -225,11 +225,11 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.switch
-    image: platform-nes-switch:latest
+    image: pnes-switch:latest
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-switch-release}
       HOME: /tmp
@@ -253,11 +253,11 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.wiiu
-    image: platform-nes-wiiu:latest
+    image: pnes-wiiu:latest
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-wiiu-release}
       HOME: /tmp
@@ -291,11 +291,11 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.nds
-    image: platform-nes-nds:latest
+    image: pnes-nds:latest
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-nds-release}
       HOME: /tmp
@@ -316,11 +316,11 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.nds
-    image: platform-nes-nds:latest
+    image: pnes-nds:latest
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-dsi-release}
       HOME: /tmp
@@ -343,7 +343,7 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.ps2
-    image: platform-nes-ps2:latest
+    image: pnes-ps2:latest
     # ps2dev/ps2dev is Alpine-based, so this uses sh, not the bash every other
     # build-* service here shells out to -- bash isn't installed on Alpine by
     # default.
@@ -352,9 +352,9 @@ services:
     # harmless here either way since this target does no network I/O at run time.
     network_mode: host
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-ps2-release}
       HOME: /tmp
@@ -385,15 +385,15 @@ services:
     build:
       context: docker
       dockerfile: Dockerfile.ps3
-    image: platform-nes-ps3:latest
+    image: pnes-ps3:latest
     # Same workaround as build-ps2: this host's bridge driver can't create
     # veth pairs for new containers/networks, and the configure step does real
     # network I/O (FetchContent of intsh/tuple/stb).
     network_mode: host
     user: "${UID:-0}:${GID:-0}"
-    working_dir: /tmp/platform-nes
+    working_dir: /tmp/pnes
     volumes:
-      - .:/tmp/platform-nes
+      - .:/tmp/pnes
     environment:
       PRESET: ${PRESET:-ps3-release}
       HOME: /tmp

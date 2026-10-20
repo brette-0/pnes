@@ -1,4 +1,4 @@
-#include <platform-nes/interrupts.hpp>
+#include <pnes/interrupts.hpp>
 #include <cstdlib>
 
 namespace irq {

@@ -18,7 +18,7 @@ using namespace br0::intsh;
 
 
 /*
- * THE NES BACKEND IS A PROJECT CHOICE, NOT A LIB ONE: platform-nes ships no
+ * THE NES BACKEND IS A PROJECT CHOICE, NOT A LIB ONE: pnes ships no
  * audio driver of its own. These are plain prototypes -- a real definition
  * arrives when the project's chosen backend source file is compiled into the
  * build (src/nes/audio/famistudio.cpp on NES, this platform's own audio.cpp
@@ -28,7 +28,7 @@ using namespace br0::intsh;
  * FamiStudio's backend is PLACED BY THE CONSUMING PROJECT, into the same
  * PRG-ROM bank as the audio engine it drives -- that adjacency is what lets
  * it reach the engine with plain calls and contain no bank switching at all.
- * The knob is PLATFORM_NES_AUDIO_SECTION. Nothing that merely CALLS this API
+ * The knob is PNES_AUDIO_SECTION. Nothing that merely CALLS this API
  * needs to know that either -- see famistudio.cpp's own header comment.
  */
 

@@ -1,6 +1,6 @@
 /**
- * @file platform-nes.hpp
- * @brief Umbrella header for the platform-nes library.
+ * @file pnes.hpp
+ * @brief Umbrella header for the pnes library.
  *
  * Pulls in every public subsystem header (types, technology, reset,
  * input, video, audio, interrupts) and establishes the compile-time
@@ -19,7 +19,7 @@
 using namespace br0::intsh;
 
 #if !defined(__GNUC__) && !defined(__clang__)
-#error "platform-nes requires GCC or Clang. MSVC is not supported."
+#error "pnes requires GCC or Clang. MSVC is not supported."
 #endif
 
 #if defined(LANDSCAPE) && defined(PORTRAIT)

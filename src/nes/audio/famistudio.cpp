@@ -1,9 +1,9 @@
-#include <platform-nes/audio.hpp>
-#include <platform-nes/technology.hpp>   // CREATE_SEGMENT_KEYWORD
+#include <pnes/audio.hpp>
+#include <pnes/technology.hpp>   // CREATE_SEGMENT_KEYWORD
 
 /**
  * @brief Placement keyword for this module's own code -- the section is the
- *        CONSUMING PROJECT'S choice, supplied as PLATFORM_NES_AUDIO_SECTION.
+ *        CONSUMING PROJECT'S choice, supplied as PNES_AUDIO_SECTION.
  *
  * THE WHOLE POINT: the audio backend must land in the SAME PRG-ROM bank as
  * the engine it drives. A project already controls where the engine goes
@@ -29,8 +29,8 @@
  * this design works to make impossible. A project that banks nothing still
  * names the section its ordinary code lands in.
  */
-#ifndef PLATFORM_NES_AUDIO_SECTION
-#error "PLATFORM_NES_AUDIO_SECTION is not set. It names the ELF section this \
+#ifndef PNES_AUDIO_SECTION
+#error "PNES_AUDIO_SECTION is not set. It names the ELF section this \
 module's code is placed in, and MUST be the same bank the audio engine is \
 assembled into (see the project's FamiStudio config). Set it from CMake -- \
 local.cmake.example has a worked example."
@@ -39,7 +39,7 @@ local.cmake.example has a worked example."
 // mean anything (see its comment). No `used`/`retain`: a farcall opens a bank
 // switch around an otherwise ordinary call, so LTO can see every reference, and
 // pinning only keeps uncalled API alive.
-#define AUDIO_BANK MODULE_PLACEMENT(PLATFORM_NES_AUDIO_SECTION)
+#define AUDIO_BANK MODULE_PLACEMENT(PNES_AUDIO_SECTION)
 
 #include <intsh>
 using namespace br0::intsh;

@@ -1,6 +1,6 @@
 // lua_log_builder -- reads a linked NES demo.elf (llvm-mos, ELF32) and writes
 // logdata.lua next to the shipped demo.nes ROM, for tools/pnes.lua to load
-// in Mesen. See include/platform-nes/logger.hpp for what it's reading and
+// in Mesen. See include/pnes/logger.hpp for what it's reading and
 // why: log() call sites cost zero ROM bytes, so the only trace of them is
 // (a) compiler-generated (file, line, message) metadata sitting in the
 // linked .elf's .pnes_log section (never in demo.nes itself), and (b) the

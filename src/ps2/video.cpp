@@ -46,7 +46,7 @@
  */
 #include "internal.hpp"
 
-// gsKit/dmaKit must be fully parsed before platform-nes/interrupts.hpp: off
+// gsKit/dmaKit must be fully parsed before pnes/interrupts.hpp: off
 // NES that header's RESET macro expands to a whole main()-defining sequence
 // wherever the bare token RESET appears afterward, and gsInit.h's own
 // gsRegisters struct happens to have a bitfield literally named RESET. Macro
@@ -60,9 +60,9 @@
 #include <gsKit.h>
 #include <dmaKit.h>
 
-#include <platform-nes/video.hpp>
-#include <platform-nes/interrupts.hpp>
-#include <platform-nes/logger.hpp>
+#include <pnes/video.hpp>
+#include <pnes/interrupts.hpp>
+#include <pnes/logger.hpp>
 #include "../emu/emu.hpp"
 
 #include <cstring>

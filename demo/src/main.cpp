@@ -1,7 +1,7 @@
-#include <platform-nes>
-#include <platform-nes/apu.hpp>
-#include <platform-nes/audio.hpp>
-#include <platform-nes/mappers/mmc3.hpp>
+#include <pnes>
+#include <pnes/apu.hpp>
+#include <pnes/audio.hpp>
+#include <pnes/mappers/mmc3.hpp>
 #include "header.hpp"
 #include "main.hpp"
 
@@ -9,7 +9,7 @@
 #include "modes/title.hpp"
 #include "modes/world.hpp"
 #include "banks.hpp"
-#include "platform-nes/logger.hpp"
+#include "pnes/logger.hpp"
 
 
 u8 scratchpad[5];

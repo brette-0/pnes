@@ -1,4 +1,4 @@
-# GameCube + Wii (libogc / GX) build image for platform-nes.
+# GameCube + Wii (libogc / GX) build image for pnes.
 #
 # Built on devkitPro's official devkitPPC image, which ships the PowerPC
 # cross-toolchain (powerpc-eabi-g++), libogc, the GX headers, the wut/CMake

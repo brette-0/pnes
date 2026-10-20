@@ -20,7 +20,7 @@
 #define EMU_H
 
 #include <intsh>
-#include <platform-nes/video.hpp>
+#include <pnes/video.hpp>
 using namespace br0::intsh;
 
 namespace oam { struct sprite_t; }

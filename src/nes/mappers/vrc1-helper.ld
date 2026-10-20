@@ -162,7 +162,7 @@ SECTIONS {
 
 /* _nes2_header (see header.hpp's NES2_HEADER()) is otherwise never referenced
  * by any code -- nothing in the executable calls into nes2.cpp -- so without
- * this the linker would never pull that object out of libplatform-nes.a and
+ * this the linker would never pull that object out of libpnes.a and
  * .nes2_header above would stay empty (silently zero-padded by FULL(), in
  * the consuming project's own OUTPUT_FORMAT block). Naming the symbol here
  * forces extraction, exactly like the .vector table's direct

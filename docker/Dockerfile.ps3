@@ -1,4 +1,4 @@
-# PlayStation 3 (ps3dev / PSL1GHT) build image for platform-nes.
+# PlayStation 3 (ps3dev / PSL1GHT) build image for pnes.
 #
 # Two-stage, and for a specific reason: unlike ps2dev (docker/Dockerfile.ps2)
 # there is no usable prebuilt PS3 toolchain image to start FROM. The only one

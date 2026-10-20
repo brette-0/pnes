@@ -10,7 +10,7 @@ set.
    :maxdepth: 1
    :caption: Headers
 
-   api/platform-nes
+   api/pnes
    api/audio
    api/input
    api/interrupts

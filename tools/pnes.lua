@@ -9,7 +9,7 @@
 -- is involved) -- and fires the matching message whenever the CPU actually
 -- executes the instruction currently sitting at a logged LMA.
 --
--- log() call sites (include/platform-nes/logger.hpp) cost zero ROM bytes and
+-- log() call sites (include/pnes/logger.hpp) cost zero ROM bytes and
 -- zero CPU cycles on real hardware -- this script is the only place they ever
 -- have any effect at all, and only here, inside Mesen.
 --

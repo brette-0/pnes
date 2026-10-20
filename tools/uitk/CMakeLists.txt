@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
-# 'platform NES' UI Toolkit -- standalone desktop app, built independently of
-# the platform-nes engine's own CMakeLists.txt (no add_subdirectory from the
+# 'pnes' UI Toolkit -- standalone desktop app, built independently of
+# the pnes engine's own CMakeLists.txt (no add_subdirectory from the
 # root build, no shared cache variables). Configure/build this directory on
 # its own:
 #   cmake -B build -S tools/uitk

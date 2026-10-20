@@ -10,7 +10,7 @@
  * every PSP menu convention), with Start/Select as Start/Select.
  */
 #include "internal.hpp"
-#include <platform-nes/input.hpp>
+#include <pnes/input.hpp>
 
 #include <pspctrl.h>
 

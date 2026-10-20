@@ -1,9 +1,9 @@
-#include <platform-nes/video.hpp>
-#include <platform-nes/technology.hpp>
-#include <platform-nes/interrupts.hpp>
+#include <pnes/video.hpp>
+#include <pnes/technology.hpp>
+#include <pnes/interrupts.hpp>
 
 // WHERE THIS MODULE'S CODE GOES -- the consuming project's choice, supplied as
-// PLATFORM_NES_VIDEO_SECTION. Optional, unlike audio's: unset means the default,
+// PNES_VIDEO_SECTION. Optional, unlike audio's: unset means the default,
 // everything inlined into callers and placed nowhere in particular.
 //
 // VIDEO_BANK tags every definition that may move. ::AI tags the ones that must
@@ -22,8 +22,8 @@
 // Pinning is free at present: LTO inlines all of them anyway. It only stops the
 // inliner from deciding otherwise later, where the failure is an overrun with no
 // diagnostic.
-#ifdef PLATFORM_NES_VIDEO_SECTION
-#define VIDEO_BANK MODULE_PLACEMENT(PLATFORM_NES_VIDEO_SECTION)
+#ifdef PNES_VIDEO_SECTION
+#define VIDEO_BANK MODULE_PLACEMENT(PNES_VIDEO_SECTION)
 #else
 #define VIDEO_BANK
 #endif

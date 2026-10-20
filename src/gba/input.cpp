@@ -10,7 +10,7 @@
  * centre buttons, matching the DS backend's X/Y mirroring.
  */
 #include "internal.hpp"
-#include <platform-nes/input.hpp>
+#include <pnes/input.hpp>
 
 #include <gba.h>
 

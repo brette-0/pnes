@@ -48,7 +48,7 @@
  * second loaded sample is the whole implementation.
  */
 #include "internal.hpp"
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 #include <sifrpc.h>
 #include <loadfile.h>
@@ -56,7 +56,7 @@
 #include <audsrv.h>
 #include <sbv_patches.h>
 
-#include <platform-nes/logger.hpp>
+#include <pnes/logger.hpp>
 
 // The SPU2-ADPCM-encoded music, baked into the ELF at build time: CMake runs
 // ffmpeg (downmix to mono at PS2_ADPCM_RATE) then ps2sdk's own bin/adpenc with

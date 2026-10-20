@@ -11,13 +11,13 @@
  */
 #include "emu.hpp"
 
-#include <platform-nes/video.hpp>
-#include <platform-nes/interrupts.hpp>
+#include <pnes/video.hpp>
+#include <pnes/interrupts.hpp>
 
 #include <cstdlib>
 #include <cstring>
 
-#include "platform-nes/technology.hpp"
+#include "pnes/technology.hpp"
 
 // ---------------------------------------------------------------------------
 // Shared PPU state. These were previously defined in src/SDL3/video.cpp; they

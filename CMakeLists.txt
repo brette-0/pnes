@@ -121,18 +121,18 @@ endif()
 # own PROJECT_NAME variable, which would otherwise clobber this value before
 # the define is created.
 if(NOT PROJECT_NAME)
-    set(PROJECT_NAME "My Platform-NES Game")
+    set(PROJECT_NAME "My pnes Game")
 endif()
 
 # Capture the title for the AppImage .desktop file's Name= (configure_file
 # substitutes @GAME_NAME@ in docker/demo.desktop.in). This must happen here,
-# before project() resets the PROJECT_NAME *variable* to "platform-nes":
+# before project() resets the PROJECT_NAME *variable* to "pnes":
 # appimagetool derives the output filename's prefix from Name=, and an empty
 # Name produces a "-x86_64.AppImage" argument that mksquashfs rejects as a flag.
 # project() does not touch GAME_NAME, so it survives to the linux block below.
 set(GAME_NAME "${PROJECT_NAME}")
 
-# Nametable mirroring orientation: platform-nes.hpp requires exactly one of
+# Nametable mirroring orientation: pnes.hpp requires exactly one of
 # LANDSCAPE or PORTRAIT to be defined. Set ORIENTATION in local.cmake to
 # override per-developer; defaults to LANDSCAPE when left unset.
 if(NOT ORIENTATION)
@@ -172,7 +172,7 @@ add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=gnu++23>)
 # An INTERFACE target, so the same declaration serves both the NES and
 # desktop builds; FetchContent_MakeAvailable is called inside each branch
 # below (after project()), and the target is linked PUBLIC onto the
-# platform-nes library so the include dir propagates to the demo.
+# pnes library so the include dir propagates to the demo.
 # ----------------------------------------------------------------------
 include(FetchContent)
 FetchContent_Declare(
@@ -313,7 +313,7 @@ endmacro()
 # enable_language(CXX) here, ahead of find_package(Qt...): Qt6Config.cmake
 # transitively find_package(Threads)s, and FindThreads asserts a language is
 # already enabled -- normally true by the time this ran (every branch below
-# calls project(platform-nes CXX) itself), but this block now runs before
+# calls project(pnes CXX) itself), but this block now runs before
 # all of them. Redundant, not conflicting, with each branch's own project()
 # call moments later (CMake tolerates re-enabling an already-enabled
 # language); for nes/nes_pal this does bind CXX to the llvm-mos cross
@@ -476,7 +476,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # definition, and src/nes/audio/famistudio.cpp is the one .cpp that opts a
     # project into FamiStudio specifically by defining them. It tags every one
     # of its functions ::AUDIO_BANK, which expands to a section attribute
-    # naming PLATFORM_NES_AUDIO_SECTION. That section MUST be the same PRG-ROM
+    # naming PNES_AUDIO_SECTION. That section MUST be the same PRG-ROM
     # bank the audio engine itself is assembled into -- see
     # demo/famistudio_config.s's FAMISTUDIO_CA65_CODE_SEGMENT, which is the
     # matching knob on the ca65 side. Placed together, famistudio.cpp reaches
@@ -488,19 +488,19 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # diagnostic. Unset is an #error in famistudio.cpp itself, the same "no
     # silent fallback" stance TOPLEVEL_LD above takes.
     # ------------------------------------------------------------------
-    if(NOT PLATFORM_NES_AUDIO_SECTION)
+    if(NOT PNES_AUDIO_SECTION)
         message(FATAL_ERROR
-                "PLATFORM_NES_AUDIO_SECTION is not set. It names the ELF section "
+                "PNES_AUDIO_SECTION is not set. It names the ELF section "
                 "src/nes/audio/famistudio.cpp is placed into, and must be the bank "
                 "the audio engine is assembled into. See local.cmake.example.")
     endif()
     set_source_files_properties(${CMAKE_SOURCE_DIR}/src/nes/audio/famistudio.cpp
             PROPERTIES COMPILE_DEFINITIONS
-            "PLATFORM_NES_AUDIO_SECTION=\"${PLATFORM_NES_AUDIO_SECTION}\"")
+            "PNES_AUDIO_SECTION=\"${PNES_AUDIO_SECTION}\"")
 
     # ------------------------------------------------------------------
     # Where the UI toolkit (src/all/extras/ui/*.cpp) is placed. Same
-    # treatment as audio's PLATFORM_NES_AUDIO_SECTION above: COMPULSORY,
+    # treatment as audio's PNES_AUDIO_SECTION above: COMPULSORY,
     # no default value. A default would silently place this module
     # wherever the library guessed, which is exactly the
     # wrong-bank-with-no-diagnostic failure this project's placement
@@ -513,24 +513,24 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # Covers every ui .cpp file as one group -- the whole toolkit moves or
     # stays together, same as audio's single-module contract.
     # ------------------------------------------------------------------
-    if(NOT PLATFORM_NES_UI_SECTION)
+    if(NOT PNES_UI_SECTION)
         message(FATAL_ERROR
-                "PLATFORM_NES_UI_SECTION is not set. It names the ELF section "
+                "PNES_UI_SECTION is not set. It names the ELF section "
                 "src/all/extras/ui/*.cpp is placed into. See local.cmake.example.")
     endif()
-    set(PLATFORM_NES_UI_SOURCES
+    set(PNES_UI_SOURCES
             ${CMAKE_SOURCE_DIR}/src/all/extras/ui/tileslider.cpp
             ${CMAKE_SOURCE_DIR}/src/all/extras/ui/text.cpp)
-    set_source_files_properties(${PLATFORM_NES_UI_SOURCES}
+    set_source_files_properties(${PNES_UI_SOURCES}
             PROPERTIES COMPILE_DEFINITIONS
-            "PLATFORM_NES_UI_SECTION=\"${PLATFORM_NES_UI_SECTION}\"")
+            "PNES_UI_SECTION=\"${PNES_UI_SECTION}\"")
 
     # ------------------------------------------------------------------
     # TITLE / SYSMEM: placement for uitk-generated UI code (and any other
     # CREATE_SEGMENT_KEYWORD-built macro demo/src/banks.hpp hands out).
     # SYSMEM mirrors mmc3.hpp's own ::SYSMEM (".sysmem", onboard system RAM,
     # NOLOAD -- see mmc3-helper.ld) -- generated code can't just
-    # #include <platform-nes/mappers/mmc3.hpp> to get that macro (it isn't
+    # #include <pnes/mappers/mmc3.hpp> to get that macro (it isn't
     # NES-mapper-specific and shouldn't couple to one), so it's fed in here
     # instead, same as TITLE. DEMO-owned rather than library-owned like
     # AUDIO/UI_SECTION above, so these aren't set_source_files_properties()'d
@@ -539,7 +539,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # a whole (further down, once that target exists) instead. Compulsory,
     # same "no silent guess" stance as AUDIO/UI_SECTION; see
     # local.cmake.example for why these are bare/ALL_CAPS rather than
-    # PLATFORM_NES_*_SECTION-namespaced.
+    # PNES_*_SECTION-namespaced.
     # ------------------------------------------------------------------
     if(NOT TITLE)
         message(FATAL_ERROR
@@ -575,19 +575,19 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # ------------------------------------------------------------------
     foreach(_mod video)
         string(TOUPPER ${_mod} _MOD)
-        if(PLATFORM_NES_${_MOD}_SECTION AND LLVM_MOS_PLATFORM STREQUAL "nes-nrom")
+        if(PNES_${_MOD}_SECTION AND LLVM_MOS_PLATFORM STREQUAL "nes-nrom")
             message(WARNING
-                    "PLATFORM_NES_${_MOD}_SECTION is set, but this is an NROM "
+                    "PNES_${_MOD}_SECTION is set, but this is an NROM "
                     "build: one fixed 32 KiB bank, nowhere to move code to. "
                     "MODULE_PLACEMENT is inert here, so the section is ignored "
                     "rather than silently costing you the module's inlining.")
         endif()
-        if(PLATFORM_NES_${_MOD}_SECTION)
+        if(PNES_${_MOD}_SECTION)
             set_source_files_properties(${CMAKE_SOURCE_DIR}/src/nes/${_mod}.cpp
                     PROPERTIES COMPILE_DEFINITIONS
-                    "PLATFORM_NES_${_MOD}_SECTION=\"${PLATFORM_NES_${_MOD}_SECTION}\"")
-            message(STATUS "platform-nes: ${_mod} module placed in "
-                           "${PLATFORM_NES_${_MOD}_SECTION} (inlining disabled for it)")
+                    "PNES_${_MOD}_SECTION=\"${PNES_${_MOD}_SECTION}\"")
+            message(STATUS "pnes: ${_mod} module placed in "
+                           "${PNES_${_MOD}_SECTION} (inlining disabled for it)")
         endif()
     endforeach()
 
@@ -597,7 +597,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # at the FIRST enable_language(CXX), and the uitk-export step's own call
     # happens before this point).
     find_package(llvm-mos-sdk REQUIRED)
-    project(platform-nes CXX)
+    project(pnes CXX)
     set(PLATFORM_DEFINE TARGET_NES "REGION=${REGION}")
 
     # NROM has no bankswitching, so RESET has nowhere to "escape to" and
@@ -676,7 +676,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
 
     # ------------------------------------------------------------------
     # lua_log_builder: reads log()'s zero-footprint metadata back out of the
-    # linked demo.elf (see include/platform-nes/logger.hpp) and writes
+    # linked demo.elf (see include/pnes/logger.hpp) and writes
     # logdata.lua next to demo.nes for tools/pnes.lua to load in Mesen.
     #
     # HOST-NATIVE, NOT CROSS-COMPILED: this whole configuration's own
@@ -691,7 +691,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # targets use.
     #
     # BUILT BEFORE ANY PROJECT NES SOURCE COMPILES: add_dependencies() below
-    # pins this ahead of platform-nes, the first target that compiles any of
+    # pins this ahead of pnes, the first target that compiles any of
     # this project's or a consuming project's own NES C++ -- not because the
     # engine's own source needs the tool, but so a developer never watches a
     # full NES build finish only to have logdata.lua generation fail or be
@@ -726,7 +726,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # THE CODE SEGMENT IS THE ONE EXCEPTION, and runs the other way: it is
     # not a free choice of that file's, it MUST equal the section the audio
     # module is compiled into, so it is derived from
-    # PLATFORM_NES_AUDIO_SECTION and fed in (see the encoder further down).
+    # PNES_AUDIO_SECTION and fed in (see the encoder further down).
     file(READ ${CMAKE_SOURCE_DIR}/demo/famistudio_config.s FAMISTUDIO_CONFIG_TEXT)
 
     macro(famistudio_extract var pattern)
@@ -771,7 +771,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     endif()
 
     # ------------------------------------------------------------------
-    # PLATFORM_NES_AUDIO_SECTION -> ca65 segment name.
+    # PNES_AUDIO_SECTION -> ca65 segment name.
     #
     # famistudio.cpp's ::AUDIO_BANK and FamiStudio's FAMISTUDIO_CA65_CODE_SEGMENT
     # must name the SAME bank -- that shared placement is the entire reason
@@ -788,7 +788,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # the second replace would itself get doubled by the first.
     # demo/famistudio_config.s documents the full escape table.
     # ------------------------------------------------------------------
-    string(REPLACE "_" "__" FAMISTUDIO_SEGMENT "${PLATFORM_NES_AUDIO_SECTION}")
+    string(REPLACE "_" "__" FAMISTUDIO_SEGMENT "${PNES_AUDIO_SECTION}")
     string(REPLACE "." "_p" FAMISTUDIO_SEGMENT "${FAMISTUDIO_SEGMENT}")
     set(FAMISTUDIO_SEGMENT "${FAMISTUDIO_SEGMENT}_fx")
 
@@ -798,8 +798,8 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     set(PNES_AUDIO_SEGMENT_INC
             ${CMAKE_BINARY_DIR}/famistudio_include/pnes_audio_segment.inc)
     file(CONFIGURE OUTPUT ${PNES_AUDIO_SEGMENT_INC} CONTENT
-"; GENERATED by CMakeLists.txt from PLATFORM_NES_AUDIO_SECTION -- do not edit.
-; ${PLATFORM_NES_AUDIO_SECTION} in ca65/XO65 segment spelling.
+"; GENERATED by CMakeLists.txt from PNES_AUDIO_SECTION -- do not edit.
+; ${PNES_AUDIO_SECTION} in ca65/XO65 segment spelling.
 .define PNES_AUDIO_SEGMENT ${FAMISTUDIO_SEGMENT}
 ")
 
@@ -910,14 +910,14 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # (alongside MAPPER/TOPLEVEL_LD) once a real "pick your mapper" build
     # option exists instead of this hardcoded single-target branch.
     list(REMOVE_ITEM NES_SOURCES ${CMAKE_SOURCE_DIR}/src/nes/mappers/vrc1.cpp)
-    add_library(platform-nes STATIC ${NES_SOURCES})
+    add_library(pnes STATIC ${NES_SOURCES})
 
     # lua_log_builder built and ready before any project NES source compiles
     # -- see this file's own comment on lua_log_builder_tool, above.
-    add_dependencies(platform-nes lua_log_builder_tool)
+    add_dependencies(pnes lua_log_builder_tool)
 
     # Unconditional, in every build type -- not just nes-debug. log()'s whole
-    # LMA-resolution scheme (include/platform-nes/logger.hpp, tools/pnes.lua)
+    # LMA-resolution scheme (include/pnes/logger.hpp, tools/pnes.lua)
     # depends on DWARF's .debug_line table to turn a log() call site's
     # __FILE__/__LINE__ into a real address; without -g that table doesn't
     # exist and every log point silently resolves to nothing. This costs
@@ -925,14 +925,14 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # SHF_ALLOC flag, so they were never going to reach a MEMORY region or
     # get copied into demo.nes by objcopy regardless of build type -- the
     # only thing -g grows is demo.nes.elf, which is not what ships.
-    target_compile_options(platform-nes PUBLIC -g)
+    target_compile_options(pnes PUBLIC -g)
 
-    target_include_directories(platform-nes PUBLIC
+    target_include_directories(pnes PUBLIC
             ${CMAKE_SOURCE_DIR}/include
             ${CMAKE_SOURCE_DIR}/include/umbrella
             ${CMAKE_BINARY_DIR}/famistudio_include
     )
-    target_compile_definitions(platform-nes PUBLIC
+    target_compile_definitions(pnes PUBLIC
             ${PLATFORM_DEFINE}
             FAMISTUDIO_CFG_NTSC_SUPPORT=${FAMISTUDIO_CFG_NTSC_SUPPORT}
             FAMISTUDIO_CFG_PAL_SUPPORT=${FAMISTUDIO_CFG_PAL_SUPPORT}
@@ -944,10 +944,10 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             # segment name for a BANKED_EXTERN tag, and no longer does
             # anything with it -- it reaches the engine with a plain call now
             # that the two share a bank by construction (see the encoder
-            # above). PLATFORM_NES_AUDIO_SECTION is the only placement value
+            # above). PNES_AUDIO_SECTION is the only placement value
             # the C++ side still takes, and it goes to famistudio.cpp alone.
     )
-    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
+    target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
     # TITLE/TITLE_DATA/SYSMEM, once as a list so both compile paths that see
     # demo/*.cpp stay in sync: the real `demo` target below (normal
@@ -1021,11 +1021,11 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             # Stop forcing the C++ frontend before the archive/object inputs
             # so the driver treats them as link inputs, not source files.
             -x none
-            $<TARGET_FILE:platform-nes>
+            $<TARGET_FILE:pnes>
             ${FAMISTUDIO_OBJ}
             ${DEMO_ASM_OBJECTS}
             -o ${CMAKE_BINARY_DIR}/demo_pass1
-            DEPENDS platform-nes
+            DEPENDS pnes
             ${FAMISTUDIO_OBJ}
             ${DEMO_ASM_OBJECTS}
             ${DEMO_C_SOURCES}
@@ -1076,10 +1076,10 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     add_executable(demo ${DEMO_C_SOURCES})
     set_target_properties(demo PROPERTIES SUFFIX ".nes")
 
-    target_link_libraries(demo PRIVATE platform-nes)
+    target_link_libraries(demo PRIVATE pnes)
 
     # Bareword (unquoted) macro naming this target's own demo/gen/*/<dir>
-    # subdirectory -- consumed via ::STRCAT (platform-nes/technology.hpp) for
+    # subdirectory -- consumed via ::STRCAT (pnes/technology.hpp) for
     # a computed #include, e.g. `#include STRCAT(../../gen/title/GEN_TARGET_DIR/title.hpp)`,
     # not a search-path trick. Value always matches DEMO_TITLE_DIR (hardcoded
     # "nes" here, same as the glob above, since this branch never sets that
@@ -1124,7 +1124,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     )
 
     # ------------------------------------------------------------------
-    # logdata.lua generation. See include/platform-nes/logger.hpp and
+    # logdata.lua generation. See include/pnes/logger.hpp and
     # tools/luaLogBuilder/main.cpp's own header comments for the whole
     # design -- this just runs the already-built host tool (see
     # lua_log_builder_tool, above) against the ELF this link just produced,
@@ -1163,7 +1163,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # -lwiiuse -lbte on Wii) and the ogc_create_dol() helper used below.
     # ----------------------------------------------------------------------
 elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TARGET_PLATFORM STREQUAL "wii")
-    project(platform-nes CXX)
+    project(pnes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
     _make_consh_available()
@@ -1202,15 +1202,15 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     # video/present, the PAD/WPAD input, and the (stub) audio.
     file(GLOB OGC_SOURCES CONFIGURE_DEPENDS src/ogc/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
     file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-    add_library(platform-nes STATIC ${OGC_SOURCES} ${ALL_SOURCES})
-    target_include_directories(platform-nes PUBLIC
+    add_library(pnes STATIC ${OGC_SOURCES} ${ALL_SOURCES})
+    target_include_directories(pnes PUBLIC
             ${CMAKE_SOURCE_DIR}/include
             ${CMAKE_SOURCE_DIR}/include/umbrella
     )
     # TARGET_OGC is the shared "GameCube-or-Wii" group the engine headers gate on
     # (emulated PPU like SDL, but a fixed viewport and no SDL headers); TARGET_GC
     # / TARGET_WII select the console-specific bits (e.g. WPAD on Wii only).
-    target_compile_definitions(platform-nes PUBLIC ${PLATFORM_DEFINE} TARGET_OGC)
+    target_compile_definitions(pnes PUBLIC ${PLATFORM_DEFINE} TARGET_OGC)
 
     # The on-target statistical PC sampler + on-screen overlay (src/ogc/
     # profiler.cpp and the overlay path in video.cpp) is a development tool, not
@@ -1218,10 +1218,10 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     # hex/bar overlay every frame. Compile it only into Debug builds via the
     # OGC_PROFILER gate, so Release .dols carry neither the thread nor the draw.
     # PRIVATE: only the library's own TUs (profiler.cpp/video.cpp) consult it.
-    target_compile_definitions(platform-nes PRIVATE $<$<CONFIG:Debug>:OGC_PROFILER>)
+    target_compile_definitions(pnes PRIVATE $<$<CONFIG:Debug>:OGC_PROFILER>)
     # asnd: libogc's ASND audio library (src/ogc/audio.cpp), not pulled in by
     # OGC_STANDARD_LIBRARIES (-logc -lm) on its own.
-    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh asnd)
+    target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh asnd)
 
     # The music is EMBEDDED in the .dol, not loaded from disk: a Homebrew
     # Channel/loader .dol has no guaranteed content path the way a packaged
@@ -1240,7 +1240,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
             GIT_SHALLOW    TRUE
     )
     FetchContent_MakeAvailable(stb)
-    target_include_directories(platform-nes PRIVATE ${stb_SOURCE_DIR})
+    target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
 
     set(OGC_ASSET_DIR ${CMAKE_BINARY_DIR}/ogc-assets)
     set(OGC_OGG ${OGC_ASSET_DIR}/pc_audio.ogg)
@@ -1255,7 +1255,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
             COMMENT "Encoding GC/Wii audio: pc_audio.wav -> pc_audio.ogg (Vorbis, embedded)"
             VERBATIM)
     add_custom_target(ogc-assets DEPENDS ${OGC_OGG})
-    add_dependencies(platform-nes ogc-assets)
+    add_dependencies(pnes ogc-assets)
     # audio.cpp resolves `#embed <pc_audio.ogg>` via --embed-dir (the canonical
     # GCC mechanism; -I is not reliably searched for #embed). Scope both the
     # search dir and the rebuild-on-change dependency to that one source.
@@ -1280,7 +1280,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
 
     add_executable(demo ${DEMO_SOURCES})
     set_target_properties(demo PROPERTIES SUFFIX ".elf")
-    target_link_libraries(demo PRIVATE platform-nes)
+    target_link_libraries(demo PRIVATE pnes)
 
     # See the TARGET_NES branch's own comment on this same call for
     # GEN_TARGET_DIR. Quoted: DEMO_TITLE_DIR is "wii u" (a space) on the Wii
@@ -1294,7 +1294,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     target_compile_options(demo PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
 
     # Enable LTO for release-type configs. The software PPU is the hot path and
-    # spans the platform-nes static lib (emu::GenerateFrame) and the demo (the
+    # spans the pnes static lib (emu::GenerateFrame) and the demo (the
     # per-frame IRQ handlers it calls back into); cross-module inlining matters
     # here. CMake routes archiving through gcc-ar/gcc-ranlib once
     # INTERPROCEDURAL_OPTIMIZATION is set, so the .dol-from-.elf step is
@@ -1304,7 +1304,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     if(_ipo_ok)
         foreach(_cfg Release MinSizeRel RelWithDebInfo)
             string(TOUPPER ${_cfg} _CFG)
-            set_property(TARGET demo platform-nes
+            set_property(TARGET demo pnes
                     PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
         endforeach()
     else()
@@ -1332,7 +1332,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     # add them implicitly the way libogc.cmake adds -logc).
     # ----------------------------------------------------------------------
 elseif(TARGET_PLATFORM STREQUAL "ctr")
-    project(platform-nes CXX)
+    project(pnes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
     _make_consh_available()
@@ -1346,21 +1346,21 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # the hid input, and the (stub) audio.
     file(GLOB CTR_SOURCES CONFIGURE_DEPENDS src/3ds/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
     file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-    add_library(platform-nes STATIC ${CTR_SOURCES} ${ALL_SOURCES})
-    target_include_directories(platform-nes PUBLIC
+    add_library(pnes STATIC ${CTR_SOURCES} ${ALL_SOURCES})
+    target_include_directories(pnes PUBLIC
             ${CMAKE_SOURCE_DIR}/include
             ${CMAKE_SOURCE_DIR}/include/umbrella
     )
     # TARGET_CTR is the group the engine headers gate on (emulated PPU like SDL,
     # but a fixed 32x30 viewport and no SDL headers -- same family as TARGET_OGC).
-    target_compile_definitions(platform-nes PUBLIC TARGET_CTR)
+    target_compile_definitions(pnes PUBLIC TARGET_CTR)
     # Alternative nametable wiring (see the TARGET_NES branch's own comment,
     # near the top of this file): a fact about which board a build is
     # modeling, not something exclusive to the NES target itself.
     if(DEFINED ALTERNATIVE_NAMETABLE)
-        target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+        target_compile_definitions(pnes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
     endif()
-    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
+    target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
     list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
@@ -1390,7 +1390,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # NES, desktop) already had one target and are unchanged.
     add_executable(demo_elf ${DEMO_SOURCES})
     set_target_properties(demo_elf PROPERTIES OUTPUT_NAME demo SUFFIX ".elf")
-    target_link_libraries(demo_elf PRIVATE platform-nes citro2d citro3d ctru m)
+    target_link_libraries(demo_elf PRIVATE pnes citro2d citro3d ctru m)
 
     # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
     target_compile_definitions(demo_elf PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
@@ -1408,7 +1408,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     if(_ipo_ok)
         foreach(_cfg Release MinSizeRel RelWithDebInfo)
             string(TOUPPER ${_cfg} _CFG)
-            set_property(TARGET demo_elf platform-nes
+            set_property(TARGET demo_elf pnes
                     PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
         endforeach()
     else()
@@ -1422,7 +1422,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # it depends on, not a target of its own. TARGET names the ELF and, since
     # OUTPUT isn't given, the helper writes ${CMAKE_BINARY_DIR}/demo.3dsx.
     ctr_generate_smdh(demo.smdh
-            NAME "platform-nes demo"
+            NAME "pnes demo"
             DESCRIPTION "NES engine demo on 3DS (citro2d)"
             AUTHOR "brette"
     )
@@ -1446,7 +1446,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # below. libnx is linked explicitly (the toolchain does not auto-link it).
     # ----------------------------------------------------------------------
     elseif(TARGET_PLATFORM STREQUAL "switch")
-        project(platform-nes CXX)
+        project(pnes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
         _make_consh_available()
@@ -1460,21 +1460,21 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # video/present, the hid input, and the audout audio.
         file(GLOB NX_SOURCES CONFIGURE_DEPENDS src/switch/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
         file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-        add_library(platform-nes STATIC ${NX_SOURCES} ${ALL_SOURCES})
-        target_include_directories(platform-nes PUBLIC
+        add_library(pnes STATIC ${NX_SOURCES} ${ALL_SOURCES})
+        target_include_directories(pnes PUBLIC
                 ${CMAKE_SOURCE_DIR}/include
                 ${CMAKE_SOURCE_DIR}/include/umbrella
         )
         # TARGET_NX is the group the engine headers gate on (emulated PPU, fixed
         # 32x30 viewport, no SDL headers -- same family as TARGET_OGC/TARGET_CTR).
-        target_compile_definitions(platform-nes PUBLIC TARGET_NX)
+        target_compile_definitions(pnes PUBLIC TARGET_NX)
         # Alternative nametable wiring (see the TARGET_NES branch's own comment,
         # near the top of this file): a fact about which board a build is
         # modeling, not something exclusive to the NES target itself.
         if(DEFINED ALTERNATIVE_NAMETABLE)
-            target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+            target_compile_definitions(pnes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
+        target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
@@ -1493,7 +1493,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # on the 3DS branch's add_executable for why.
         add_executable(demo_elf ${DEMO_SOURCES})
         set_target_properties(demo_elf PROPERTIES OUTPUT_NAME demo SUFFIX ".elf")
-        target_link_libraries(demo_elf PRIVATE platform-nes nx)
+        target_link_libraries(demo_elf PRIVATE pnes nx)
 
         # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
         target_compile_definitions(demo_elf PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
@@ -1508,7 +1508,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(_ipo_ok)
             foreach(_cfg Release MinSizeRel RelWithDebInfo)
                 string(TOUPPER ${_cfg} _CFG)
-                set_property(TARGET demo_elf platform-nes
+                set_property(TARGET demo_elf pnes
                         PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
             endforeach()
         else()
@@ -1546,7 +1546,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # demo.nacp is only a custom-command output it depends on, not a target,
         # and (no OUTPUT given) the .nro lands at ${CMAKE_BINARY_DIR}/demo.nro.
         nx_generate_nacp(demo.nacp
-                NAME "platform-nes demo"
+                NAME "pnes demo"
                 AUTHOR "brette"
                 VERSION "1.0.0"
         )
@@ -1576,7 +1576,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # arch flags and the wut_create_rpx() / wut_create_wuhb() helpers used below.
     # ----------------------------------------------------------------------
     elseif(TARGET_PLATFORM STREQUAL "wiiu")
-        project(platform-nes CXX)
+        project(pnes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
         _make_consh_available()
@@ -1595,22 +1595,22 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # the SDL2 GameController input, and the SDL2 audio.
         file(GLOB WIIU_SOURCES CONFIGURE_DEPENDS src/wiiu/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
         file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-        add_library(platform-nes STATIC ${WIIU_SOURCES} ${ALL_SOURCES})
-        target_include_directories(platform-nes PUBLIC
+        add_library(pnes STATIC ${WIIU_SOURCES} ${ALL_SOURCES})
+        target_include_directories(pnes PUBLIC
                 ${CMAKE_SOURCE_DIR}/include
                 ${CMAKE_SOURCE_DIR}/include/umbrella
         )
         # TARGET_WIIU is the native-Wii-U define; the engine headers pair it with
         # the Switch (TARGET_NX) family for the widescreen 52x30 (416x240)
         # viewport, and exclude the SDL3 headers (this backend uses SDL2).
-        target_compile_definitions(platform-nes PUBLIC TARGET_WIIU)
+        target_compile_definitions(pnes PUBLIC TARGET_WIIU)
         # Alternative nametable wiring (see the TARGET_NES branch's own comment,
         # near the top of this file): a fact about which board a build is
         # modeling, not something exclusive to the NES target itself.
         if(DEFINED ALTERNATIVE_NAMETABLE)
-            target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+            target_compile_definitions(pnes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC SDL2::SDL2-static br0::intsh br0::tuple br0::consh)
+        target_link_libraries(pnes PUBLIC SDL2::SDL2-static br0::intsh br0::tuple br0::consh)
 
         # The music is EMBEDDED in the .rpx, not loaded from disk: a native Wii U
         # title only has a /vol/content mount when launched with its packaged
@@ -1626,7 +1626,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 GIT_SHALLOW    TRUE
         )
         FetchContent_MakeAvailable(stb)
-        target_include_directories(platform-nes PRIVATE ${stb_SOURCE_DIR})
+        target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
 
         set(WIIU_ASSET_DIR ${CMAKE_BINARY_DIR}/wiiu-assets)
         set(WIIU_OGG ${WIIU_ASSET_DIR}/pc_audio.ogg)
@@ -1645,7 +1645,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 COMMENT "Encoding Wii U audio: pc_audio.wav -> pc_audio.ogg (Vorbis, embedded)"
                 VERBATIM)
         add_custom_target(wiiu-assets DEPENDS ${WIIU_OGG})
-        add_dependencies(platform-nes wiiu-assets)
+        add_dependencies(pnes wiiu-assets)
         # audio.cpp resolves `#embed <pc_audio.ogg>` via --embed-dir (the canonical
         # GCC mechanism; -I is not reliably searched for #embed). Scope both the
         # search dir and the rebuild-on-change dependency to that one source.
@@ -1674,7 +1674,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         set_target_properties(demo_elf PROPERTIES OUTPUT_NAME demo SUFFIX ".elf")
         # The demo supplies its own main() via the RESET macro, so the backend
         # builds with SDL_MAIN_HANDLED and SDL2main is deliberately NOT linked.
-        target_link_libraries(demo_elf PRIVATE platform-nes)
+        target_link_libraries(demo_elf PRIVATE pnes)
 
         # See the TARGET_NES branch's own comment on this same call for
         # GEN_TARGET_DIR. Quoted: DEMO_TITLE_DIR is "wii u" (a space) on this
@@ -1692,7 +1692,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(_ipo_ok)
             foreach(_cfg Release MinSizeRel RelWithDebInfo)
                 string(TOUPPER ${_cfg} _CFG)
-                set_property(TARGET demo_elf platform-nes
+                set_property(TARGET demo_elf pnes
                         PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
             endforeach()
         else()
@@ -1707,8 +1707,8 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         wut_create_rpx(demo_elf)
         wut_create_wuhb(demo
                 TARGET    demo_elf
-                NAME      "platform-nes demo"
-                SHORTNAME "platform-nes"
+                NAME      "pnes demo"
+                SHORTNAME "pnes"
                 AUTHOR    "brette"
         )
 
@@ -1834,7 +1834,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # ELF into the single-file EBOOT.PBP homebrew format used below.
     # ----------------------------------------------------------------------
     elseif(TARGET_PLATFORM STREQUAL "psp")
-        project(platform-nes CXX)
+        project(pnes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
         _make_consh_available()
@@ -1848,8 +1848,8 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # present, the pspctrl input, and the pspaudio streaming audio.
         file(GLOB PSP_SOURCES CONFIGURE_DEPENDS src/psp/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
         file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-        add_library(platform-nes STATIC ${PSP_SOURCES} ${ALL_SOURCES})
-        target_include_directories(platform-nes PUBLIC
+        add_library(pnes STATIC ${PSP_SOURCES} ${ALL_SOURCES})
+        target_include_directories(pnes PUBLIC
                 ${CMAKE_SOURCE_DIR}/include
                 ${CMAKE_SOURCE_DIR}/include/umbrella
         )
@@ -1858,14 +1858,14 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # headers). See this branch's own header comment for why this can't be
         # derived from CMAKE_SYSTEM_NAME the way the devkitPro branches' defines
         # effectively are.
-        target_compile_definitions(platform-nes PUBLIC TARGET_PSP)
+        target_compile_definitions(pnes PUBLIC TARGET_PSP)
         # Alternative nametable wiring (see the TARGET_NES branch's own comment,
         # near the top of this file): a fact about which board a build is
         # modeling, not something exclusive to the NES target itself.
         if(DEFINED ALTERNATIVE_NAMETABLE)
-            target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+            target_compile_definitions(pnes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
+        target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
         # The PSP Fat/Slim's 32-64MB of RAM can't hold the 47MB desktop
         # pc_audio.wav decoded to raw PCM, so this follows the GameCube/Wii U
@@ -1881,7 +1881,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 GIT_SHALLOW    TRUE
         )
         FetchContent_MakeAvailable(stb)
-        target_include_directories(platform-nes PRIVATE ${stb_SOURCE_DIR})
+        target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
 
         set(PSP_ASSET_DIR ${CMAKE_BINARY_DIR}/psp-assets)
         set(PSP_OGG ${PSP_ASSET_DIR}/pc_audio.ogg)
@@ -1896,7 +1896,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 COMMENT "Encoding PSP audio: pc_audio.wav -> pc_audio.ogg (Vorbis, embedded)"
                 VERBATIM)
         add_custom_target(psp-assets DEPENDS ${PSP_OGG})
-        add_dependencies(platform-nes psp-assets)
+        add_dependencies(pnes psp-assets)
         # audio.cpp resolves `#embed <pc_audio.ogg>` via --embed-dir (the
         # canonical GCC mechanism; -I is not reliably searched for #embed).
         # Scope both the search dir and the rebuild-on-change dependency to
@@ -1923,7 +1923,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # pspdev's own crt0/linking wants the raw ELF extension for
         # create_pbp_file()/psp-fixup-imports below, not a bare "demo".
         set_target_properties(demo PROPERTIES SUFFIX ".elf")
-        target_link_libraries(demo PRIVATE platform-nes pspdisplay pspctrl pspaudio pspge psppower)
+        target_link_libraries(demo PRIVATE pnes pspdisplay pspctrl pspaudio pspge psppower)
 
         # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
         target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
@@ -1938,7 +1938,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(_ipo_ok)
             foreach(_cfg Release MinSizeRel RelWithDebInfo)
                 string(TOUPPER ${_cfg} _CFG)
-                set_property(TARGET demo platform-nes
+                set_property(TARGET demo pnes
                         PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
             endforeach()
         else()
@@ -1952,7 +1952,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # unset SMDH banner on the 3DS branch would.
         create_pbp_file(
                 TARGET      demo
-                TITLE       "platform-nes demo"
+                TITLE       "pnes demo"
                 VERSION     "1.00"
         )
 
@@ -1983,7 +1983,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # working completely unmodified.
     # ----------------------------------------------------------------------
     elseif(TARGET_PLATFORM STREQUAL "ps2")
-        project(platform-nes CXX)
+        project(pnes CXX)
 
         add_library(ps2_intsh_shim INTERFACE)
         target_include_directories(ps2_intsh_shim INTERFACE ${CMAKE_SOURCE_DIR}/src/ps2/intsh_shim)
@@ -2057,8 +2057,8 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
             endif()
         endforeach()
         file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-        add_library(platform-nes STATIC ${PS2_SOURCES} ${ALL_SOURCES})
-        target_include_directories(platform-nes PUBLIC
+        add_library(pnes STATIC ${PS2_SOURCES} ${ALL_SOURCES})
+        target_include_directories(pnes PUBLIC
                 ${CMAKE_SOURCE_DIR}/include
                 ${CMAKE_SOURCE_DIR}/include/umbrella
                 ${PS2SDK_ROOT}/ee/include
@@ -2071,14 +2071,14 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # declarations on; src/ps2/internal.hpp includes tamtypes.h before any
         # engine header, so it must be visible from the very first TU, not
         # just within src/ps2/.
-        target_compile_definitions(platform-nes PUBLIC TARGET_PS2 _EE)
+        target_compile_definitions(pnes PUBLIC TARGET_PS2 _EE)
         # Alternative nametable wiring (see the TARGET_NES branch's own comment,
         # near the top of this file): a fact about which board a build is
         # modeling, not something exclusive to the NES target itself.
         if(DEFINED ALTERNATIVE_NAMETABLE)
-            target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+            target_compile_definitions(pnes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
+        target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
         find_program(FFMPEG ffmpeg REQUIRED)
         set(PS2_ASSET_DIR ${CMAKE_BINARY_DIR}/ps2-assets)
@@ -2196,7 +2196,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                     GIT_SHALLOW    TRUE
             )
             FetchContent_MakeAvailable(stb)
-            target_include_directories(platform-nes PRIVATE ${stb_SOURCE_DIR})
+            target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
 
             set(PS2_OGG ${PS2_ASSET_DIR}/pc_audio.ogg)
             add_custom_command(
@@ -2210,7 +2210,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
             add_custom_target(ps2-assets DEPENDS ${PS2_OGG})
             set(PS2_AUDIO_ASSET ${PS2_OGG})
         endif()
-        add_dependencies(platform-nes ps2-assets)
+        add_dependencies(pnes ps2-assets)
 
         # Either audio backend also #embeds ps2sdk's prebuilt audsrv.irx (see
         # their file headers for why audsrv -- unlike the BIOS-resident
@@ -2247,7 +2247,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # sbv_patches.h) is needed on top of those: see audio.cpp's own comment
         # on sbv_patch_enable_lmb() for why loading audsrv.irx from an EE RAM
         # buffer (SifExecModuleBuffer, not a real rom0:/host: path) requires it.
-        target_link_libraries(demo PRIVATE platform-nes
+        target_link_libraries(demo PRIVATE pnes
                 gskit gskit_toolkit dmakit
                 pad audsrv patches
         )
@@ -2265,7 +2265,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(_ipo_ok)
             foreach(_cfg Release MinSizeRel RelWithDebInfo)
                 string(TOUPPER ${_cfg} _CFG)
-                set_property(TARGET demo platform-nes
+                set_property(TARGET demo pnes
                         PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
             endforeach()
         else()
@@ -2318,7 +2318,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # in, exactly as the ps2 branch does for ps2sdk's tamtypes.h. See that
     # shim's own comment.
     elseif(TARGET_PLATFORM STREQUAL "ps3")
-        project(platform-nes CXX)
+        project(pnes CXX)
 
         add_library(ps3_intsh_shim INTERFACE)
         target_include_directories(ps3_intsh_shim INTERFACE ${CMAKE_SOURCE_DIR}/src/ps3/intsh_shim)
@@ -2341,7 +2341,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(NOT DEFINED ENV{PSL1GHT})
             message(FATAL_ERROR
                 "PS3 build requires the PSL1GHT env var (set alongside PS3DEV by "
-                "the platform-nes-ps3 Docker image -- see docker/Dockerfile.ps3).")
+                "the pnes-ps3 Docker image -- see docker/Dockerfile.ps3).")
         endif()
         set(PS3DEV_ROOT  "$ENV{PS3DEV}")
         set(PSL1GHT_ROOT "$ENV{PSL1GHT}")
@@ -2353,8 +2353,8 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # audio.
         file(GLOB PS3_SOURCES CONFIGURE_DEPENDS src/ps3/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
         file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-        add_library(platform-nes STATIC ${PS3_SOURCES} ${ALL_SOURCES})
-        target_include_directories(platform-nes PUBLIC
+        add_library(pnes STATIC ${PS3_SOURCES} ${ALL_SOURCES})
+        target_include_directories(pnes PUBLIC
                 ${CMAKE_SOURCE_DIR}/include
                 ${CMAKE_SOURCE_DIR}/include/umbrella
                 ${PSL1GHT_ROOT}/ppu/include
@@ -2363,12 +2363,12 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # viewport, no SDL headers -- see video.hpp's own TARGET_PS3 branch).
         # Unlike the PS2's _EE, PSL1GHT needs no equivalent "this is the PPU"
         # define: its headers are unconditional.
-        target_compile_definitions(platform-nes PUBLIC TARGET_PS3)
+        target_compile_definitions(pnes PUBLIC TARGET_PS3)
         # Alternative nametable wiring (see the TARGET_NES branch's own comment,
         # near the top of this file): a fact about which board a build is
         # modeling, not something exclusive to the NES target itself.
         if(DEFINED ALTERNATIVE_NAMETABLE)
-            target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+            target_compile_definitions(pnes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
         # Boot tracing: ps3_trace() (src/ps3/internal.hpp) writes one line per
         # init step straight to lv2's TTY channel 0, in RELEASE as well as
@@ -2383,16 +2383,16 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # helper becomes an empty inline taking an unused argument). Flip the
         # default once a first boot is confirmed good.
         set(PS3_BOOT_TRACE 1 CACHE STRING "Trace PS3 init steps to the lv2 TTY (bring-up aid)")
-        target_compile_definitions(platform-nes PUBLIC "PS3_BOOT_TRACE=${PS3_BOOT_TRACE}")
+        target_compile_definitions(pnes PUBLIC "PS3_BOOT_TRACE=${PS3_BOOT_TRACE}")
 
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
+        target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
         # src/ps3/audio.cpp #embeds the music asset, so the backend library
         # needs this silencer too -- not just the demo target the way the other
         # console branches do it. On those, Clang is never the compiler and the
         # flag is dead weight kept for parity; here Clang IS the compiler, so
         # #embed really does warn as a C23 extension in C++ mode.
-        target_compile_options(platform-nes PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
+        target_compile_options(pnes PRIVATE $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>)
 
         # Same reasoning as the PSP/PS2 branches: transcode the desktop
         # pc_audio.wav to a small Vorbis OGG at build time and #embed it
@@ -2411,7 +2411,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 GIT_SHALLOW    TRUE
         )
         FetchContent_MakeAvailable(stb)
-        target_include_directories(platform-nes PRIVATE ${stb_SOURCE_DIR})
+        target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
 
         set(PS3_ASSET_DIR ${CMAKE_BINARY_DIR}/ps3-assets)
         set(PS3_OGG ${PS3_ASSET_DIR}/pc_audio.ogg)
@@ -2426,7 +2426,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 COMMENT "Encoding PS3 audio: pc_audio.wav -> pc_audio.ogg (Vorbis 48kHz, embedded)"
                 VERBATIM)
         add_custom_target(ps3-assets DEPENDS ${PS3_OGG})
-        add_dependencies(platform-nes ps3-assets)
+        add_dependencies(pnes ps3-assets)
 
         # Only one --embed-dir is needed here, unlike the ps2 branch's two:
         # there is no IOP-side module to embed alongside the music, because
@@ -2459,7 +2459,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # libio (pad); sysutil/sysmodule are the XMB exit callback; audio is
         # libaudio; lv2 is the syscall layer everything above sits on and has
         # to come last. m is newlib's libm, which stb_vorbis needs (floor/pow).
-        target_link_libraries(demo PRIVATE platform-nes
+        target_link_libraries(demo PRIVATE pnes
                 rsx gcm_sys
                 io
                 sysutil sysmodule
@@ -2547,7 +2547,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # see .ignore/ps3-cmake-build-setup/NOTES.md).
 
     elseif(TARGET_PLATFORM STREQUAL "nds" OR TARGET_PLATFORM STREQUAL "dsi")
-        project(platform-nes CXX)
+        project(pnes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
         _make_consh_available()
@@ -2559,17 +2559,17 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # present, the keypad input, and the (stub) audio.
         file(GLOB NDS_SOURCES CONFIGURE_DEPENDS src/nds/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
         file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-        add_library(platform-nes STATIC ${NDS_SOURCES} ${ALL_SOURCES})
-        target_include_directories(platform-nes PUBLIC
+        add_library(pnes STATIC ${NDS_SOURCES} ${ALL_SOURCES})
+        target_include_directories(pnes PUBLIC
                 ${CMAKE_SOURCE_DIR}/include
                 ${CMAKE_SOURCE_DIR}/include/umbrella
         )
         # TARGET_NDS is the group the engine headers gate on (native 2D hardware,
         # 32x24 viewport, no SDL headers). The DSi build adds TARGET_DSI on top so
         # the audio path can opt into the larger RAM later.
-        target_compile_definitions(platform-nes PUBLIC TARGET_NDS)
+        target_compile_definitions(pnes PUBLIC TARGET_NDS)
         if(TARGET_PLATFORM STREQUAL "dsi")
-            target_compile_definitions(platform-nes PUBLIC TARGET_DSI)
+            target_compile_definitions(pnes PUBLIC TARGET_DSI)
             set(DEMO_TITLE_DIR dsi)
         else()
             set(DEMO_TITLE_DIR ds)
@@ -2578,9 +2578,9 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # near the top of this file): a fact about which board a build is
         # modeling, not something exclusive to the NES target itself.
         if(DEFINED ALTERNATIVE_NAMETABLE)
-            target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+            target_compile_definitions(pnes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
+        target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
@@ -2599,7 +2599,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # the note on the 3DS branch's add_executable for why.
         add_executable(demo_elf ${DEMO_SOURCES})
         set_target_properties(demo_elf PROPERTIES OUTPUT_NAME demo SUFFIX ".elf")
-        target_link_libraries(demo_elf PRIVATE platform-nes nds9)
+        target_link_libraries(demo_elf PRIVATE pnes nds9)
 
         # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
         target_compile_definitions(demo_elf PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
@@ -2614,7 +2614,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(_ipo_ok)
             foreach(_cfg Release MinSizeRel RelWithDebInfo)
                 string(TOUPPER ${_cfg} _CFG)
-                set_property(TARGET demo_elf platform-nes
+                set_property(TARGET demo_elf pnes
                         PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
             endforeach()
         else()
@@ -2629,7 +2629,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # separate `demo_nds`, which left `--target demo` at the bare ELF.
         nds_create_rom(demo
                 ARM9 demo_elf
-                NAME "platform-nes demo"
+                NAME "pnes demo"
                 SUBTITLE1 "NES engine demo on DS"
                 SUBTITLE2 "github.com/brette"
                 OUTPUT ${CMAKE_BINARY_DIR}/demo.nds
@@ -2668,7 +2668,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # crt0 + cart link script are applied by gba_create_rom itself).
     # ----------------------------------------------------------------------
     elseif(TARGET_PLATFORM STREQUAL "gba")
-        project(platform-nes CXX)
+        project(pnes CXX)
 
         FetchContent_MakeAvailable(intsh tuple)
         _make_consh_available()
@@ -2682,21 +2682,21 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # present, the keypad input, and the (stub) audio.
         file(GLOB GBA_SOURCES CONFIGURE_DEPENDS src/gba/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
         file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-        add_library(platform-nes STATIC ${GBA_SOURCES} ${ALL_SOURCES})
-        target_include_directories(platform-nes PUBLIC
+        add_library(pnes STATIC ${GBA_SOURCES} ${ALL_SOURCES})
+        target_include_directories(pnes PUBLIC
                 ${CMAKE_SOURCE_DIR}/include
                 ${CMAKE_SOURCE_DIR}/include/umbrella
         )
         # TARGET_GBA is the group the engine headers gate on (native 2D hardware,
         # 30x20 viewport -- the first target narrower than the NES, no SDL headers).
-        target_compile_definitions(platform-nes PUBLIC TARGET_GBA)
+        target_compile_definitions(pnes PUBLIC TARGET_GBA)
         # Alternative nametable wiring (see the TARGET_NES branch's own comment,
         # near the top of this file): a fact about which board a build is
         # modeling, not something exclusive to the NES target itself.
         if(DEFINED ALTERNATIVE_NAMETABLE)
-            target_compile_definitions(platform-nes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
+            target_compile_definitions(pnes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
         endif()
-        target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
+        target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
@@ -2715,7 +2715,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         set_target_properties(demo PROPERTIES SUFFIX ".elf")
         # libgba (-lgba) + gba.specs come in via the platform module's standard
         # libraries/linker flags, so only the engine archive is linked explicitly.
-        target_link_libraries(demo PRIVATE platform-nes)
+        target_link_libraries(demo PRIVATE pnes)
 
         # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
         target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
@@ -2730,7 +2730,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         if(_ipo_ok)
             foreach(_cfg Release MinSizeRel RelWithDebInfo)
                 string(TOUPPER ${_cfg} _CFG)
-                set_property(TARGET demo platform-nes
+                set_property(TARGET demo pnes
                         PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
             endforeach()
         else()
@@ -2744,7 +2744,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         # title/game/maker codes). Output is named demo.gba to match demo.<ext>.
         gba_create_rom(demo
                 OUTPUT ${CMAKE_BINARY_DIR}/demo.gba
-                TITLE "PLATFORMNES"
+                TITLE "PNES"
                 GAMECODE "CPNE"
                 MAKERCODE "00"
         )
@@ -2753,7 +2753,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # Desktop targets (macOS, Windows, Linux)
     # ----------------------------------------------------------------------
 else()
-    project(platform-nes CXX)
+    project(pnes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
     _make_consh_available()
@@ -2940,17 +2940,17 @@ else()
     # and compiled here alongside the SDL-specific window/present/input/audio.
     file(GLOB SDL3_SOURCES CONFIGURE_DEPENDS src/SDL3/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
     file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
-    add_library(platform-nes STATIC ${SDL3_SOURCES} ${ALL_SOURCES})
-    target_include_directories(platform-nes PUBLIC
+    add_library(pnes STATIC ${SDL3_SOURCES} ${ALL_SOURCES})
+    target_include_directories(pnes PUBLIC
             ${CMAKE_SOURCE_DIR}/include
             ${CMAKE_SOURCE_DIR}/include/umbrella
     )
-    target_compile_definitions(platform-nes PUBLIC ${PLATFORM_DEFINE})
-    target_link_libraries(platform-nes PUBLIC SDL3::SDL3-static)
-    target_link_libraries(platform-nes PUBLIC br0::intsh br0::tuple br0::consh)
+    target_compile_definitions(pnes PUBLIC ${PLATFORM_DEFINE})
+    target_link_libraries(pnes PUBLIC SDL3::SDL3-static)
+    target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
     if(TARGET_PLATFORM STREQUAL "linux")
-        target_link_libraries(platform-nes PUBLIC PkgConfig::LibUSB)
+        target_link_libraries(pnes PUBLIC PkgConfig::LibUSB)
     endif()
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
@@ -2968,7 +2968,7 @@ else()
             PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_FILES}")
 
     add_executable(demo ${DEMO_SOURCES})
-    target_link_libraries(demo PRIVATE platform-nes)
+    target_link_libraries(demo PRIVATE pnes)
 
     # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
     target_compile_definitions(demo PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
@@ -2987,7 +2987,7 @@ else()
     if(_ipo_ok)
         foreach(_cfg Release MinSizeRel RelWithDebInfo)
             string(TOUPPER ${_cfg} _CFG)
-            set_property(TARGET demo platform-nes
+            set_property(TARGET demo pnes
                     PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_CFG} ON)
         endforeach()
     else()
@@ -3103,7 +3103,7 @@ exec ./demo \"\$@\"
             # those obligations fall on whoever built the system packages,
             # not on this build. Only our own LICENSE travels with the
             # bundle.
-            set(_APPDIR_LICENSES "${APPDIR}/usr/share/doc/platform-nes")
+            set(_APPDIR_LICENSES "${APPDIR}/usr/share/doc/pnes")
 
             add_custom_target(demo-appimage
                     COMMAND ${CMAKE_COMMAND} -E rm -rf "${APPDIR}"
@@ -3145,9 +3145,9 @@ endif()
 
 # One REGION define for every target, regardless of which TARGET_PLATFORM
 # branch above actually ran (exactly one does, and it's the only one that
-# has created the platform-nes target by this point): 0 for NTSC (every
+# has created the pnes target by this point): 0 for NTSC (every
 # target's default) or 1 for the nes_pal target set above.
-target_compile_definitions(platform-nes PUBLIC REGION=${REGION})
+target_compile_definitions(pnes PUBLIC REGION=${REGION})
 
 # uitk-generated title.cpp (every target dir under demo/gen/title/) uses
 # charmap_generic but never includes demo/src/graphics/charmaps.hpp itself --

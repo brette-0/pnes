@@ -36,7 +36,7 @@
  * a missing file does today for TrackPlay.
  */
 #include "internal.hpp"
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 #include <SDL2/SDL.h>
 #include <cstdio>

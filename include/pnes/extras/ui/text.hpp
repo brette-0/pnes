@@ -2,9 +2,9 @@
 
 #include <intsh>
 
-#include <platform-nes/technology.hpp>
-#include <platform-nes/types.hpp>
-#include <platform-nes/video.hpp>
+#include <pnes/technology.hpp>
+#include <pnes/types.hpp>
+#include <pnes/video.hpp>
 
 using namespace br0::intsh;
 

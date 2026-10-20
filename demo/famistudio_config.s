@@ -11,7 +11,7 @@
 ; TWO values are exceptions, both fed IN from CMake rather than owned here,
 ; and both for the same reason: they are not free choices of this file's,
 ; they must equal something decided elsewhere. The code segment must equal
-; the bank platform-nes's audio module is compiled into (see below), and
+; the bank pnes's audio module is compiled into (see below), and
 ; NTSC/PAL must equal the target being built. CMake's REGION variable (set from
 ; TARGET_PLATFORM, see CMakeLists.txt) is fed in below via -D, and this file
 ; derives FAMISTUDIO_CFG_NTSC_SUPPORT/PAL_SUPPORT from it rather than
@@ -22,12 +22,12 @@
 .define FAMISTUDIO_CA65_ZP_SEGMENT   ZEROPAGE
 .define FAMISTUDIO_CA65_RAM_SEGMENT  BSS
 ; THE CODE SEGMENT IS NOT THIS FILE'S TO CHOOSE. The engine has to land in
-; the same PRG bank as platform-nes's audio module, because that module
+; the same PRG bank as pnes's audio module, because that module
 ; reaches famistudio_update() with a PLAIN call and contains no bank
 ; switching at all -- put the two in different banks and you get a
 ; cross-bank call that executes whatever happens to be mapped, with no
 ; diagnostic. So the one value both sides share, local.cmake's
-; PLATFORM_NES_AUDIO_SECTION (".prg_rom_audio"), is written here once and
+; PNES_AUDIO_SECTION (".prg_rom_audio"), is written here once and
 ; only once: CMakeLists.txt encodes it to the ca65 spelling and generates
 ; pnes_audio_segment.inc, which this file pulls in below.
 ;

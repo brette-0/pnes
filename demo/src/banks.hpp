@@ -1,6 +1,6 @@
 #pragma once
-#include <platform-nes/platform-nes.hpp>
-#include <platform-nes/mappers/mmc3.hpp>
+#include <pnes/pnes.hpp>
+#include <pnes/mappers/mmc3.hpp>
 #include "modes/level.hpp"
 
 struct audio_tag      {};

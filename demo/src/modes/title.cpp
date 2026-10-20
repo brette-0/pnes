@@ -4,7 +4,7 @@
 #error "GEN_TARGET_DIR is not set -- add it to this target's CMakeLists.txt branch."
 #endif
 // gen::title -- this target's own demo/gen/title/<GEN_TARGET_DIR>/title.hpp.
-// Relative path, computed via ::STRCAT (platform-nes/technology.hpp), not an
+// Relative path, computed via ::STRCAT (pnes/technology.hpp), not an
 // -I search-path/angle-bracket trick: GEN_TARGET_DIR is the same bareword
 // macro (target_compile_definitions(demo ...) in CMakeLists.txt) every
 // platform branch sets to its own demo/gen/*/<dir> name, so this one line
@@ -16,11 +16,11 @@
 // gen::options -- demo/ui/options.uis (the Options screen's buttons), plus the
 // hand-written DrawEnabled_/DrawDisabled_ implementations its generated
 // Button nodes require (see uitk's genButtonDecl) -- this is the one TU that
-// actually includes it, so it's the one place GEN_TARGET_DIR/platform-nes
+// actually includes it, so it's the one place GEN_TARGET_DIR/pnes
 // context exists for it.
 #include "../../ui/impl/buttons.hpp"
 #include "../main.hpp"
-#include "platform-nes/logger.hpp"
+#include "pnes/logger.hpp"
 #include "../banks.hpp"
 #include "../graphics/colours.hpp"
 #include "../graphics/strings.hpp"
@@ -28,8 +28,8 @@
 #include "../graphics/metasprites.hpp"
 #include "level.hpp"
 #include "level/levels.hpp"
-#include "platform-nes/mappers/mmc3.hpp"
-#include "platform-nes/extras/ui/text.hpp"
+#include "pnes/mappers/mmc3.hpp"
+#include "pnes/extras/ui/text.hpp"
 
 namespace title {
     // Both menus are generated (demo/ui/title.uis, demo/ui/gameOptions.uis) --

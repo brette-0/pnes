@@ -10,7 +10,7 @@
  * physical Start still works too).
  */
 #include "internal.hpp"
-#include <platform-nes/input.hpp>
+#include <pnes/input.hpp>
 
 #include <3ds.h>
 

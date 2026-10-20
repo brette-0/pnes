@@ -1,5 +1,5 @@
-#include <platform-nes/mappers/mmc3.hpp>
-#include <platform-nes/video.hpp>
+#include <pnes/mappers/mmc3.hpp>
+#include <pnes/video.hpp>
 
 mmc3::Register<6> mmc3::window1Control;
 mmc3::Register<7> mmc3::window2Control;

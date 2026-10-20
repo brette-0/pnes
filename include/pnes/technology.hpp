@@ -187,8 +187,8 @@ using namespace br0::intsh;
  * Same builder rule as ::CREATE_SEGMENT_KEYWORD, guarded on whether the project
  * asked for placement:
  *
- *     #ifdef PLATFORM_NES_VIDEO_SECTION
- *     #define VIDEO_BANK MODULE_PLACEMENT(PLATFORM_NES_VIDEO_SECTION)
+ *     #ifdef PNES_VIDEO_SECTION
+ *     #define VIDEO_BANK MODULE_PLACEMENT(PNES_VIDEO_SECTION)
  *     #else
  *     #define VIDEO_BANK
  *     #endif

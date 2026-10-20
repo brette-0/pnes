@@ -54,7 +54,7 @@
  * are short, so they fit SPU2 RAM comfortably and cost nothing to play.
  */
 #include "internal.hpp"
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 #include <sifrpc.h>
 #include <loadfile.h>
@@ -64,7 +64,7 @@
 #include <sbv_patches.h>
 #include <cstring>
 
-#include <platform-nes/logger.hpp>
+#include <pnes/logger.hpp>
 
 #ifndef PS2_STREAM_RATE
 #error "PS2_STREAM_RATE must be defined by the build (the rate pc_audio.adp was encoded at)"

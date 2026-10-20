@@ -1,5 +1,5 @@
 #pragma once
-#include <platform-nes/platform-nes.hpp>
+#include <pnes/pnes.hpp>
 
 #include "level/player.hpp"
 #include "../main.hpp"

@@ -23,8 +23,8 @@
  * own doc comment (video.hpp) for why this always wins over the emu PPU's
  * own weak default with no runtime dispatch.
  */
-#include <platform-nes/mappers/vrc1.hpp>
-#include <platform-nes/video.hpp>
+#include <pnes/mappers/vrc1.hpp>
+#include <pnes/video.hpp>
 
 tech::wo_register<0x8000> VRC1::window1Control;
 tech::wo_register<0xa000> VRC1::window2Control;

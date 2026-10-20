@@ -84,7 +84,7 @@ MEMORY {
    * window 2 here with a runtime bank number (banks.hpp's ::LevelDataBank)
    * and holds it for the whole level session. */
   prg_rom_level_data : ORIGIN = 0x0002a000, LENGTH = 0x2000  /* bank 1, window 2 */
-  /* AUDIO CODE: FamiStudio's engine + platform-nes's audio module. Adjacency
+  /* AUDIO CODE: FamiStudio's engine + pnes's audio module. Adjacency
    * is a hard contract -- audio.cpp calls the engine with no bank switching,
    * valid only because they share a bank. */
   prg_rom_audio : ORIGIN = 0x00038000, LENGTH = 0x2000  /* bank 2, window 1 */

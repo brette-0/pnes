@@ -17,7 +17,7 @@
  * crunched audio here; for now it shares this DS stub so both targets link and
  * behave identically.
  */
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 /** @brief Shared mixing buffer (unused until a real DS mixer lands). */
 float *audio::pcm_buffer = nullptr;

@@ -1,4 +1,4 @@
-# Nintendo DS / DSi (libnds) build image for platform-nes.
+# Nintendo DS / DSi (libnds) build image for pnes.
 #
 # Built on devkitPro's official devkitARM image, which ships the ARM
 # cross-toolchain (arm-none-eabi-g++), the dkp-pacman package manager and the

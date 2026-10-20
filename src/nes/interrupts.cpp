@@ -1,5 +1,5 @@
-#include <platform-nes/interrupts.hpp>
-#include <platform-nes/technology.hpp>
+#include <pnes/interrupts.hpp>
+#include <pnes/technology.hpp>
 
 namespace irq {
 

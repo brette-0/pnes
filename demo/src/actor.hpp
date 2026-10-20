@@ -1,5 +1,5 @@
 #pragma once
-#include <platform-nes>
+#include <pnes>
 #include "modes/level/types.hpp"
 
 class Actor {

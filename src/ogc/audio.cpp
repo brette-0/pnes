@@ -28,7 +28,7 @@
  * here, just a compressed audio stream played back start-to-loop-point.
  */
 #include "internal.hpp"
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 #include <asndlib.h>
 #include <gctypes.h>

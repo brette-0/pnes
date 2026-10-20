@@ -1,5 +1,5 @@
-﻿#include <platform-nes/audio.hpp>
-#include <platform-nes/mappers/mmc3.hpp>
+﻿#include <pnes/audio.hpp>
+#include <pnes/mappers/mmc3.hpp>
 #include "banks.hpp"
 #include <intsh>
 using namespace br0::intsh;

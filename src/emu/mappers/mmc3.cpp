@@ -26,9 +26,9 @@
  * ALTERNATIVE_NAMETABLE == 1 (four-screen)'s own comment below for the
  * matching ::ppu::nametableCount override.
  */
-#include <platform-nes/mappers/mmc3.hpp>
-#include <platform-nes/video.hpp>
-#include <platform-nes/interrupts.hpp>
+#include <pnes/mappers/mmc3.hpp>
+#include <pnes/video.hpp>
+#include <pnes/interrupts.hpp>
 
 #include <cstdlib>
 

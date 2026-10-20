@@ -32,8 +32,8 @@
             "scaleInEditor": 3
         }
     },
-    "last.exportedFilePath": "/home/brette/repos/platform-nes/demo/tiled/exports",
-    "last.externalTilesetPath": "/home/brette/repos/platform-nes/demo/tiled/tilesheets",
+    "last.exportedFilePath": "/home/brette/repos/pnes/demo/tiled/exports",
+    "last.externalTilesetPath": "/home/brette/repos/pnes/demo/tiled/tilesheets",
     "map.height": 14,
     "map.lastUsedExportFilter": "JSON map files (*.tmj *.json)",
     "map.lastUsedFormat": "tmx",

@@ -3,8 +3,8 @@
 #include "cursor.hpp"
 #include "dynamic.hpp"                 // DynamicCursor (dynamic-plane producer edge)
 #include "../../graphics/metatiles.hpp"   // MetatileCollision (query decodes per cell)
-#include <platform-nes/video.hpp>      // video::viewport_tx (window width tracks the viewport)
-#include <platform-nes/types.hpp>      // vec2
+#include <pnes/video.hpp>      // video::viewport_tx (window width tracks the viewport)
+#include <pnes/types.hpp>      // vec2
 #include <intsh>
 using namespace br0::intsh;
 

@@ -1,5 +1,5 @@
 ﻿#include <SDL3/SDL.h>
-#include <platform-nes/input.hpp>
+#include <pnes/input.hpp>
 #include "internal.hpp"
 
 

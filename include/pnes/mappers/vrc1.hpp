@@ -19,9 +19,9 @@
 #include <intsh>
 #include <utility>
 
-#include <platform-nes/technology.hpp>
+#include <pnes/technology.hpp>
 #ifndef TARGET_NES
-#include <platform-nes/video.hpp>
+#include <pnes/video.hpp>
 #endif
 
 using namespace br0::intsh;

@@ -12,8 +12,8 @@
  */
 #include "../SDL3/internal.hpp"
 
-#include <platform-nes/video.hpp>
-#include <platform-nes/interrupts.hpp>
+#include <pnes/video.hpp>
+#include <pnes/interrupts.hpp>
 #include "../emu/emu.hpp"
 
 #include <cstdlib>

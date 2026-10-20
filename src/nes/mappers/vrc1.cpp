@@ -1,4 +1,4 @@
-#include <platform-nes/mappers/vrc1.hpp>
+#include <pnes/mappers/vrc1.hpp>
 
 tech::wo_register<0x8000> VRC1::window1Control;
 tech::wo_register<0xa000> VRC1::window2Control;

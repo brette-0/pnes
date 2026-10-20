@@ -25,7 +25,7 @@
  * worth it. Revisit alongside GameCube if/when a non-NES SFX table exists.
  */
 #include "internal.hpp"
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 #include <pspkernel.h>
 #include <pspaudio.h>

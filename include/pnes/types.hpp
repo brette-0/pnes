@@ -2,7 +2,7 @@
  * @file types.hpp
  * @brief Shared scalar and struct typedefs.
  *
- * Included first by ::platform-nes.h so later subsystem headers can rely
+ * Included first by ::pnes.h so later subsystem headers can rely
  * on a single point for common typedefs as the library grows.
  */
 #pragma once

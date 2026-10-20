@@ -1,5 +1,5 @@
 #pragma once
-#include <platform-nes/headers/nes2.hpp>
+#include <pnes/headers/nes2.hpp>
 
 // REGION (CMakeLists.txt: 0 NTSC, 1 PAL, set per TARGET_PLATFORM) drives the
 // NES2.0 timing byte the same way famistudio_config.s derives its NTSC/PAL

@@ -10,7 +10,7 @@
  * libogc backends exactly, so swapping in a real ndsp mixer later touches only
  * this file.
  */
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 /** @brief Shared mixing buffer (unused until a real 3DS mixer lands). */
 float *audio::pcm_buffer = nullptr;

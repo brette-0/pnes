@@ -1,5 +1,5 @@
 # Native Nintendo Wii U (devkitPPC / wut / SDL2 portlib) build image for
-# platform-nes.
+# pnes.
 #
 # Built on devkitPro's official devkitPPC image -- the same base the libogc/GX
 # (GameCube/Wii) image uses, since the Wii U's Espresso is a PowerPC 750 -- but

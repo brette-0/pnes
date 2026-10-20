@@ -11,7 +11,7 @@
 ; XO65 reader reads '_' as an escape ('_p' -> '.', '__' -> a literal '_'); see
 ; demo/famistudio_config.s for the full escape table. No _fx: this is data.
 ;
-; ITS OWN SECTION, deliberately NOT the engine's. The engine and platform-nes's
+; ITS OWN SECTION, deliberately NOT the engine's. The engine and pnes's
 ; audio module must share a bank -- that adjacency is what lets audio.cpp call
 ; the engine directly. Song data has no such requirement and must not inherit
 ; one: welding it to the engine would cap every song this cart can ever hold at

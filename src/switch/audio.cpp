@@ -23,7 +23,7 @@
  * a new SFX on a channel that's still playing cuts the old one off.
  */
 #include "internal.hpp"
-#include <platform-nes/audio.hpp>
+#include <pnes/audio.hpp>
 
 #include <switch.h>
 #include <cstdio>
