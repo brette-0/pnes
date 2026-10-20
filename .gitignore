@@ -91,3 +91,7 @@ dist/
 # CMake before the demo target builds (see CMakeLists.txt's uitk-export
 # step), never hand-edited, so it doesn't belong in the repo.
 demo/gen/
+
+# JetBrains IDE project files -- per-developer state (active CMake profile,
+# window layout), not project configuration.
+.idea/

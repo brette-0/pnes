@@ -457,94 +457,6 @@ else()
 endif()
 
 # ----------------------------------------------------------------------
-# blobman -- packs demo/chr/assets/**.chr into the cartridge's single CHR ROM
-# image (demo/chr/chr.bin) from the layout declared in demo/chr/config.toml,
-# and writes the symbolic tile ids beside it (demo/chr/chr.h). Every demo
-# target consumes both: chr_rom.cpp #embeds the blob, and six TUs include the
-# header for blob::<entry>::<tile> (see demo/src/graphics/chr_rom.cpp).
-#
-# REQUIRED, NOT OPTIONAL: unlike the Qt/uitk step above there is no checked-in
-# fallback to degrade to -- the blob IS the cartridge's graphics, so a build
-# that cannot pack it has nothing to put in .chr_rom. A failure here fails the
-# build.
-#
-# HOST-NATIVE, NOT CROSS-COMPILED: same situation as lua_log_builder (see its
-# own comment in the NES branch) -- this configuration's CXX compiler may be a
-# console cross-compiler, but blobman has to RUN on the machine doing the
-# build. It is its own CMake project (tools/blobman/CMakeLists.txt), configured
-# and built through a NESTED cmake invocation with no toolchain or compiler
-# cache variables forwarded, so it picks up the host's default compiler exactly
-# as a standalone `cmake -S/-B` would. Release: it runs on every build, and
-# there is nothing to debug in a packer that either succeeds or names the entry
-# it choked on.
-#
-# CMAKE_RUNTIME_OUTPUT_DIRECTORY is pinned (and again for Release) so the
-# binary lands at one predictable path. It looks redundant under Ninja, but the
-# nested configure inherits no generator: on the Windows runners that is Visual
-# Studio, a multi-config generator, which would otherwise bury the binary in a
-# Release/ subdirectory that ${BLOBMAN_BIN} does not name.
-#
-# PACKED BEFORE ANY PROJECT SOURCE COMPILES: each target branch below pins this
-# ahead of its own `pnes`, the first target to compile anything -- the same
-# placement, and for the same reason, as add_dependencies(pnes
-# lua_log_builder_tool).
-set(BLOBMAN_SRC ${CMAKE_SOURCE_DIR}/tools/blobman)
-set(BLOBMAN_BUILD ${CMAKE_BINARY_DIR}/blobman-build)
-
-# CMAKE_EXECUTABLE_SUFFIX is deliberately NOT used here: on a cross-compiling
-# configure it describes the TARGET's executables, not the host's, and this
-# tool is a host binary. CMAKE_HOST_WIN32 is the host-side question.
-if (CMAKE_HOST_WIN32)
-    set(BLOBMAN_BIN ${BLOBMAN_BUILD}/blobman.exe)
-else()
-    set(BLOBMAN_BIN ${BLOBMAN_BUILD}/blobman)
-endif()
-
-set(DEMO_CHR_DIR ${CMAKE_SOURCE_DIR}/demo/chr)
-set(DEMO_CHR_MANIFEST ${DEMO_CHR_DIR}/config.toml)
-set(DEMO_CHR_BLOB ${DEMO_CHR_DIR}/chr.bin)
-set(DEMO_CHR_HEADER ${DEMO_CHR_DIR}/chr.h)
-
-add_custom_command(
-        OUTPUT ${BLOBMAN_BIN}
-        COMMAND ${CMAKE_COMMAND} -S ${BLOBMAN_SRC} -B ${BLOBMAN_BUILD}
-                -DCMAKE_BUILD_TYPE=Release
-                -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=${BLOBMAN_BUILD}
-                -DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=${BLOBMAN_BUILD}
-        COMMAND ${CMAKE_COMMAND} --build ${BLOBMAN_BUILD} --config Release
-        DEPENDS ${BLOBMAN_SRC}/main.cpp ${BLOBMAN_SRC}/CMakeLists.txt
-        COMMENT "Building blobman (host-native CHR ROM packer)"
-        VERBATIM
-)
-
-# Every .chr the manifest can name, so editing one repacks the blob. Globbed
-# rather than read out of config.toml: CMake would have to parse the TOML to
-# know which ones are actually referenced, and over-listing here only costs a
-# repack that was going to be correct anyway.
-file(GLOB_RECURSE DEMO_CHR_ASSETS CONFIGURE_DEPENDS ${DEMO_CHR_DIR}/assets/*.chr)
-
-# -v: the per-entry fill report ("entry: ui filled 832 of 1024 bytes") is the
-# only visibility into how much of each hunk the art actually occupies, and it
-# belongs in the build log where a hunk quietly filling up is noticeable.
-#
-# Run from demo/chr because the manifest's include paths are relative to it.
-# -i/-o are passed RELATIVE for the same reason it has to be: blobman echoes
-# the manifest path it was given into chr.h's own provenance comment, so an
-# absolute path here would make the generated header differ per machine and
-# per build directory. The header path is not passed at all -- blobman always
-# writes it beside the blob with the blob's own stem, so chr.bin implies chr.h.
-add_custom_command(
-        OUTPUT ${DEMO_CHR_BLOB} ${DEMO_CHR_HEADER}
-        COMMAND ${BLOBMAN_BIN} -i config.toml -o chr.bin -l cpp -v
-        DEPENDS ${BLOBMAN_BIN} ${DEMO_CHR_MANIFEST} ${DEMO_CHR_ASSETS}
-        WORKING_DIRECTORY ${DEMO_CHR_DIR}
-        COMMENT "Packing CHR ROM from demo/chr/config.toml"
-        VERBATIM
-)
-
-add_custom_target(blobman_chr DEPENDS ${DEMO_CHR_BLOB} ${DEMO_CHR_HEADER})
-
-# ----------------------------------------------------------------------
 # NES target
 # ----------------------------------------------------------------------
 if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
@@ -1154,14 +1066,11 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # Final link
     # ------------------------------------------------------------------
 
-    # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-    # image. Both the blob and the header beside it are blobman outputs, not
-    # source files, so pin the pack ahead of the first target that compiles
-    # anything and declare the blob explicitly too: repacking it must retrigger
-    # that one compile even when the header has not changed.
-    add_dependencies(pnes blobman_chr)
+    # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+    # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+    # so declare it explicitly: repacking it must retrigger that compile.
     set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-            PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+            PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
     add_executable(demo ${DEMO_C_SOURCES})
     set_target_properties(demo PROPERTIES SUFFIX ".nes")
@@ -1361,14 +1270,11 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-    # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-    # image. Both the blob and the header beside it are blobman outputs, not
-    # source files, so pin the pack ahead of the first target that compiles
-    # anything and declare the blob explicitly too: repacking it must retrigger
-    # that one compile even when the header has not changed.
-    add_dependencies(pnes blobman_chr)
+    # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+    # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+    # so declare it explicitly: repacking it must retrigger that compile.
     set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-            PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+            PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
     add_executable(demo ${DEMO_SOURCES})
     set_target_properties(demo PROPERTIES SUFFIX ".elf")
@@ -1461,14 +1367,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-    # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-    # image. Both the blob and the header beside it are blobman outputs, not
-    # source files, so pin the pack ahead of the first target that compiles
-    # anything and declare the blob explicitly too: repacking it must retrigger
-    # that one compile even when the header has not changed.
-    add_dependencies(pnes blobman_chr)
+    # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+    # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+    # so declare it explicitly: repacking it must retrigger that compile.
     set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-            PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+            PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
     # THE `demo` TARGET IS THE PACKAGED DELIVERABLE, NOT THE BARE ELF.
     # devkitPro's packaging helpers (ctr_create_3dsx, nx_create_nro,
@@ -1577,14 +1480,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-        # image. Both the blob and the header beside it are blobman outputs, not
-        # source files, so pin the pack ahead of the first target that compiles
-        # anything and declare the blob explicitly too: repacking it must retrigger
-        # that one compile even when the header has not changed.
-        add_dependencies(pnes blobman_chr)
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         # `demo` is the packaged .nro, `demo_elf` the linked ELF -- see the note
         # on the 3DS branch's add_executable for why.
@@ -1758,14 +1658,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-        # image. Both the blob and the header beside it are blobman outputs, not
-        # source files, so pin the pack ahead of the first target that compiles
-        # anything and declare the blob explicitly too: repacking it must retrigger
-        # that one compile even when the header has not changed.
-        add_dependencies(pnes blobman_chr)
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         # `demo` is the packaged .wuhb, `demo_elf` the linked ELF (the .rpx is a
         # POST_BUILD step of it) -- see the note on the 3DS branch's
@@ -2013,14 +1910,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-        # image. Both the blob and the header beside it are blobman outputs, not
-        # source files, so pin the pack ahead of the first target that compiles
-        # anything and declare the blob explicitly too: repacking it must retrigger
-        # that one compile even when the header has not changed.
-        add_dependencies(pnes blobman_chr)
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         add_executable(demo ${DEMO_SOURCES})
         # pspdev's own crt0/linking wants the raw ELF extension for
@@ -2332,14 +2226,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-        # image. Both the blob and the header beside it are blobman outputs, not
-        # source files, so pin the pack ahead of the first target that compiles
-        # anything and declare the blob explicitly too: repacking it must retrigger
-        # that one compile even when the header has not changed.
-        add_dependencies(pnes blobman_chr)
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         add_executable(demo ${DEMO_SOURCES})
         # ps2sdk's own linking wants the raw ELF extension, same as the PSP
@@ -2549,14 +2440,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-        # image. Both the blob and the header beside it are blobman outputs, not
-        # source files, so pin the pack ahead of the first target that compiles
-        # anything and declare the blob explicitly too: repacking it must retrigger
-        # that one compile even when the header has not changed.
-        add_dependencies(pnes blobman_chr)
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         add_executable(demo ${DEMO_SOURCES})
         # The SELF packing step below wants a bare .elf to pack from, same as
@@ -2698,14 +2586,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-        # image. Both the blob and the header beside it are blobman outputs, not
-        # source files, so pin the pack ahead of the first target that compiles
-        # anything and declare the blob explicitly too: repacking it must retrigger
-        # that one compile even when the header has not changed.
-        add_dependencies(pnes blobman_chr)
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         # `demo` is the packaged .nds ROM, `demo_elf` the linked ARM9 ELF -- see
         # the note on the 3DS branch's add_executable for why.
@@ -2817,14 +2702,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
         list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-        # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-        # image. Both the blob and the header beside it are blobman outputs, not
-        # source files, so pin the pack ahead of the first target that compiles
-        # anything and declare the blob explicitly too: repacking it must retrigger
-        # that one compile even when the header has not changed.
-        add_dependencies(pnes blobman_chr)
+        # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+        # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+        # so declare it explicitly: repacking it must retrigger that compile.
         set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-                PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+                PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
         add_executable(demo ${DEMO_SOURCES})
         set_target_properties(demo PROPERTIES SUFFIX ".elf")
@@ -3075,14 +2957,11 @@ else()
     file(GLOB DEMO_GAMEOPTIONS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/gameOptions/${DEMO_TITLE_DIR}/*.cpp")
     list(APPEND DEMO_SOURCES ${DEMO_GAMEOPTIONS_SOURCES})
 
-    # chr_rom.cpp #embeds the packed blob and emits it as the cartridge's CHR ROM
-    # image. Both the blob and the header beside it are blobman outputs, not
-    # source files, so pin the pack ahead of the first target that compiles
-    # anything and declare the blob explicitly too: repacking it must retrigger
-    # that one compile even when the header has not changed.
-    add_dependencies(pnes blobman_chr)
+    # chr_rom.cpp #embeds the packed blob (demo/chr/chr.bin) and emits it as the
+    # cartridge's CHR ROM image. The blob is a blobman output, not a source file,
+    # so declare it explicitly: repacking it must retrigger that compile.
     set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/graphics/chr_rom.cpp
-            PROPERTIES OBJECT_DEPENDS "${DEMO_CHR_BLOB}")
+            PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/demo/chr/chr.bin")
 
     add_executable(demo ${DEMO_SOURCES})
     target_link_libraries(demo PRIVATE pnes)
