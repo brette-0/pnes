@@ -170,9 +170,16 @@ namespace level {
                       "window and ignores an odd bank's low bit");
         mmc3::SwitchCHRBank(mmc3::chr1Control, mmc3::BankOf<blob::ui::__addr>());
 
-        // normalSprites is 4 KiB at VMA $1000, so it spans all four of R2-R5's
-        // 1 KiB windows, consecutive from its own base.
+        // normalSprites (VMA $1000) is a 2 KiB hunk, so it only reaches R2 and
+        // R3. Nothing in the manifest claims $1800-$1FFF, so R4/R5 continue
+        // straight on into the blob's padding -- deterministic zeros, rather
+        // than whichever bank happened to be selected last. The assert is what
+        // keeps that true: grow normalSprites past 2 KiB, or move an entry down
+        // to meet it, and these two would start aliasing real tile data.
         constexpr u8 spriteBank = mmc3::BankOf<blob::normalSprites::__addr>();
+        static_assert(mmc3::BankOf<blob::dynamicLevelTiles::__addr>() >= spriteBank + 4,
+                      "R4/R5 run past normalSprites into the next entry: give "
+                      "PPU $1800-$1FFF an entry of its own, or re-point them");
         mmc3::SwitchCHRBank(mmc3::chr2Control, spriteBank + 0);
         mmc3::SwitchCHRBank(mmc3::chr3Control, spriteBank + 1);
         mmc3::SwitchCHRBank(mmc3::chr4Control, spriteBank + 2);
