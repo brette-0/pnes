@@ -478,18 +478,11 @@ endif()
 # there is nothing to debug in a packer that either succeeds or names the entry
 # it choked on.
 #
-# CMAKE_GENERATOR is the one thing that IS forwarded, because a generator is a
-# host build-tool choice and not a target one. Without it the nested configure
-# falls back to its platform default -- "Unix Makefiles" -- and docker's
-# ps2dev image (Alpine) ships ninja but no make, so the pack failed there with
-# `CMake was unable to find a build program corresponding to "Unix Makefiles"`
-# while every other image happened to have both.
-#
 # CMAKE_RUNTIME_OUTPUT_DIRECTORY is pinned (and again for Release) so the
-# binary lands at one predictable path. It looks redundant under Ninja, but on
-# the Windows runners the forwarded generator is Visual Studio, a multi-config
-# generator, which would otherwise bury the binary in a Release/ subdirectory
-# that ${BLOBMAN_BIN} does not name.
+# binary lands at one predictable path. It looks redundant under Ninja, but the
+# nested configure inherits no generator: on the Windows runners that is Visual
+# Studio, a multi-config generator, which would otherwise bury the binary in a
+# Release/ subdirectory that ${BLOBMAN_BIN} does not name.
 #
 # PACKED BEFORE ANY PROJECT SOURCE COMPILES: each target branch below pins this
 # ahead of its own `pnes`, the first target to compile anything -- the same
@@ -515,7 +508,6 @@ set(DEMO_CHR_HEADER ${DEMO_CHR_DIR}/chr.h)
 add_custom_command(
         OUTPUT ${BLOBMAN_BIN}
         COMMAND ${CMAKE_COMMAND} -S ${BLOBMAN_SRC} -B ${BLOBMAN_BUILD}
-                -G ${CMAKE_GENERATOR}
                 -DCMAKE_BUILD_TYPE=Release
                 -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=${BLOBMAN_BUILD}
                 -DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=${BLOBMAN_BUILD}
