@@ -41,6 +41,15 @@
 #   `mac-x64`, `win-x64`, `win-x86` and `win-arm64` jobs are GitHub-hosted
 #   only -- there is no local equivalent on a Linux box.
 #
+#   blobman-check (below) gates nothing and publishes nothing: it rebuilds the
+#   CHR blob from demo/chr/config.toml with tools/blobman and diffs the result
+#   against the committed demo/chr/chr.bin and chr.h. Repacking is a manual
+#   step, so this is what catches the committed pair drifting away from the
+#   manifest or the art under demo/chr/assets/. Locally:
+#
+#       act -j blobman-check
+#       cd demo/chr && blobman -i config.toml -o chr.bin -l cpp -v
+#
 #   Every platform job needs codegen-check (below), which builds tools/uitk
 #   (needs Qt) and exports demo/gen/<name>/<target>/<name>.hpp|.cpp for every
 #   demo/ui/<name>.uis -- demo/gen/ is gitignored, so every other job downloads codegen-check's
@@ -104,6 +113,50 @@ jobs:
           name: demo-gen
           path: demo/gen
           if-no-files-found: error
+
+  # demo/chr/chr.bin (the cartridge's whole CHR ROM image) and demo/chr/chr.h
+  # (the blob::<entry>::<tile> ids six demo TUs include) are both COMMITTED and
+  # repacked by hand, so nothing in any platform build below regenerates them.
+  # That is exactly why this job exists: a stale pair compiles perfectly well
+  # against tile ids that no longer describe the blob, and every platform job
+  # would go green over it.
+  #
+  # Gates nothing and publishes nothing -- it is a diff, not a producer, so it
+  # does not block the 19 platform builds the way codegen-check has to.
+  #
+  # Runs on the bare runner rather than a container: blobman is host-native
+  # C++20 whose only dependency is toml++, which its own CMakeLists fetches
+  # when the host has no system package (the runners do not).
+  blobman-check:
+    name: Blobman check (CHR pack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build blobman
+        run: |
+          cmake -S tools/blobman -B tools/blobman/build/ci -DCMAKE_BUILD_TYPE=Release
+          cmake --build tools/blobman/build/ci -j"$(nproc)"
+
+      # -v for the per-entry fill report ("entry: ui filled 832 of 1024
+      # bytes") -- the only visibility into a hunk quietly running out of room,
+      # and the build log is where that belongs.
+      #
+      # Relative paths with demo/chr as the working directory, for two reasons:
+      # the manifest's includes resolve against it, and blobman echoes the -i
+      # path into chr.h's own provenance comment, so an absolute path would
+      # never match the committed header.
+      - name: Repack demo/chr/chr.bin + chr.h
+        working-directory: demo/chr
+        run: ../../tools/blobman/build/ci/blobman -i config.toml -o chr.bin -l cpp -v
+
+      - name: Check the committed blob and header are in sync
+        run: |
+          if ! git diff --exit-code -- demo/chr/chr.bin demo/chr/chr.h; then
+            echo "::error::demo/chr/chr.bin or chr.h is out of date." \
+                 "Repack and commit: cd demo/chr && blobman -i config.toml -o chr.bin -l cpp -v"
+            exit 1
+          fi
 
   nes:
     name: NES (ROM)
