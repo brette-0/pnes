@@ -3,7 +3,7 @@
  * @brief MMC3 mapper (mapper 4): PRG/CHR bank switching, scanline IRQ, and
  *        the ::FIXED segment keyword.
  *
- * MMC3 hardware, as this module uses it (PRG mode 0, CHR mode 0 -- the only
+ * MMC3 hardware, as this module uses it (PRG mode 0, CHR mode 1 -- the only
  * combination this module supports; see mmc3.cpp's ::_reset):
  *
  *   $8000-$9FFF  8 KiB PRG-ROM, switchable (register R6, via $8000/$8001)
@@ -11,7 +11,20 @@
  *   $C000-$DFFF  8 KiB PRG-ROM, FIXED to the second-to-last physical bank
  *   $E000-$FFFF  8 KiB PRG-ROM, FIXED to the last physical bank
  *   $6000-$7FFF  up to 8 KiB PRG-RAM ("cartridge memory")
- *   $0000-$07FF  CHR-ROM, six windows: two 2 KiB (R0/R1), four 1 KiB (R2-R5)
+ *   $0000-$0FFF  CHR-ROM, four 1 KiB windows (R2-R5) -- the fine half
+ *   $1000-$1FFF  CHR-ROM, two 2 KiB windows (R0/R1) -- the coarse half
+ *
+ * CHR MODE 1 ($8000 bit 7, ::kChrModeBit) is what puts the 1 KiB windows at
+ * the FRONT. Mode 0 -- the other way round, and what the chip's own default
+ * would be -- is not used: the background pattern table is the one worth
+ * rebanking a kilobyte at a time, while a sprite set is typically swapped
+ * whole, so the fine windows belong at $0000 and the coarse pair at $1000.
+ * D7 is not separate state to establish once: it shares the bank-select byte
+ * with the register index, so it is re-sent by every $8000 write as a matter
+ * of course. ::Detail::kModeBits is simply what this module ORs in each time,
+ * which is why a bare index must never be written to $8000 -- that would send
+ * D7 = 0 and pick mode 0 for however long it took the next bank write to put
+ * it back.
  *
  * Only TWO registers can be pointed anywhere: R6 ($8000) and R7 ($A000).
  * $C000-$DFFF is hardware-fixed to the second-to-last bank regardless of any
@@ -78,23 +91,73 @@ static_assert(ALTERNATIVE_NAMETABLE == 0 || ALTERNATIVE_NAMETABLE == 1,
  * create -- an object of it.
  */
 class mmc3 {
+public:
+    /**
+     * @brief $8000's CHR A12-inversion bit (D7), as the PPU layout it
+     *        produces rather than as a number.
+     *
+     * The enumerators ARE the bit, so one value both picks the window
+     * geometry and supplies what gets ORed into the select byte -- the two
+     * cannot be set inconsistently, which they could when the bit and the
+     * window table were separate constants. Named for which half of CHR
+     * address space gets the fine (1 KiB) windows, since that is the decision
+     * being made; the chip's own "mode 0 / mode 1" numbering is noted on each
+     * enumerator for cross-referencing nesdev.
+     *
+     * Not a per-chip constant: D7 travels in the bank-select byte, so it is
+     * re-sent by every $8000 write and a game may legitimately use different
+     * geometry at different times. ::SwitchBank, ::SwitchCHRBank and
+     * ::SwitchCharactersBy therefore take it as a template parameter,
+     * defaulted to ::kChrMode.
+     */
+    enum class chrMode : u8 {
+        /// Mode 0 (D7 = 0), the chip's own power-on arrangement: R0/R1 are
+        /// 2 KiB windows at PPU $0000/$0800, R2-R5 are 1 KiB windows at
+        /// $1000/$1400/$1800/$1C00. Coarse half first.
+        coarseFirst = 0x00,
+
+        /// Mode 1 (D7 = 1): R2-R5 are 1 KiB windows at PPU
+        /// $0000/$0400/$0800/$0C00, R0/R1 are 2 KiB windows at $1000/$1800.
+        /// Fine half first -- background tiles rebankable a kilobyte at a
+        /// time, sprites swapped a whole table at a time.
+        fineFirst = 0x80,
+    };
+
+    /**
+     * @brief The ::chrMode every bank switch assumes unless told otherwise,
+     *        and the one every PRG write asserts.
+     *
+     * A default rather than a fixed fact: D7 shares its byte with the
+     * register index, so every write has to send SOMETHING, and the PRG path
+     * (::Long and the farcall machinery) has no business choosing CHR
+     * geometry. A call that wants the other arrangement names it explicitly.
+     * ::_reset (mmc3.cpp) also reads this, so the boot writes agree with the
+     * rest of the module.
+     */
+    static constexpr chrMode kChrMode = chrMode::fineFirst;
+
 private:
 #ifndef TARGET_NES
     /**
-     * @brief Emu-side shadow of MMC3's CHR mode bit (bit 7 of $8000).
+     * @brief Emu-side shadow of MMC3's CHR A12-inversion bit (D7 of $8000).
      *
-     * The real NES side of this module never sets this bit -- ::Register's
-     * hardware write path hardcodes ::Detail::kModeBits to 0 permanently (see
-     * this file's header comment: "the only combination this module
-     * supports"), so on an actual cartridge this is always mode 0. The emu
-     * side tracks it as real, settable state anyway (via ::SetCHRMode) so a
-     * desktop/console build can model a game that DOES flip it, without
-     * requiring the NES-side restriction to be lifted first.
+     * Real state driven by real writes, not a build-time setting: D7 rides in
+     * every bank-select byte, so ::NotifyModeWrite records it on every
+     * $8000 write this module makes and ::GetTileLMA resolves tile fetches
+     * through whichever arrangement is current. The inversion mechanic is
+     * therefore fully live off-NES -- a game that banks under one ::chrMode
+     * here and another there is modelled exactly as hardware would behave,
+     * with no NES-side restriction to lift first.
+     *
+     * Boots as D7 = 0, which is the chip's own power-on arrangement and
+     * carries no implication that it is the right one for any given game --
+     * nothing has defined the mode until the first bank write does.
      *
      * true  = large (2 KiB, R0/R1) windows at the front ($0000-$0FFF),
      *         small (1 KiB, R2-R5) windows at the end ($1000-$1FFF) --
-     *         hardware's mode 0, and this module's only NES-side mode.
-     * false = inverted: small windows at the front, large windows at the end.
+     *         D7 = 0, ::chrMode::coarseFirst.
+     * false = inverted: small windows at the front ($0000-$0FFF), large at
+     *         the end ($1000-$1FFF) -- D7 = 1, ::chrMode::fineFirst.
      */
     static bool shape;
 
@@ -115,6 +178,13 @@ private:
     /// hardware here). Defined in the emu-side mmc3.cpp
     /// (src/emu/mappers/mmc3.cpp), not the NES-side one.
     static void NotifyCHRWrite(u8 index, u8 bank);
+
+    /// Off-NES write path for ::Register<Index>::poke_only, EVERY index --
+    /// records the ::chrMode a $8000 write just asserted into ::shape, since
+    /// on real hardware D7 rides in that byte whichever register it selects,
+    /// so a PRG write re-asserts the CHR layout just as a CHR write does.
+    /// Defined in the emu-side mmc3.cpp (src/emu/mappers/mmc3.cpp).
+    static void NotifyModeWrite(chrMode mode);
 #endif
 
 public:
@@ -132,21 +202,6 @@ public:
      */
     static u32 GetTileLMA(u16 tileVMA);
 
-    /**
-     * @brief Sets the emu-side CHR mode bit (see ::shape).
-     *
-     * Off-NES only: the real NES side of this module never exposes a way to
-     * change this (it hardcodes mode 0, see ::Detail::kModeBits), so this
-     * exists purely for a desktop/console build that wants to model a game
-     * which does flip it. Calling this on the NES target would have no
-     * hardware counterpart to reflect the change, so it isn't declared
-     * there.
-     *
-     * @param largeWindowsAtFront true selects hardware's mode 0 (this
-     *                            module's own default and its NES side's
-     *                            only mode); false inverts it.
-     */
-    static void SetCHRMode(bool largeWindowsAtFront);
 #endif
 
     mmc3() = delete;
@@ -177,23 +232,30 @@ public:
         Register(const Register &o) : shadow_(o.shadow_) {}     ///< snapshot, no poke
 
         u8   get() const     { return shadow_; }                          ///< read  = shadow
-        void set(const u8 v) { shadow_ = v; poke_only(v); }               ///< write = shadow + hardware
+        void set(const u8 v, const chrMode mode = kChrMode) { shadow_ = v; poke_only(v, mode); } ///< write = shadow + hardware
         /**
          * @brief Write hardware only, no shadow update.
          *
-         * On NES: the real $8000/$8001 port-pair write. Off-NES: there is no
-         * hardware, so this instead updates the emu's own bank-tracking state
-         * (::NotifyCHRWrite) for CHR registers (Index 0-5) so ::GetTileLMA can
-         * resolve tile fetches correctly; PRG registers (Index 6/7) are a
-         * no-op off-NES, since off-NES there's no bank-switched PRG concept
-         * to track (::Long/::Call/::CallInBlock already degrade to plain calls
-         * there).
+         * On NES: the real $8000/$8001 port-pair write, @p mode's bit riding
+         * in the select byte as hardware requires (::Detail::SelectByte).
+         * Off-NES: there is no hardware, so this instead updates the emu's own
+         * tracking state -- the CHR mode for EVERY write (::NotifyModeWrite),
+         * since a real $8000 write always carries D7 whatever register it
+         * selects, plus the bank itself (::NotifyCHRWrite) for CHR registers
+         * (Index 0-5) so ::GetTileLMA can resolve tile fetches correctly. A
+         * PRG register's bank (Index 6/7) is not tracked off-NES, since there
+         * is no bank-switched PRG concept there (::Long/::Call/::CallInBlock
+         * already degrade to plain calls).
+         *
+         * @param mode Which ::chrMode this write asserts in D7. A constant at
+         *             every call site, so it folds into the poked literal.
          */
-        void poke_only(const u8 v) const {
+        void poke_only(const u8 v, const chrMode mode = kChrMode) const {
 #ifdef TARGET_NES
-            tech::poke(0x8000, Detail::kModeBits | Index);
+            tech::poke(0x8000, Detail::SelectByte(mode, Index));
             tech::poke(0x8001, v);
 #else
+            NotifyModeWrite(mode);
             if constexpr (Index <= 5) NotifyCHRWrite(Index, v);
 #endif
         }
@@ -217,24 +279,24 @@ public:
     /**
      * @brief MMC3's six CHR-select registers (R0-R5).
      *
-     * chr0Control/chr1Control select 2 KiB windows (PPU $0000/$0800 under CHR
-     * mode 0), but -- like every CHR register on this chip -- the value
+     * chr0Control/chr1Control select 2 KiB windows (PPU $1000/$1800 under CHR
+     * mode 1), but -- like every CHR register on this chip -- the value
      * written still counts banks in 1 KiB units; the low bit is ignored by
      * hardware (an odd bank can't be selected, since it wouldn't be 2 KiB-
      * aligned), though nothing here masks it away -- the shadow simply holds
      * whatever was written, so a consumer resolving a tile address (e.g.
      * ::GetTileLMA) must mask it off itself, not just multiply by 2 KiB.
-     * chr2Control-chr5Control select 1 KiB banks (PPU $1000/$1400/$1800/
-     * $1C00), full 8-bit range (up to 256 KiB CHR-ROM). Named chrNControl to
+     * chr2Control-chr5Control select 1 KiB banks (PPU $0000/$0400/$0800/
+     * $0C00), full 8-bit range (up to 256 KiB CHR-ROM). Named chrNControl to
      * match VRC1's chr0Control/chr1Control convention as closely as this
      * chip's extra granularity allows.
      */
-    static Register<0> chr0Control; ///< CHR-select R0, 2 KiB @ PPU $0000.
-    static Register<1> chr1Control; ///< CHR-select R1, 2 KiB @ PPU $0800.
-    static Register<2> chr2Control; ///< CHR-select R2, 1 KiB @ PPU $1000.
-    static Register<3> chr3Control; ///< CHR-select R3, 1 KiB @ PPU $1400.
-    static Register<4> chr4Control; ///< CHR-select R4, 1 KiB @ PPU $1800.
-    static Register<5> chr5Control; ///< CHR-select R5, 1 KiB @ PPU $1C00.
+    static Register<0> chr0Control; ///< CHR-select R0, 2 KiB @ PPU $1000.
+    static Register<1> chr1Control; ///< CHR-select R1, 2 KiB @ PPU $1800.
+    static Register<2> chr2Control; ///< CHR-select R2, 1 KiB @ PPU $0000.
+    static Register<3> chr3Control; ///< CHR-select R3, 1 KiB @ PPU $0400.
+    static Register<4> chr4Control; ///< CHR-select R4, 1 KiB @ PPU $0800.
+    static Register<5> chr5Control; ///< CHR-select R5, 1 KiB @ PPU $0C00.
 
     /**
      * @brief Selects nametable mirroring ($A000).
@@ -277,9 +339,9 @@ public:
      * so window1Control/window2Control's shadows aren't valid to write yet --
      * see ::_reset's own comment for why it pokes hardware directly instead.
      */
-    template <u8 Index>
+    template <chrMode Mode = kChrMode, u8 Index>
     static constexpr void SwitchBank(Register<Index> &reg, u8 ctx) {
-        reg = ctx;
+        reg.set(ctx, Mode);
     }
 
     /**
@@ -298,10 +360,10 @@ public:
      *             (see ::chr0Control's own comment), so only even values
      *             actually select a distinct 2 KiB window.
      */
-    template <u8 Index>
+    template <chrMode Mode = kChrMode, u8 Index>
     static constexpr void SwitchCHRBank(Register<Index> &reg, u8 bank) {
         static_assert(Index <= 5, "SwitchCHRBank only valid for chr0Control-chr5Control (R0-R5).");
-        reg = bank;
+        reg.set(bank, Mode);
     }
 
     /**
@@ -312,6 +374,7 @@ public:
      */
     static constexpr u32 kChrBankSize = 0x400;
 
+
     /** @brief Highest CHR bank an 8-bit CHR register can select (256 KiB). */
     static constexpr u32 kMaxChrBank = 0xFF;
 
@@ -319,12 +382,13 @@ public:
      * @brief The CHR bank number that holds @p Lma -- a byte offset into the
      *        flat CHR-ROM image -- ready to hand to ::SwitchCHRBank.
      *
-     * Pairs with blobman's generated header (tools/blobman): each entry there
-     * carries an `__addr` giving where its tiles were packed, so a game banks
-     * an entry in by offset rather than by a hand-counted bank number:
+     * Pairs with blobman's generated header (tools/blobman): each packed
+     * character set there carries an `__lma` giving where its tiles were
+     * packed, so a game banks one in by offset rather than by a hand-counted
+     * bank number:
      *
      *     mmc3::SwitchCHRBank(mmc3::chr4Control,
-     *                         mmc3::BankOf<blob::ui::__addr>());
+     *                         mmc3::BankOf<blob::ui::__lma>());
      *
      * @p Lma is a template parameter, not an argument, so both checks below
      * are compile-time: an offset that is not on a bank boundary cannot be
@@ -346,6 +410,85 @@ public:
         static_assert(Lma / kChrBankSize <= kMaxChrBank,
                       "BankOf: CHR offset is past the 256 KiB a CHR register can reach");
         return static_cast<u8>(Lma / kChrBankSize);
+    }
+
+    /**
+     * @brief Total PPU address space the CHR registers cover: 8 KiB, both
+     *        pattern tables ($0000-$1FFF).
+     */
+    static constexpr u32 kChrSpaceSize = 0x2000;
+
+    /**
+     * @brief Banks in one packed character set, writing every CHR register
+     *        whose window its PPU range touches.
+     *
+     * Described BY its three placement numbers, hence the name -- where the
+     * characters were packed, where the PPU sees them, how far they reach --
+     * and nothing else is needed. Those are exactly the three constants
+     * blobman emits per packed set (tools/blobman, `__lma`/`__vma`/`__size`),
+     * though any source of the same three numbers does just as well. All
+     * three are template parameters, so the window-to-register resolution,
+     * the offset arithmetic and every ::BankOf call fold away entirely --
+     * what is left is the bare $8000/$8001 port pokes, one pair per window,
+     * with literal operands:
+     *
+     *     mmc3::SwitchCharactersBy<blob::normalSprites::__lma,
+     *                              blob::normalSprites::__vma,
+     *                              blob::normalSprites::__size>();
+     *
+     * blobman's header also emits a macro packing those three in this
+     * function's own parameter order, which is how a call site usually names
+     * a set -- once, rather than three times:
+     *
+     *     mmc3::SwitchCharactersBy<
+     *         GetCharacterEntryInformation(blob::normalSprites)>();
+     *
+     * That replaces hand-picking the registers a set lands in and hand-adding
+     * the per-window bank offsets -- the error the three static_asserts here
+     * now catch at compile time instead.
+     *
+     * WINDOWS ARE NOT SUBDIVIDED. Each covered window is pointed at the set's
+     * own bank for that window's start, so a window the set does not fill to
+     * the end keeps showing whatever follows it in CHR ROM for the remainder
+     * -- padding, or the next set along if one is packed there. That is
+     * MMC3's granularity, not a choice here: under CHR mode 1 a 1 KiB set at
+     * PPU $1000 can only be banked by R0, which is 2 KiB wide. A set relying
+     * on its neighbour filling the rest of a window still wants its own
+     * assert that the two are packed adjacently -- ::BankOf of both, compared
+     * -- since this call cannot see that intent.
+     *
+     * @tparam Lma  Byte offset into CHR ROM the characters are packed at.
+     * @tparam Vma  PPU address they are seen at; must be the start of one of
+     *              @p Mode's six windows.
+     * @tparam Size Their length in bytes.
+     * @tparam Mode Which ::chrMode to resolve the windows under, and to
+     *              assert in D7 while writing them. Last so the three
+     *              placement numbers stay in blobman's own order; defaulted,
+     *              so naming it is opt-in.
+     */
+    template <u32 Lma, u32 Vma, u32 Size, chrMode Mode = kChrMode>
+    static constexpr void SwitchCharactersBy() {
+        static_assert(Size > 0, "SwitchCharactersBy: character set is empty");
+        static_assert(Vma + Size <= kChrSpaceSize,
+                      "SwitchCharactersBy: character set runs past the 8 KiB "
+                      "of PPU pattern-table space the CHR registers cover");
+        static_assert(Detail::StartsAChrWindow(Mode, Vma),
+                      "SwitchCharactersBy: Vma is not the start of a CHR "
+                      "window under this chrMode -- fineFirst starts windows "
+                      "at PPU $0000, $0400, $0800, $0C00, $1000 and $1800, "
+                      "coarseFirst at $0000, $0800, $1000, $1400, $1800 and "
+                      "$1C00, and no register can point at a window's "
+                      "interior");
+
+        // one line per window rather than a pack fold: six is the whole set,
+        // and each call compiles to nothing at all unless its window is one
+        // the characters actually reach
+        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 0>();
+        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 1>();
+        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 2>();
+        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 3>();
+        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 4>();
+        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 5>();
     }
 
     /**
@@ -603,17 +746,21 @@ private:
         /**
          * @brief Bit 6 (PRG mode) / bit 7 (CHR A12 invert) of every $8000 write.
          *
-         * $8000 packs the register-select index (bits 0-2) together with these
-         * two latched mode bits in the SAME byte, so selecting a different
-         * index without re-asserting the last mode bits would silently clear
-         * whichever one wasn't also specified again. This module fixes both
-         * bits at 0 permanently (PRG mode 0, CHR non-inverted -- see this
-         * file's header comment) and never exposes a way to change them, so
-         * every $8000 write below is simply the bare register index; there is
-         * no runtime state to track. If a future revision needs to flip either
-         * bit, THIS is the one place that assumption lives.
+         * $8000 packs the register-select index (bits 0-2) together with
+         * these two mode bits in the SAME byte, so selecting an index without
+         * also specifying them clears whichever was left out. Bit 6 is fixed
+         * at 0 (PRG mode 0, which this module never exposes a way to change);
+         * bit 7 is whatever ::chrMode the caller asked for. Every $8000 write
+         * in this module goes through here, which is what makes "a bare index
+         * must never reach $8000" true by construction.
          */
-        static constexpr u8 kModeBits = 0;
+        static constexpr u8 kPrgModeBit = 0;
+
+        /// The byte to write to $8000 to select @p index with @p mode's D7
+        /// asserted. See ::kPrgModeBit for bit 6.
+        static constexpr u8 SelectByte(const chrMode mode, const u8 index) {
+            return kPrgModeBit | static_cast<u8>(mode) | index;
+        }
 
         /// Windows 1/2's shared geometry: WINDOW_SIZE bytes each, starting at
         /// WINDOW_BASE ($8000, window1Control's own base). Same constants as
@@ -622,6 +769,102 @@ private:
         /// comment); MMC3 has no windowIndex-2 register to switch to.
         static constexpr u16 kWindowBase = 0x8000;
         static constexpr u16 kWindowSize = 0x2000;
+
+        /// One CHR window under mode 1: which register points it somewhere,
+        /// where the PPU sees it, and how much PPU space it covers. The
+        /// register index doubles as the $8000 select value (see ::kModeBits).
+        struct chrWindow_t {
+            u8  index;  ///< CHR register R0-R5 backing this window
+            u16 vma;    ///< PPU address the window starts at
+            u16 size;   ///< bytes of PPU space it covers
+        };
+
+        /// How many CHR windows the chip has, in either ::chrMode -- six
+        /// registers, so six windows; only their widths and addresses move.
+        static constexpr u8 kChrWindowCount = 6;
+
+        /// The six windows under ::chrMode::coarseFirst, in PPU order -- the
+        /// table form of that enumerator's own comment.
+        static constexpr chrWindow_t kWindowsCoarseFirst[kChrWindowCount] = {
+            { 0, 0x0000, 0x0800 },
+            { 1, 0x0800, 0x0800 },
+            { 2, 0x1000, 0x0400 },
+            { 3, 0x1400, 0x0400 },
+            { 4, 0x1800, 0x0400 },
+            { 5, 0x1C00, 0x0400 },
+        };
+
+        /// The six windows under ::chrMode::fineFirst, in PPU order. Same
+        /// registers, halves swapped -- which is all D7 does.
+        static constexpr chrWindow_t kWindowsFineFirst[kChrWindowCount] = {
+            { 2, 0x0000, 0x0400 },
+            { 3, 0x0400, 0x0400 },
+            { 4, 0x0800, 0x0400 },
+            { 5, 0x0C00, 0x0400 },
+            { 0, 0x1000, 0x0800 },
+            { 1, 0x1800, 0x0800 },
+        };
+
+        /// Window @p w under @p mode. By value and by index rather than
+        /// handing back one of the two tables, so @p mode can be an ordinary
+        /// argument -- a reference-to-array return would need the mode to be
+        /// a template parameter just to name its type.
+        static constexpr chrWindow_t ChrWindowAt(const chrMode mode, const u8 w) {
+            return mode == chrMode::fineFirst ? kWindowsFineFirst[w]
+                                              : kWindowsCoarseFirst[w];
+        }
+
+        /// True when @p vma is where one of @p mode's windows begins -- the
+        /// only PPU addresses characters can be banked to under that mode.
+        /// See ::SwitchCharactersBy's third static_assert.
+        static constexpr bool StartsAChrWindow(const chrMode mode, const u32 vma) {
+            for (u8 w = 0; w < kChrWindowCount; w++) {
+                if (ChrWindowAt(mode, w).vma == vma) return true;
+            }
+
+            return false;
+        }
+
+        /// The CHR register backing ::kChrWindows[W], as a reference to the
+        /// real object so ::SwitchCHRBank updates the right shadow. Six
+        /// distinct types (Register<0> through Register<5>), so this resolves
+        /// an index to one of them rather than returning a common base.
+        template <u8 Index>
+        static constexpr auto &ChrRegister() {
+            static_assert(Index <= 5, "ChrRegister: MMC3 has CHR registers R0-R5 only.");
+            if      constexpr (Index == 0) return chr0Control;
+            else if constexpr (Index == 1) return chr1Control;
+            else if constexpr (Index == 2) return chr2Control;
+            else if constexpr (Index == 3) return chr3Control;
+            else if constexpr (Index == 4) return chr4Control;
+            else                           return chr5Control;
+        }
+
+        /// Points @p Mode's window @p W at the character set described by
+        /// @p Lma / @p Vma / @p Size, or compiles to nothing when those
+        /// characters do not reach that window. The `if constexpr` is what
+        /// keeps ::BankOf from being instantiated -- and its own
+        /// static_asserts from firing -- for a window they never touch.
+        /// Implementation of ::SwitchCharactersBy; not for direct use.
+        template <chrMode Mode, u32 Lma, u32 Vma, u32 Size, u8 W>
+        static constexpr void SwitchCHRWindow() {
+            constexpr chrWindow_t win = ChrWindowAt(Mode, W);
+
+            if constexpr (win.vma >= Vma && win.vma < Vma + Size) {
+                constexpr u8 bank = BankOf<Lma + (win.vma - Vma)>();
+
+                // a 2 KiB window ignores its bank number's low bit (see
+                // ::chr0Control), so an odd bank there would quietly map the
+                // 2 KiB-aligned pair below it instead of what was asked for
+                static_assert(win.size == kChrBankSize || bank % 2 == 0,
+                              "SwitchCharactersBy: character set lands in one "
+                              "of MMC3's 2 KiB windows (R0/R1) on an odd 1 KiB "
+                              "bank, which hardware rounds down -- pack it "
+                              "2 KiB-aligned in CHR ROM");
+
+                SwitchCHRBank<Mode>(ChrRegister<win.index>(), bank);
+            }
+        }
 
         /**
          * @brief Implementation of ::mmc3::Long / ::CallInSection once the

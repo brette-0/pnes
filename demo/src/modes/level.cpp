@@ -143,47 +143,39 @@ namespace level {
         // instant it's reached.
         video::WaitForPresent();
 
-        // CHR banking for the packed blob -- every bank number here is derived
-        // from demo/chr/chr.h's __addr offsets, so repacking the blob
-        // (demo/chr/config.toml) cannot leave these behind. MMC3 mode 0: R0/R1
-        // are 2 KiB windows at PPU $0000/$0800, R2-R5 are 1 KiB windows at
-        // $1000/$1400/$1800/$1C00, and all six count banks in 1 KiB units.
-        //
-        // R0's one 2 KiB window maps dynamicLevelTiles (VMA $0000) and
-        // staticLevelTiles (VMA $0400) together, which only works because they
-        // are packed back to back -- and only if the pair starts 2 KiB-aligned,
-        // since a 2 KiB window ignores its bank number's low bit.
-        static_assert(mmc3::BankOf<blob::staticLevelTiles::__addr>() ==
-                      mmc3::BankOf<blob::dynamicLevelTiles::__addr>() + 1,
-                      "staticLevelTiles must be packed directly after "
-                      "dynamicLevelTiles: R0 maps the pair as one 2 KiB bank");
-        static_assert(mmc3::BankOf<blob::dynamicLevelTiles::__addr>() % 2 == 0,
-                      "dynamicLevelTiles must start 2 KiB-aligned in the blob: "
-                      "R0 is a 2 KiB window and ignores an odd bank's low bit");
-        mmc3::SwitchCHRBank(mmc3::chr0Control,
-                            mmc3::BankOf<blob::dynamicLevelTiles::__addr>());
+        // CHR banking for the packed blob -- every window here is resolved from
+        // demo/chr/chr.h's __lma/__vma/__size triples, so repacking the blob
+        // (demo/chr/config.toml) cannot leave these behind. MMC3 CHR mode 1:
+        // R2-R5 are 1 KiB windows at PPU $0000/$0400/$0800/$0C00, R0/R1 are
+        // 2 KiB windows at $1000/$1800, and all six count banks in 1 KiB
+        // units. So the fine half of the registers covers the background
+        // pattern table and the coarse half the sprite one -- which is why
+        // every tile entry below banks on its own, while normalSprites takes a
+        // whole 2 KiB window. SwitchCharactersBy works out which windows an
+        // entry's __vma/__size reaches and folds every bank number to a
+        // literal.
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::dynamicLevelTiles)>();
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::normalSprites)>();
 
-        // ui (VMA $0800) fills the first half of R1's 2 KiB window; the second
-        // half is the blob's zero padding, which nothing addresses.
-        static_assert(mmc3::BankOf<blob::ui::__addr>() % 2 == 0,
-                      "ui must start 2 KiB-aligned in the blob: R1 is a 2 KiB "
+        // Nothing in the manifest claims PPU $0C00-$0FFF (R5) or $1800-$1FFF
+        // (R1), so both are pointed by hand at the blob's padding gap -- the
+        // bytes between normalSprites' end and dynamicLevelTiles' start --
+        // giving deterministic zeros rather than whichever bank happened to be
+        // selected last. The asserts are what keep that true: grow
+        // normalSprites, or move an entry up to meet it, and these two would
+        // start aliasing real tile data.
+        constexpr u32 padLma = blob::normalSprites::__lma + blob::normalSprites::__size;
+        static_assert(padLma + 2 * mmc3::kChrBankSize <= blob::dynamicLevelTiles::__lma,
+                      "R5/R1 run past normalSprites into the next entry: give "
+                      "PPU $0C00-$0FFF and $1800-$1FFF entries of their own, "
+                      "or re-point them");
+        static_assert(mmc3::BankOf<padLma>() % 2 == 0,
+                      "the padding gap must start 2 KiB-aligned: R1 is a 2 KiB "
                       "window and ignores an odd bank's low bit");
-        mmc3::SwitchCHRBank(mmc3::chr1Control, mmc3::BankOf<blob::ui::__addr>());
-
-        // normalSprites (VMA $1000) is a 2 KiB hunk, so it only reaches R2 and
-        // R3. Nothing in the manifest claims $1800-$1FFF, so R4/R5 continue
-        // straight on into the blob's padding -- deterministic zeros, rather
-        // than whichever bank happened to be selected last. The assert is what
-        // keeps that true: grow normalSprites past 2 KiB, or move an entry down
-        // to meet it, and these two would start aliasing real tile data.
-        constexpr u8 spriteBank = mmc3::BankOf<blob::normalSprites::__addr>();
-        static_assert(mmc3::BankOf<blob::dynamicLevelTiles::__addr>() >= spriteBank + 4,
-                      "R4/R5 run past normalSprites into the next entry: give "
-                      "PPU $1800-$1FFF an entry of its own, or re-point them");
-        mmc3::SwitchCHRBank(mmc3::chr2Control, spriteBank + 0);
-        mmc3::SwitchCHRBank(mmc3::chr3Control, spriteBank + 1);
-        mmc3::SwitchCHRBank(mmc3::chr4Control, spriteBank + 2);
-        mmc3::SwitchCHRBank(mmc3::chr5Control, spriteBank + 3);
+        mmc3::SwitchCHRBank(mmc3::chr5Control, mmc3::BankOf<padLma>());
+        mmc3::SwitchCHRBank(mmc3::chr1Control, mmc3::BankOf<padLma>());
         mmc3::SetMirroring(false);
 
         // LoadLevel is ::LEVEL_CODE; ::COLD can't reach a different bank-0
@@ -386,6 +378,19 @@ namespace level {
         }
 
         ppu::SetColorPriority(0);
+
+        // PPU $0400-$07FF is DOUBLE-BOOKED by the manifest: demo/chr/config.toml
+        // packs both staticLevelTiles and ui at VMA $0400, so the single 1 KiB
+        // window covering it (R3, under chrMode::fineFirst) cannot show both at
+        // once -- it has to carry a different bank above and below the HUD
+        // split. Above is the HUD, the top kHudSplitRow pixels, drawn entirely
+        // in ui tiles (hud_coin, font, hud_whitespace), so ui is what goes on
+        // here in vblank, before the first visible scanline fetches anything.
+        // ApplyHudSplit swaps it back for the playfield once the scanline IRQ
+        // fires below the strip; title.cpp's nmi_handler/ApplySplit pair is the
+        // same trade the other way up (preview on top, menu below).
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
+
         mmc3::ScheduleScanlineIRQ(kHudSplitMMC3, {0, kHudSplitRow});
     }
 
@@ -427,5 +432,14 @@ namespace level {
         #else
             ppu::SetScroll({cameraX, kHudSplitRow});
         #endif
+
+        // The playfield's half of the double-booked $0400 window -- see
+        // nmi_handler's switch to blob::ui for why the pair exists. After the
+        // scroll write, not before: that one is the raster-critical half of
+        // this handler, and two register writes ahead of it would push it
+        // further into the visible line. Nothing below the split is fetched
+        // from $0400 until the next scanline begins, so the switch has until
+        // then to land.
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
     }
 }

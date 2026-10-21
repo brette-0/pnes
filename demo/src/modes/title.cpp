@@ -3,21 +3,8 @@
 #ifndef GEN_TARGET_DIR
 #error "GEN_TARGET_DIR is not set -- add it to this target's CMakeLists.txt branch."
 #endif
-// gen::title -- this target's own demo/gen/title/<GEN_TARGET_DIR>/title.hpp.
-// Relative path, computed via ::STRCAT (pnes/technology.hpp), not an
-// -I search-path/angle-bracket trick: GEN_TARGET_DIR is the same bareword
-// macro (target_compile_definitions(demo ...) in CMakeLists.txt) every
-// platform branch sets to its own demo/gen/*/<dir> name, so this one line
-// covers every target without a per-target #if ladder.
 #include STRCAT(../../gen/title/GEN_TARGET_DIR/title.hpp)
-// gen::gameOptions -- demo/ui/gameOptions.uis, same per-target directory scheme
-// (gen/gameOptions/<GEN_TARGET_DIR>/gameOptions.hpp).
 #include STRCAT(../../gen/gameOptions/GEN_TARGET_DIR/gameOptions.hpp)
-// gen::options -- demo/ui/options.uis (the Options screen's buttons), plus the
-// hand-written DrawEnabled_/DrawDisabled_ implementations its generated
-// Button nodes require (see uitk's genButtonDecl) -- this is the one TU that
-// actually includes it, so it's the one place GEN_TARGET_DIR/pnes
-// context exists for it.
 #include "../../ui/impl/buttons.hpp"
 #include "../main.hpp"
 #include "pnes/logger.hpp"
@@ -32,31 +19,12 @@
 #include "pnes/extras/ui/text.hpp"
 
 namespace title {
-    // Both menus are generated (demo/ui/title.uis, demo/ui/gameOptions.uis) --
-    // which options exist on this target, where they sit and how many there
-    // are all come from gen::title / gen::gameOptions, not from anything
-    // hand-written here. title.uis lists NewGame, Continue, Options (and Quit
-    // on PC) in that order, so an option's index IS its titleOptions value;
-    // this fails the build if the scene and the enum ever drift apart.
     static_assert(gen::title::TitleOptions_nOptions == End + 1,
                   "title.uis and title.hpp's titleOptions enum disagree on the menu's options");
 
-    // Which of the two menus currently owns the selector arrow. Written from
-    // the main loop, read from the nmi_handler_draw* handlers (hence
-    // `atomic`, technology.hpp: volatile on NES, true atomic elsewhere).
     static atomic bool playModeActive = false;
-
-    // Set once Options is chosen and never cleared: a deliberate one-way
-    // lock (there's no Options screen built yet -- see ::nmi_handler_lockOptions).
-    // Written from the main loop, read from main loop only (unlike
-    // playModeActive, no NMI handler reads it), but kept atomic for the same
-    // reason/consistency.
     static atomic bool optionsLocked = false;
 
-    // Nametable address of the arrow slot for option `i` of a generated
-    // SingleChoice: two tiles left of that option's anchor. Reads .x/.y
-    // individually -- `_options` is `atomic` (volatile) on a variadic target,
-    // and a volatile vec2 can't be copied whole.
     template <typename Options>
     static u16 ArrowAddr(const Options& options, const u8 i) {
         return ppu::CartesianToAddress({static_cast<u16>(options[i].x - 2), static_cast<u16>(options[i].y)});
@@ -78,18 +46,13 @@ namespace title {
         return playModeActive ? PlayModeArrowAddr() : TitleArrowAddr();
     }
 
-    // Queues addr as both the clear and write address for the next
-    // SelectorUpdate() -- clear-then-arrow onto the same tile nets out to
-    // just drawing the arrow, so this is how a caller reuses SelectorUpdate
-    // for a first-draw indicator instead of poking the PPU itself.
     static void QueueSelectorDraw(const u16 addr) {
         scratchpad[1] = scratchpad[3] = static_cast<u8>(addr & 0xff);
         scratchpad[2] = scratchpad[4] = static_cast<u8>(addr >> 8);
         scratchpad[0] = 1;
     }
 
-    // scratchpad[3..4] always holds the arrow's current tile (see
-    // SelectorUpdate/QueueSelectorDraw).
+
     static u16 CurrentSelectorAddr() {
         return static_cast<u16>(scratchpad[3] | (scratchpad[4] << 8));
     }
@@ -118,37 +81,10 @@ namespace title {
     static void nmi_handler_lockAnimReverse();
     static void nmi_handler_fadeFromOptions();
 
-    // Column where the menu/play-mode nametable begins: one nametable's width
-    // to the right of nametable A, computed at runtime rather than a
-    // compile-time constant: a real console's nametable is a fixed 32 tiles,
-    // but a variadic display (LANDSCAPE desktop's runtime window, OGC's
-    // runtime TV width, ...) has no such hardware constraint -- its nametable
-    // is just its own viewport, whatever size that renders at (see
-    // ::emu::ComputeNtGeometry's own doc comment, src/emu/emu.hpp). Floored
-    // at 32 for a target whose viewport is instead a CROP of a still-32-wide
-    // background (GBA/NDS/DSi). Set once, below, at the top of main() --
-    // before ApplySplit() (which reads it) can ever run. The menus' own
-    // columns come from the generated scenes, which resolve the same floor.
     static u16 kMenuNT;
 
-    // Mary's feet, in nametable space -- fixed once the level preview loads
-    // (DrawLevelPreview), independent of scroll. Cached so
-    // ::UpdateMarySpriteY can redo just the scroll half of that same math
-    // every step of the reveal animation, without needing the banked level
-    // data (::level::levelHeight) still paged in to re-derive it.
     static u16 maryGroundNtRow;
 
-    // Current position through the reveal animation (::nmi_handler_lockAnim)
-    // and its reverse (::nmi_handler_lockAnimReverse), in SCANLINES (not
-    // tile rows -- stepping a few scanlines at a time is the whole point of
-    // both). Forward counts down from the title menu's own split row
-    // (converted to scanlines) to 0; reverse counts back up from 0 to that
-    // same value, ::kScanlinesPerFrame scanlines every frame (this was one
-    // scanline every frame before -- half the speed -- and one scanline
-    // every OTHER frame before that). Declared up here (not besides the
-    // handlers that actually use it) because ::main's own B-press handling
-    // needs it in scope before ::main is defined, to check whether a reveal
-    // is actually running.
     static u16 lockAnimScanline;
 
     // How many scanlines ::nmi_handler_lockAnim/::nmi_handler_lockAnimReverse
@@ -165,26 +101,8 @@ namespace title {
         {ppu::SPRITE_0 + 1, 3}, // Mary's sprite colours
     };
 
-    // A colour byte's row/brightness nibble is 2 bits (0-3) on every valid
-    // NES palette entry -- a hardware ceiling, not something that depends on
-    // ::BGColours/::maryColors' actual values -- so walking every entry one
-    // row darker at a time always reaches "every entry forced to 0x1f" by
-    // phase 4 (row 3 -> 2 -> 1 -> 0 -> swap), regardless of what the starting
-    // colours are. Phase 0 is the untouched original.
     constexpr u8 kFadePhaseCount = 5;
 
-    // Every phase of the fade, precomputed once (::BuildPaletteFadePhases,
-    // called from ::main as soon as the title screen's own palette is known)
-    // instead of stepped live frame by frame: fading out just walks this
-    // table forward, fading back in on the way back to the title walks it
-    // backward -- a plain index into fixed, exact data instead of an inverse
-    // of the darkening arithmetic (which can't be inverted exactly: forcing
-    // a colour to 0x1f on the way down throws its hue away). Needed only
-    // while the title screen is up; nothing reads it once gameMode leaves
-    // Title; it's a fixed-size file-static array, not heap-allocated --
-    // there's no real heap to speak of on the NES target, and the size here
-    // is a hardware-fixed constant, so there's nothing a dynamic allocation
-    // would buy over just declaring the array.
     static u8 paletteFadePhases[kFadePhaseCount][4 + 3 + 3];
 
     // Current index into ::paletteFadePhases: 0 is full colour, ::kFadePhaseCount - 1
@@ -215,20 +133,6 @@ namespace title {
         return (((viewport_my() + 1) >> 1) - 2) << 2;
     }
 
-    // The preview band is scrolled so that its bottom edge lands exactly on
-    // the end of the nametable (world row 240), where Y wraps to row 0 of
-    // the menu nametable for the band below the split. That's the nametable's
-    // own height, NOT video::viewport_py(): the two are the same on the NES/PC
-    // (240), but a cropping target (DS/DSi 192px, GBA 160px) has a shorter
-    // panel over the same 30-row nametable -- using the panel height left the
-    // second band starting at world row 24 (DS) instead of row 0, so none of
-    // the menu/title text (nametable rows 1-4) was ever on screen.
-    // Pixel-granular core of the three helpers below (::PreviewScrollYFor,
-    // ::SplitYFor, ::ArmSplitIRQFor): all three normally only ever get called
-    // with a tile-row split (::SplitRow(), always a multiple of 8 scanlines),
-    // but ::nmi_handler_lockAnim walks the split up ONE SCANLINE at a time --
-    // rounding that to the nearest tile row would make the reveal jump 8
-    // scanlines at once every other frame instead of scrolling smoothly.
     static u16 PreviewScrollYForPixels(const u16 splitPixelRow) {
         const u16 ntHeight = video::viewport_py() < 240 ? 240 : video::viewport_py();
         return ntHeight - splitPixelRow;
@@ -272,6 +176,31 @@ namespace title {
         return SplitYForPixels(static_cast<u16>(splitRow) << 3);
     }
 
+    // PPU $0400-$07FF is DOUBLE-BOOKED by the manifest: demo/chr/config.toml
+    // packs both staticLevelTiles (the level preview behind the menu) and ui
+    // (every tile the menu itself is drawn from -- font, arrow, the button
+    // box, the sliders) at VMA $0400. One 1 KiB window covers that address
+    // under chrMode::fineFirst (R3), so the two cannot be on screen together
+    // from one bank setting: the preview band above ::SplitRow gets one, the
+    // menu band below it the other, and the scanline IRQ is what divides them.
+    //
+    // Hence a pair of named switches instead of the call spelled out at each
+    // site -- there are eight NMI handlers here and each one has to say which
+    // half of the frame it is setting up. Each compiles to the two register
+    // writes R3 takes (bank select, bank data), nothing more; see
+    // mmc3::SwitchCharactersBy, which folds the window and bank number to
+    // literals at compile time.
+    //
+    // level.cpp's nmi_handler/ApplyHudSplit pair is the same trade the other
+    // way up: HUD on top in ui tiles, playfield below in staticLevelTiles.
+    static void BankPreviewTiles() {
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
+    }
+
+    static void BankMenuTiles() {
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
+    }
+
 
     TITLE NI void main() {
         log("title::main: entered");
@@ -282,56 +211,21 @@ namespace title {
         pNMI = nmi_handler;
         log("title::main: pIRQ/pNMI set");
 
-        // CHR banking for the packed blob -- every bank number here is derived
-        // from demo/chr/chr.h's __addr offsets, so repacking the blob
-        // (demo/chr/config.toml) cannot leave these behind. MMC3 mode 0: R0/R1
-        // are 2 KiB windows at PPU $0000/$0800, R2-R5 are 1 KiB windows at
-        // $1000/$1400/$1800/$1C00, and all six count banks in 1 KiB units.
-        //
-        // R0's one 2 KiB window maps dynamicLevelTiles (VMA $0000) and
-        // staticLevelTiles (VMA $0400) together, which only works because they
-        // are packed back to back -- and only if the pair starts 2 KiB-aligned,
-        // since a 2 KiB window ignores its bank number's low bit.
-        static_assert(mmc3::BankOf<blob::staticLevelTiles::__addr>() ==
-                      mmc3::BankOf<blob::dynamicLevelTiles::__addr>() + 1,
-                      "staticLevelTiles must be packed directly after "
-                      "dynamicLevelTiles: R0 maps the pair as one 2 KiB bank");
-        static_assert(mmc3::BankOf<blob::dynamicLevelTiles::__addr>() % 2 == 0,
-                      "dynamicLevelTiles must start 2 KiB-aligned in the blob: "
-                      "R0 is a 2 KiB window and ignores an odd bank's low bit");
-        mmc3::SwitchCHRBank(mmc3::chr0Control,
-                            mmc3::BankOf<blob::dynamicLevelTiles::__addr>());
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::dynamicLevelTiles)>();
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
+        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::normalSprites)>();
 
-        // ui (VMA $0800) fills the first half of R1's 2 KiB window; the second
-        // half is the blob's zero padding, which nothing addresses.
-        static_assert(mmc3::BankOf<blob::ui::__addr>() % 2 == 0,
-                      "ui must start 2 KiB-aligned in the blob: R1 is a 2 KiB "
+        constexpr u32 padLma = blob::normalSprites::__lma + blob::normalSprites::__size;
+        static_assert(padLma + 2 * mmc3::kChrBankSize <= blob::dynamicLevelTiles::__lma,
+                      "R5/R1 run past normalSprites into the next entry: give "
+                      "PPU $0C00-$0FFF and $1800-$1FFF entries of their own, "
+                      "or re-point them");
+        static_assert(mmc3::BankOf<padLma>() % 2 == 0,
+                      "the padding gap must start 2 KiB-aligned: R1 is a 2 KiB "
                       "window and ignores an odd bank's low bit");
-        mmc3::SwitchCHRBank(mmc3::chr1Control, mmc3::BankOf<blob::ui::__addr>());
-
-        // normalSprites (VMA $1000) is a 2 KiB hunk, so it only reaches R2 and
-        // R3. Nothing in the manifest claims $1800-$1FFF, so R4/R5 continue
-        // straight on into the blob's padding -- deterministic zeros, rather
-        // than whichever bank happened to be selected last. The assert is what
-        // keeps that true: grow normalSprites past 2 KiB, or move an entry down
-        // to meet it, and these two would start aliasing real tile data.
-        constexpr u8 spriteBank = mmc3::BankOf<blob::normalSprites::__addr>();
-        static_assert(mmc3::BankOf<blob::dynamicLevelTiles::__addr>() >= spriteBank + 4,
-                      "R4/R5 run past normalSprites into the next entry: give "
-                      "PPU $1800-$1FFF an entry of its own, or re-point them");
-        mmc3::SwitchCHRBank(mmc3::chr2Control, spriteBank + 0);
-        mmc3::SwitchCHRBank(mmc3::chr3Control, spriteBank + 1);
-        mmc3::SwitchCHRBank(mmc3::chr4Control, spriteBank + 2);
-        mmc3::SwitchCHRBank(mmc3::chr5Control, spriteBank + 3);
-        // MUST be set explicitly, same as EnterLevelSetup's (level.cpp): $A000
-        // is one of the MMC3 registers power-on leaves undefined (see
-        // mmc3.hpp's own comment on why the mapper's ::_reset doesn't seed
-        // it), and title::main is the FIRST code RESET reaches (gameMode
-        // starts at Title). With no explicit write here, every nametable/
-        // attribute write below (::ppu::Flush onward) races an undefined
-        // mirroring arrangement -- fine on hardware/emulators that happen to
-        // power up at 0, corrupted on any that don't (e.g. Mesen's
-        // "Randomize power-on state").
+        mmc3::SwitchCHRBank(mmc3::chr5Control, mmc3::BankOf<padLma>());
+        mmc3::SwitchCHRBank(mmc3::chr1Control, mmc3::BankOf<padLma>());
         mmc3::SetMirroring(false);
         ppu::Flush(blob::ui::hud_whitespace, 0xff);
         ppu::pal::WriteFromBuffer(13, titleScreenColours, 3);
@@ -340,20 +234,8 @@ namespace title {
         DrawLevelPreview();
         log("title::main: after DrawLevelPreview");
 
-        // Every phase of the Options fade, computed once up front from the
-        // same colours DrawLevelPreview just uploaded -- see
-        // ::paletteFadePhases' own comment for why this lives here (title
-        // entry) rather than inside ::main's own input loop.
         BuildPaletteFadePhases();
 
-        // Preloaded once, here, with the rest of the UI -- not drawn later
-        // when Options is actually picked. demo/ui/options.uis now targets
-        // $2800, which under the vertical mirroring just set up is the SAME
-        // physical page as the preview's own nametable -- the rows the
-        // preview scrolls past rather than a separate nametable, so this has
-        // to run AFTER DrawLevelPreview (above), not before, or the
-        // preview's own column writes would overwrite this text right back
-        // out.
         gen::options::Draw_optionsTitle();
         gen::options::Draw_videoOptions();
         gen::options::Draw_reduceFlashesText();
@@ -416,19 +298,11 @@ namespace title {
                     switch (gen::title::TitleOptions_option) {
                         case NewGame:
                         case Continue:
-                            // State first, NMI handler last: the handler reads it.
                             playModeActive = true;
                             pNMI = nmi_handler_drawPlayMode;
                             break;
 
                         case Options:
-                            // No Options screen built yet -- rather than a
-                            // silent no-op, freeze input here for good: same
-                            // state-first-NMI-last ordering as above. Fades
-                            // the non-HUD palette to black before handing off
-                            // to the existing lock/reveal sequence --
-                            // ::paletteFadePhases is already built (::main,
-                            // at title entry), so this just rewinds the index.
                             fadePhase = 0;
                             fadeFrameCounter = 0;
                             optionsLocked = true;
@@ -450,8 +324,6 @@ namespace title {
                     pNMI = nmi_handler_drawMenu;
                 }
             } else if (pressed & input::B && pNMI == nmi_handler_locked) {
-                // Only once the reveal has fully finished (pNMI is the
-                // steady ::nmi_handler_locked, not still mid-reveal).
                 pNMI = nmi_handler_lockAnimReverse;
             }
 
@@ -476,6 +348,7 @@ namespace title {
         SelectorUpdate();
 
         ppu::SetScroll({0, PreviewScrollY()});
+        BankPreviewTiles();
 
         ArmSplitIRQ();
     }
@@ -491,6 +364,7 @@ namespace title {
         QueueSelectorDraw(PlayModeArrowAddr());
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
+        BankPreviewTiles();
         ArmSplitIRQ();
 
         pNMI = nmi_handler;
@@ -503,18 +377,12 @@ namespace title {
         QueueSelectorDraw(TitleArrowAddr());
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
+        BankPreviewTiles();
         ArmSplitIRQ();
 
         pNMI = nmi_handler;
     }
 
-    // Current split position through the reveal animation below, in
-    // SCANLINES (not tile rows like ::SplitRow() -- stepping this one
-    // One luminance step darker: the colour's row/brightness nibble (its top
-    // nibble) drops by 0x10. Once that nibble is already 0 there's no lower
-    // row to drop to, so the colour is pinned at 0x1f (a safe NES black)
-    // instead of underflowing into the next hue's range. Only used by
-    // ::BuildPaletteFadePhases, to fill the table below.
     static u8 FadeStep(const u8 colour) {
         if ((colour & 0xf0) == 0) return 0x1f;
         return static_cast<u8>(colour - 0x10);
@@ -567,29 +435,6 @@ namespace title {
         return fadePhase != 0;
     }
 
-    // Runs ::StepPaletteFade once per vblank until every non-HUD colour has
-    // reached black, then hands off to ::nmi_handler_lockOptions to continue
-    // the existing reveal sequence -- the fade plays out BEFORE the scroll
-    // into the options screen starts. Keeps the scroll at the title screen's
-    // own resting position (X=0, Y=::PreviewScrollY(), same as ::nmi_handler's
-    // every-frame write) for the whole fade: once pNMI points here,
-    // ::nmi_handler itself isn't running any more, so nothing re-arms its
-    // split IRQ, which would otherwise fire once more mid-fade and leave
-    // X-scroll stuck shifted into the menu nametable (::kMenuNT << 3). Y is
-    // deliberately NOT reset to 0 -- that's the preview nametable's own row
-    // 0, where ::DrawLevelPreview writes the coin icon/"Mary" label using the
-    // level's real HUD tiles; that's gameplay furniture that has no business
-    // appearing during this transition.
-    //
-    // ::StepPaletteFade MUST run before ::ppu::SetScroll, not after: $2006
-    // (PPUADDR, which ::ppu::pal::WriteFromBuffer uses) and $2005 (PPUSCROLL)
-    // share the same write-twice toggle/t-register, so a palette write
-    // issued after the scroll write clobbers it with the palette address --
-    // scroll has to be the LAST PPU-address write of the handler.
-    //
-    // ::StepPaletteFade itself only runs once every ::kFadeStepFrames frames
-    // (::fadeFrameCounter, reset in ::main's ::Options case) -- every vblank
-    // would run the whole fade in ::kFadePhaseCount - 1 frames flat.
     static void nmi_handler_fadeToOptions() {
         oam::RefreshSprites(OAMBuffer);
         mmc3::AcknowledgeScanlineIRQ();
@@ -601,18 +446,23 @@ namespace title {
         }
 
         ppu::SetScroll({0, PreviewScrollY()});
+        BankPreviewTiles();
+
+        // Armed, not merely acknowledged. mmc3::AcknowledgeScanlineIRQ is the
+        // DISABLE half -- it clears a pending IRQ and leaves generation off --
+        // so the ack at the top of this handler, with no ScheduleScanlineIRQ to
+        // follow it, used to mean this frame simply had no split: one bank
+        // setting for all 240 lines. That was survivable while $0400 held one
+        // entry; now that staticLevelTiles and ui share the window it is the
+        // visible break when OPTIONS is picked, and specifically a break in the
+        // menu band, because ::kFadeEntries deliberately leaves BG_3 out of the
+        // fade -- the band below the split stays fully lit the whole way down
+        // while BankPreviewTiles has it drawing the preview's tiles.
+        ArmSplitIRQ();
+
         if (!stillFading) pNMI = nmi_handler_lockOptions;
     }
 
-    // One-shot: entered once Options is picked (see ::main). Clears the
-    // title menu's arrow/text (nametable B, $2C00+) -- nothing is drawn in
-    // its place, this deliberately has no Options MENU built yet, just the
-    // screen behind it -- and disables the title menu's own scanline split
-    // for good: demo/ui/options.uis now lives at $2800, the SAME physical
-    // page as the preview's own nametable (nametable A) under the vertical
-    // mirroring ::main sets up, so revealing it is just a matter of
-    // continuing nametable A's own Y-scroll further -- no X-scroll switch,
-    // no split, no IRQ at all. Hands off to the reveal animation below.
     static void nmi_handler_lockOptions() {
         ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
         gen::title::Erase_TitleOptions();
@@ -621,54 +471,51 @@ namespace title {
 
         lockAnimScanline = static_cast<u16>(SplitRow()) << 3;
         ppu::SetScroll({0, PreviewScrollY()});
+        BankPreviewTiles();
+
+        // Same reason as ::nmi_handler_fadeToOptions' arm, and it belongs here
+        // at the end rather than beside the ack above: Erase_TitleOptions runs
+        // a nametable upload this handler cannot afford to have a split land in
+        // the middle of, which is what the ack is for. Arming once those writes
+        // are done keeps the band below the split on ui tiles for this frame
+        // without exposing them.
+        ArmSplitIRQ();
 
         pNMI = nmi_handler_lockAnim;
     }
 
-    // The reveal itself: every frame, the Y scroll bumps one scanline
-    // further into the preview's own nametable -- the exact same Y-wrap
-    // ::nmi_handler already relies on every frame, just walked past its
-    // usual resting point (::SplitRow()) instead of holding there. Runs all
-    // the way down to 0, i.e. ::PreviewScrollYForPixels(0) == one full
-    // nametable height (240): the point where ::ppu::SetScroll's own wrap
-    // case lands on the nametable BELOW the preview's -- a real, distinct
-    // page (this board links four-screen VRAM, ALTERNATIVE_NAMETABLE==1:
-    // see mmc3.cpp), which is where the preloaded Options text actually
-    // lives. Hands off to ::nmi_handler_locked, which just holds the scroll
-    // there.
     static void nmi_handler_lockAnim() {
         oam::RefreshSprites(OAMBuffer);
 
         lockAnimScanline = lockAnimScanline > kScanlinesPerFrame
             ? static_cast<u16>(lockAnimScanline - kScanlinesPerFrame) : 0;
 
+        // ui for the WHOLE frame, and no arm: the band above the split is
+        // mid-scroll between the preview's rows and the options panel's (both
+        // live in the same nametable -- SetMirroring(false) makes options.uis'
+        // nametable 2 a mirror of the preview's 0), so one window cannot serve
+        // both, and ::ApplySplit's scroll is written against the FIXED
+        // ::SplitRow, which is not where this frame's split is. ui is the half
+        // that matters: ::nmi_handler_fadeToOptions has already faded BG_0-BG_2
+        // to black, so the preview rows render black whatever tiles they fetch,
+        // while the options panel is drawn in the one palette the fade skips.
         ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
+        BankMenuTiles();
         UpdateMarySpriteYForPixels(lockAnimScanline);
 
         if (lockAnimScanline == 0) pNMI = nmi_handler_locked;
     }
 
-    // Steady state once the reveal finishes: nothing left to scroll, Y is
-    // just pinned at the nametable-below boundary (::PreviewScrollYForPixels(0),
-    // same value ::nmi_handler_lockAnim's last step already set -- the
-    // preview's own ::UpdateMarySpriteYForPixels(0) already hid her once her
-    // feet scrolled past the top, same as it would on any other frame -- no
-    // special-casing needed here). Sprites still refresh every frame so OAM
-    // doesn't go stale.
     static void nmi_handler_locked() {
         oam::RefreshSprites(OAMBuffer);
         ppu::SetScroll({0, PreviewScrollYForPixels(0)});
+
+        // The options panel is the entire visible frame here, top to bottom,
+        // and nothing re-arms the split -- so one bank setting is both correct
+        // and all there is. See ::nmi_handler_lockAnim.
+        BankMenuTiles();
     }
 
-    // Entered on B, but only once ::main sees pNMI == ::nmi_handler_locked
-    // (the reveal has actually finished, not still mid-animation) -- mirrors
-    // ::nmi_handler_lockAnim exactly, just counting ::lockAnimScanline back
-    // UP from 0 instead of down, so the preview/Options boundary retraces
-    // the same scanline-at-a-time path backward. ::lockAnimScanline is
-    // already 0 (that's how we got to ::nmi_handler_locked in the first
-    // place), so there's no separate one-shot entry step the way
-    // ::nmi_handler_lockOptions is for the forward direction -- ::main just
-    // drops straight into this.
     static void nmi_handler_lockAnimReverse() {
         oam::RefreshSprites(OAMBuffer);
 
@@ -677,20 +524,11 @@ namespace title {
         lockAnimScanline = next < target ? next : target;
 
         if (lockAnimScanline >= target) {
-            // Back to the title menu's own steady split: redraw the labels
-            // the arrow this time (QueueSelectorDraw's clear-then-arrow onto
-            // one tile is the SAME "first-draw indicator" trick ::main's own
-            // initial arrow draw uses -- nothing to clear first, there's no
-            // stale arrow left anywhere on screen to punch a hole in) and
-            // re-arm the split ::nmi_handler relies on every frame. The menu
-            // text itself (BG_3) was never part of the fade, so it's safe to
-            // draw it right away -- only the preview behind it is still
-            // black; ::nmi_handler_fadeFromOptions brings that back up before
-            // handing off to the steady ::nmi_handler.
             gen::title::Draw_TitleOptions();
             QueueSelectorDraw(TitleArrowAddr());
             SelectorUpdate();
             ppu::SetScroll({0, PreviewScrollY()});
+            BankPreviewTiles();
             ArmSplitIRQ();
 
             fadeFrameCounter = 0;
@@ -698,21 +536,15 @@ namespace title {
             return;
         }
 
+        // Unwinding ::nmi_handler_lockAnim, and ui for the same reason: the
+        // fade has not been stepped back in yet (::nmi_handler_fadeFromOptions
+        // does that, after the branch above hands over), so the preview rows
+        // coming back into the top band are still black.
         ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
+        BankMenuTiles();
         UpdateMarySpriteYForPixels(lockAnimScanline);
     }
 
-    // The reverse of ::nmi_handler_fadeToOptions: runs ::StepPaletteFadeIn
-    // once every ::kFadeStepFrames frames until every faded entry is back at
-    // its ::paletteFadeTarget value, then resumes the title menu's ordinary
-    // steady state. Entered once ::nmi_handler_lockAnimReverse's scroll-up
-    // finishes and the menu text is already back on screen -- otherwise
-    // behaves exactly like the steady ::nmi_handler (refresh sprites, update
-    // the selector, hold scroll, re-arm the split) so there's nothing left to
-    // do when it hands off, same ordering reason as ::nmi_handler_fadeToOptions
-    // (palette writes before ::ppu::SetScroll, scroll before ::ArmSplitIRQ --
-    // the latter only touches MMC3 IRQ registers, not the PPU, so it isn't
-    // order-sensitive against the other two).
     static void nmi_handler_fadeFromOptions() {
         oam::RefreshSprites(OAMBuffer);
         SelectorUpdate();
@@ -724,6 +556,7 @@ namespace title {
         }
 
         ppu::SetScroll({0, PreviewScrollY()});
+        BankPreviewTiles();
         ArmSplitIRQ();
 
         if (!stillFading) {
@@ -739,21 +572,17 @@ namespace title {
     }
 
     static void ApplySplit() {
-        // The NES/PC/GX/3DS ports ignore this Y write (a plain mid-frame Y
-        // write is a no-op on real hardware) and the Y counter simply carries
-        // on from the frame's scroll to world row 240, which wraps onto the
-        // menu nametable's row 0. The DS/GBA backends honour the handler's Y
-        // (their gameplay follow camera needs that -- see ApplyHudSplit,
-        // level.cpp), so here it has to name that same row explicitly: 240,
-        // not the split row. See ::SplitYFor for the shared math.
         ppu::SetScroll({static_cast<u16>(kMenuNT << 3), SplitYFor(SplitRow())});
+
+        // After the scroll write, not before: that one is the raster-critical
+        // half of this handler, and two register writes ahead of it would push
+        // it further into the visible line. Nothing below the split fetches
+        // from $0400 until the next scanline starts, so the switch has until
+        // then to land.
+        BankMenuTiles();
     }
 
     void InitTitleScreen() {
-        // Generated by uitk from demo/ui/title.uis (see demo/gen/title/) --
-        // this target's own build-selected variant, reached via the
-        // angle-bracket <title.hpp> above. Every target's GameTitle draw is
-        // now sourced from this one scene, not hand-duplicated here.
         gen::title::Draw_GameTitle();
     }
 
@@ -798,29 +627,7 @@ namespace title {
         UpdateMarySpriteY(SplitRow());
     }
 
-    // Re-derives Mary's screen Y from ::maryGroundNtRow and whatever split
-    // position is live right now -- the scroll-dependent half of the math
-    // DrawLevelPreview used to do once, now shared with
-    // ::nmi_handler_lockAnim (via the Pixels form, for the same one-
-    // scanline-at-a-time reason as ::PreviewScrollYForPixels) so her feet
-    // track the band's rising split instead of staying nailed to its
-    // original position.
-    //
-    // Once the band scrolls far enough that her feet would go above row 0,
-    // she's hidden outright rather than clamped to row 0: ::maryGroundNtRow
-    // is wherever she stands within the ORIGINAL preview band, which is
-    // nowhere near the full scanline range the reveal animation walks
-    // through -- clamping instead of hiding left her pinned at the top edge
-    // for the back half of the animation while the background kept
-    // scrolling out from under her, well past the point her own ground had
-    // scrolled off-screen.
     static void UpdateMarySpriteYForPixels(const u16 splitPixelRow) {
-        // On the NES/PC/etc. the sprite Y is plain screen space, so the band's
-        // scroll is subtracted here. The cropping backends (DS/DSi/GBA) instead
-        // subtract the frame's scroll from EVERY sprite themselves (their
-        // window transform -- see build_sprites in src/nds/video.cpp), so
-        // subtracting it here as well counted it twice and put Mary at the top
-        // of the screen; those targets want the un-scrolled Y.
         const u16 spriteScroll = video::viewport_ty() < 30 ? 0 : PreviewScrollYForPixels(splitPixelRow);
         const i16 rawFeetY    = static_cast<i16>(maryGroundNtRow) - 16 - static_cast<i16>(spriteScroll);
         const auto feetY      = rawFeetY < 0 ? static_cast<oam::oam_t>(0xf0) : static_cast<oam::oam_t>(rawFeetY);

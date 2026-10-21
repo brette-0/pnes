@@ -42,7 +42,13 @@ mmc3::Register<3> mmc3::chr3Control;
 mmc3::Register<4> mmc3::chr4Control;
 mmc3::Register<5> mmc3::chr5Control;
 
-bool mmc3::shape = true;   // hardware's mode 0 (large windows at front) -- see mmc3.hpp's own comment.
+// D7 = 0 at boot: the chip's own power-on arrangement, and a placeholder
+// rather than a claim -- nothing has defined the mode until a bank write
+// does, which ::NotifyModeWrite then records. Deliberately NOT seeded from
+// ::mmc3::kChrMode: that is only the default a CALL takes when it does not
+// name one, and pre-agreeing with it here would mask a build whose first
+// bank write never happens.
+bool mmc3::shape = true;
 u8   mmc3::banks[6] = {};
 
 void mmc3::NotifyCHRWrite(const u8 index, const u8 bank) {
@@ -50,8 +56,12 @@ void mmc3::NotifyCHRWrite(const u8 index, const u8 bank) {
     ++ppu::chrGeneration;
 }
 
-void mmc3::SetCHRMode(const bool largeWindowsAtFront) {
-    shape = largeWindowsAtFront;
+void mmc3::NotifyModeWrite(const chrMode mode) {
+    const bool coarseFirst = (mode == chrMode::coarseFirst);
+    if (coarseFirst == shape) return;   // nothing moved; don't invalidate tiles
+
+    shape = coarseFirst;
+    ++ppu::chrGeneration;
 }
 
 void mmc3::SetMirroring(const bool horizontal) {
@@ -86,17 +96,27 @@ void mmc3::AcknowledgeScanlineIRQ() {
 /**
  * @brief Resolves @p tileVMA through the currently-selected CHR banks.
  *
- * MMC3 CHR windows, mode 0 (::shape true, hardware's own default -- see
- * mmc3.hpp's file comment: PRG mode 0 / CHR mode 0 is the only combination
- * the NES side of this module ever uses):
+ * Both arrangements are live here, selected by ::shape, which tracks the D7
+ * of whatever was last written to $8000 (::NotifyModeWrite) -- the A12
+ * inversion is a real, switchable mechanic off-NES, not a fixed build
+ * setting, so a game that banks under one ::mmc3::chrMode in one scene and
+ * the other in the next resolves correctly in both.
+ *
+ * Mode 1, D7 = 1, ::shape false (::mmc3::chrMode::fineFirst):
+ *
+ *   $0000-$03FF  R2 (1 KiB)   $1000-$17FF  R0 (2 KiB)
+ *   $0400-$07FF  R3 (1 KiB)   $1800-$1FFF  R1 (2 KiB)
+ *   $0800-$0BFF  R4 (1 KiB)
+ *   $0C00-$0FFF  R5 (1 KiB)
+ *
+ * Mode 0, D7 = 0, ::shape true (::mmc3::chrMode::coarseFirst), the chip's
+ * own power-on arrangement and this file's boot value -- the two halves
+ * swapped:
  *
  *   $0000-$07FF  R0 (2 KiB)   $1000-$13FF  R2 (1 KiB)
  *   $0800-$0FFF  R1 (2 KiB)   $1400-$17FF  R3 (1 KiB)
  *                             $1800-$1BFF  R4 (1 KiB)
  *                             $1C00-$1FFF  R5 (1 KiB)
- *
- * Mode 1 (::shape false) swaps the two halves: R2-R5 at $0000-$0FFF (1 KiB
- * each), R0/R1 at $1000-$1FFF (2 KiB each).
  *
  * Bank numbers are ALL in 1 KiB units, including R0/R1: real MMC3 silicon
  * counts every CHR bank register in 1 KiB units regardless of how wide the

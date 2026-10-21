@@ -62,20 +62,52 @@ decalred with:
 Character ROM
 -------------
 
-``platform-nes`` promotes symbolic referencable assets, it does this through compile time technology.
+``platform-nes`` promotes symbolic referencable assets. The CHR ROM layout is declared up front in a
+``config.toml`` and packed by ``blobman`` (``tools/blobman``) into one padded blob, beside which it emits a
+header of symbolic tile ids:
 
-.. code-block:: c
-    CHARACTER_ROM_BEGIN(chrSprite0)
-    #embed "../../chr/sprites/sprite0.chr"
-    CHARACTER_ROM_END(chrSprite0, CHR_ORIGIN); // include one asset
+.. code-block:: toml
 
-    CHARACTER_ROM_BEGIN(chrMushletStanding)
-    #embed "../../chr/sprites/enemies/mushlet/standing.chr"
-    CHARACTER_ROM_END_PAD_TO(chrMushletStanding, chrWand, CHR_TILES_PER_TABLE); // to pad
+    [manifest]
+    size            = 0x4000    # 16KiB CHR
 
-    CHARACTER_ROM_BEGIN(chrCoin)
-    #embed "../../chr/tiles/dynamic/coin.chr"
-    CHARACTER_ROM_END_FINAL(chrCoin, chrHUDWhitespace, 0x2000); // to finish
+    [normalSprites]
+    LMA             = 0x0000    # where it is packed in the blob
+    VMA             = 0x1000    # where the PPU sees it
+    size            = 0x0800
+    includes        = [
+        "./assets/sprites/enemies/mushlet/mushlet_standing.chr",
+        "./assets/sprites/wand.chr"
+    ]
+
+.. code-block:: cp
+
+    namespace blob {
+        namespace normalSprites {
+            constexpr unsigned char mushlet_standing = 0x00;
+            constexpr unsigned char wand             = 0x0c;
+            constexpr unsigned long __lma            = 0x0000; // used for BankOf()
+            constexpr unsigned long __vma            = 0x1000; // where the ppu sees the entry
+            constexpr unsigned long __size           = 0x0800; // bytes the entry occupies
+        }
+    }
+
+Those ids are ordinary ``constexpr`` constants, so they work in compile time tables. Alongside them each entry
+carries its own placement -- ``__lma`` where it was packed, ``__vma`` where the PPU sees it, ``__size`` how far
+it reaches -- which is everything a mapper needs to bank it in. The generated header also defines
+``GetCharacterEntryInformation(entry)``, packing those three in the order ``SwitchCharactersBy`` takes them, so
+banking an entry names it once:
+
+.. code-block:: cp
+
+    mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
+
+Every argument there is a compile time constant, so that call folds down to nothing but the mapper's own
+register writes -- see ``mmc3::SwitchCharactersBy`` (or ``VRC1::SwitchCharactersBy``) for which windows an
+entry's ``__vma``/``__size`` reach, and what it deliberately does not do.
+
+Getting the blob into the ROM is one translation unit that ``#embed``\ s it into the CHR section and states its
+size -- see ``demo/src/graphics/chr_rom.cpp``.
 
 Boilerplate
 -----------

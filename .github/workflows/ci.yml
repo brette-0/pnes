@@ -43,9 +43,11 @@
 #
 #   blobman-check (below) gates nothing and publishes nothing: it rebuilds the
 #   CHR blob from demo/chr/config.toml with tools/blobman and diffs the result
-#   against the committed demo/chr/chr.bin and chr.h. Repacking is a manual
-#   step, so this is what catches the committed pair drifting away from the
-#   manifest or the art under demo/chr/assets/. Locally:
+#   against the committed demo/chr/chr.bin and chr.h. A local build repacks
+#   that pair itself (the root CMakeLists.txt runs blobman at configure time),
+#   but committing the result is still manual, so this is what catches the
+#   committed pair drifting away from the manifest or the art under
+#   demo/chr/assets/. Locally:
 #
 #       act -j blobman-check
 #       cd demo/chr && blobman -i config.toml -o chr.bin -l cpp -v

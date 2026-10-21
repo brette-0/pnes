@@ -14,8 +14,8 @@ includes        = [
 
 [dynamicLevelTiles]
 LMA             = 0x1000    # dynamic tiles begin
-VMA             = 0x0000    # dynamic tiles $8000:d7=0,
-size            = 0x0400    # 1KiB sprite hunk
+VMA             = 0x0000    # dynamic tiles
+size            = 0x0400    # 1KiB tile hunk
 includes        = [
     "./assets/tiles/dynamic/box.chr",
     "./assets/tiles/dynamic/coin.chr",
@@ -23,9 +23,9 @@ includes        = [
 ]
 
 [staticLevelTiles]
-LMA             = 0x1400    # dynamic tiles begin
-VMA             = 0x0400    # dynamic tiles $8000:d7=0,
-size            = 0x0400    # 1KiB sprite hunk
+LMA             = 0x1400    # static tiles begin
+VMA             = 0x0400    # static tiles
+size            = 0x0400    # 1KiB tile hunk
 includes        = [
     "./assets/tiles/static/air.chr",
     "./assets/tiles/static/bush.chr",
@@ -36,9 +36,9 @@ includes        = [
 ]
 
 [ui]
-LMA             = 0x1800    # dynamic tiles begin
-VMA             = 0x0800    # dynamic tiles $8000:d7=0,
-size            = 0x0400    # 1KiB sprite hunk
+LMA             = 0x1800    # ui begin
+VMA             = 0x400     # ui tiles
+size            = 0x0400    # 1KiB tile hunk
 includes        = [
     "./assets/tiles/static/ui/arrow.chr",
     "./assets/tiles/static/ui/empty.chr",

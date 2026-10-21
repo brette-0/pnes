@@ -2,9 +2,14 @@
 # image (demo/chr/chr.bin) from the layout in demo/chr/config.toml, and writes
 # the symbolic tile ids beside it (demo/chr/chr.h).
 #
-# Both outputs are COMMITTED, and nothing in the main build runs this tool --
-# repacking is a manual step. CI's blobman-check job is what catches the
-# committed pair drifting away from the manifest or the art.
+# Both outputs are COMMITTED, and the main build also repacks them: the root
+# CMakeLists.txt configures and builds this directory through a nested `cmake`
+# of its own, then runs the tool, before anything compiles against the pair
+# (search that file for "blobman --"). demo/chr/config.toml and the art under
+# demo/chr/assets/ are CMAKE_CONFIGURE_DEPENDS there, so editing either
+# repacks on the next build. CI's blobman-check job is what catches the
+# COMMITTED pair drifting away from the manifest or the art -- the local
+# repack updates the working tree, it cannot commit for you.
 #
 # 3.18 -- the lowest minimum anything in this project declares (see
 # tools/luaLogBuilder and tools/measure_sections.cmake). Nothing here uses a

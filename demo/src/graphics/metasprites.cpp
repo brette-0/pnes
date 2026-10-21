@@ -8,8 +8,9 @@
 // (tile & 0xFE) + 1, both fetched from that same half) -- so standing.chr is
 // laid out [topleft, bottomleft, topright, bottomright] to match, and every
 // tile id here is forced odd (|1) to select $1000, where the MMC3 CHR banks
-// actually put this sprite data (see the chr2Control-chr5Control block in
-// title.cpp/level.cpp, which banks normalSprites in there).
+// actually put this sprite data -- under CHR mode 1 that whole half is R0's
+// single 2 KiB window (see the SwitchCharactersBy block in title.cpp/level.cpp,
+// which banks normalSprites in there).
 // player_standing lands on an even tile in the packed blob (see the entry
 // order in demo/chr/config.toml) so `base & 0xFE == base`, keeping the |1
 // from shifting the pair's top tile.

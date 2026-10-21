@@ -122,7 +122,10 @@ AI static inline u8 BootBank(const char *symbol) {
  *
  * R0-R5 and $A000 are deliberately NOT touched: CHR banks and mirroring are
  * per-game choices, not mapper bootstrap facts, and getting them wrong is
- * cosmetic rather than fatal. A project sets them in its own RESET body.
+ * cosmetic rather than fatal. A project sets them in its own RESET body --
+ * which is also where the CHR mode bit that decides what R0-R5 even refer to
+ * gets its real value, since it travels in the same byte as every bank
+ * write.
  *
  * With no MMC3_BANKED() domain in use this reconstructs one flat $8000-$FFFF
  * image from the ROM's top four banks, at any size from 32 KiB to MMC3's
@@ -137,8 +140,14 @@ extern "C" FIXED void _reset() {
     // R6/R7 -> the resident image's own first two banks ($8000-$9FFF,
     // $A000-$BFFF). See ::__mmc3_boot_bank_window1: these are the ROM's top
     // banks, not 0/1, on anything larger than the 32 KiB minimum.
-    tech::poke(0x8000, 6); tech::poke(0x8001, BootBank(__mmc3_boot_bank_window1));
-    tech::poke(0x8000, 7); tech::poke(0x8001, BootBank(__mmc3_boot_bank_window2));
+    // kChrMode rides along for consistency with every other $8000 write
+    // (::mmc3::Detail::kModeBits), not because anything here needs it: the
+    // CHR A12-invert bit shares this byte with the register select, so it is
+    // re-sent by every ordinary CHR/PRG bank write anyway, and R0-R5 are
+    // undefined until a game sets them regardless (see above). A bare 6/7
+    // would work just as well.
+    tech::poke(0x8000, static_cast<u8>(mmc3::kChrMode) | 6); tech::poke(0x8001, BootBank(__mmc3_boot_bank_window1));
+    tech::poke(0x8000, static_cast<u8>(mmc3::kChrMode) | 7); tech::poke(0x8001, BootBank(__mmc3_boot_bank_window2));
     _start();
 }
 

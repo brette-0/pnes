@@ -11,9 +11,9 @@
  *
  * Two areas need care:
  *
- * - **CHR ROM linkage.** ::CHARACTER_ROM places tile data in a
- *   platform-specific section so the linker lands it on the PPU's 8 KB
- *   boundary; ::CHARACTER_ROM_ALIGN forces that explicitly.
+ * - **CHR ROM linkage.** The CHR image is placed in the
+ *   platform-specific ::_CHR_SECTION so the linker lands it on the PPU's
+ *   8 KB boundary (the blob itself is packed by tools/blobman).
  * - **Video-memory writes.** Poking the PPU outside VBlank corrupts the
  *   display; the ::VRAM block toggles ::PPUMASK around its body.
  */
@@ -64,35 +64,16 @@ extern const u16 PatternTables;
 #define OAM_SPRITES 64
 
 /* ------------------------------------------------------------------------ *
- *  Symbolic CHR tiles (#embed)                                             *
+ *  CHR ROM placement                                                       *
  *                                                                          *
- *  Unlike ::CHARACTER_ROM, which `.incbin`s a blob and exposes only its    *
- *  link-time start/end, these `#embed` each `.chr` file so its size is a   *
- *  compile-time constant. From that comes a `<name>_tile` constant -- the  *
- *  blob's base tile index, byte offset / 16 -- at zero runtime cost. Tile  *
- *  ids are never hand-assigned and work inside `constexpr` tables.         *
- *                                                                          *
- *  Authoring (one ordered list, e.g. in a `chr.hpp` shared header):        *
- *                                                                          *
- *      CHARACTER_ROM_BEGIN(chrSprite0)                                     *
- *      #embed "chr/sprites/sprite0.chr"                                   *
- *      CHARACTER_ROM_END(chrSprite0, CHR_ORIGIN);   // first: chains origin *
- *                                                                          *
- *      CHARACTER_ROM_BEGIN(chrBush)                                        *
- *      #embed "chr/tiles/bush.chr"                                         *
- *      CHARACTER_ROM_END(chrBush, chrSprite0);      // prev = line above   *
- *      ...                                                                 *
- *      CHARACTER_ROM_BEGIN(chrLast)                                        *
- *      #embed "chr/tiles/last.chr"                                         *
- *      CHARACTER_ROM_END_FINAL(chrLast, chrBush, 0x2000); // last: + image *
- *                                                                          *
- *  `#include` the list wherever you use tile ids. CHARACTER_ROM_END_FINAL  *
- *  emits the padded CHR image as an `inline` object, so the linker folds   *
- *  it to one copy however many TUs include the list. `#embed` cannot come  *
- *  from a macro, so that line is written literally between BEGIN/END.      *
- *                                                                          *
- *  Byte order (hence every `_tile`) follows the `prev` chain, not source   *
- *  position, so ids and placement can never disagree.                      *
+ *  The cartridge's CHR ROM is a single image object placed in the CHR      *
+ *  section below. Its layout is declared in a blobman config (see          *
+ *  tools/blobman and demo/chr/config.toml): blobman packs the whole blob,  *
+ *  already padded to the full image size, and emits a header of symbolic   *
+ *  tile ids beside it, so tile ids are never hand-assigned and are usable  *
+ *  in `constexpr` tables. One TU `#embed`s that blob into                  *
+ *  ::_CHR_SECTION and defines ::ppu::chrRomBytes -- see                    *
+ *  demo/src/graphics/chr_rom.cpp.                                          *
  * ------------------------------------------------------------------------ */
 
 /** @brief Platform CHR section name, for `[[gnu::section]]` placement. */
@@ -105,188 +86,6 @@ extern const u16 PatternTables;
 #else
   #define _CHR_SECTION "chr_rom"
 #endif
-
-namespace nes_chr {
-  /** @brief Copy a `#embed` staging buffer into a sized, constexpr-friendly
-   *  array of bytes. The source is `int` because the two compilers disagree on
-   *  the element type a `#embed` expands to: GCC yields ints in [0,255], while
-   *  Clang yields char-typed values (0xFF -> -1 on a signed-char target). No
-   *  8-bit type holds that combined [-128,255] range without a braced-init
-   *  narrowing error, so the staging buffer is `int`; the byte value is recovered
-   *  here with an explicit cast and every downstream type (accum, the CHR image,
-   *  the `_tile` ids) stays `u8`. The buffer is internal-linkage constexpr,
-   *  consumed purely at compile time, so its width carries no runtime cost. */
-  template <size_t N>
-  constexpr std::array<u8, N> make(const int (&a)[N]) {
-    std::array<u8, N> r{};
-    for (size_t i = 0; i < N; ++i) r[i] = static_cast<u8>(a[i]);
-    return r;
-  }
-  /** @brief Concatenate two byte blocks at compile time (order preserved). */
-  template <size_t A, size_t B>
-  constexpr std::array<u8, A + B> cat(const std::array<u8, A>& x,
-                                      const std::array<u8, B>& y) {
-    std::array<u8, A + B> r{};
-    for (size_t i = 0; i < A; ++i) r[i]     = x[i];
-    for (size_t i = 0; i < B; ++i) r[A + i] = y[i];
-    return r;
-  }
-  /** @brief Right-pad a byte block with zeros to a fixed CHR-image size. */
-  template <size_t Total, size_t N>
-  constexpr std::array<u8, Total> pad(const std::array<u8, N>& s) {
-    static_assert(N <= Total, "CHR tile data exceeds the CHR ROM image size");
-    std::array<u8, Total> r{};
-    for (size_t i = 0; i < N; ++i) r[i] = s[i];
-    return r;
-  }
-}   // namespace nes_chr
-
-/** @brief Chain anchor: the first blob's `prev`. Resolves to tile 0. */
-constexpr u8 CHR_ORIGIN_tile   = 0;
-constexpr u8 CHR_ORIGIN_ntiles = 0;
-constexpr std::array<u8, 0> CHR_ORIGIN_accum{};
-
-/** @brief CHR tiles per 4 KB PPU pattern table ($1000 bytes / 16). The boundary
- *         between the sprite table ($0000) and the background table ($1000). */
-constexpr unsigned CHR_TILES_PER_TABLE = 256;
-
-// The running placement-concat feeds the final padded image. It is built in
-// every TU that includes the list, but is internal-linkage constexpr (consumed
-// purely at compile time), so it never reaches any object file.
-#define _CHR_PLACE(name, prev)                                         \
-  constexpr auto name##_accum =                                        \
-      nes_chr::cat(prev##_accum, nes_chr::make(name##_raw));
-
-/** @brief Opens a `#embed` CHR blob named @p name (followed by a literal
- *         `#embed "path"` line, then ::CHARACTER_ROM_END). */
-#define CHARACTER_ROM_BEGIN(name) constexpr int name##_raw[] = {
-
-/** @brief Closes a `#embed` CHR blob and derives `<name>_tile` /
- *         `<name>_ntiles`. @p prev is the blob declared immediately before
- *         (or ::CHR_ORIGIN for the first), giving the byte/id ordering. */
-#define CHARACTER_ROM_END(name, prev)                                  \
-  };                                                                   \
-  constexpr u8 name##_tile   = (u8)(prev##_tile + prev##_ntiles);      \
-  constexpr u8 name##_ntiles =                                         \
-      (u8)(sizeof(name##_raw) / sizeof(name##_raw[0]) / 16);           \
-  _CHR_PLACE(name, prev)
-
-/**
- * @brief Insert zero-fill into the CHR chain so the *next* blob begins at tile
- *        index @p to_tile -- e.g. align background graphics to the $1000
- *        pattern-table boundary while sprites stay in pattern table 0.
- *
- * The PPU uses two independent 4 KB pattern tables, selected by PPUCTRL. A blob
- * at tile 256 lives at $1000 and is addressed as PT-relative tile 0 -- exactly
- * what its `<name>_tile` holds, since these ids are `u8` and wrap at the table
- * boundary. So a pad keeps every downstream `_tile` correct for free.
- *
- * Defines the usual `_tile`/`_ntiles`/`_accum`, so the next blob names this pad
- * as its @p prev -- hence the otherwise-unread name. Prefer
- * ::CHARACTER_ROM_END_PAD_TO when the gap follows a blob you are closing; use
- * this when it does not:
- *
- *      CHARACTER_ROM_PAD_TO(chrBgGap, chrPrev, CHR_TILES_PER_TABLE);
- *      CHARACTER_ROM_BEGIN(chrBush)                       // first BG tile
- *      #embed "..."
- *      CHARACTER_ROM_END(chrBush, chrBgGap);
- *
- * @param name    Identifier for this padding link (any unused name).
- * @param prev    The blob declared immediately before.
- * @param to_tile Tile index the next blob should start at. Must be within one
- *                table (<= 256 tiles) of the current position.
- */
-#define CHARACTER_ROM_PAD_TO(name, prev, to_tile)                      \
-  constexpr u8  name##_tile      = (u8)(prev##_tile + prev##_ntiles);  \
-  constexpr int name##_pad_tiles = (int)(to_tile)                      \
-                                 - (int)(prev##_tile + prev##_ntiles); \
-  static_assert(name##_pad_tiles >= 0,                                 \
-      "CHARACTER_ROM_PAD: data before the pad already passes to_tile");\
-  static_assert(name##_pad_tiles <= (int)CHR_TILES_PER_TABLE,          \
-      "CHARACTER_ROM_PAD: gap exceeds one pattern table");             \
-  constexpr u8  name##_ntiles    = (u8)name##_pad_tiles;               \
-  constexpr auto name##_accum    =                                     \
-      nes_chr::cat(prev##_accum,                                       \
-                   std::array<u8, (size_t)name##_pad_tiles * 16>{});
-
-/**
- * @brief Like ::CHARACTER_ROM_END, but rounds @p name's own end up to tile
- *        index @p to_tile with zero-fill instead of stopping where the
- *        `#embed`ed data ends.
- *
- * Use instead of ::CHARACTER_ROM_END plus a standalone ::CHARACTER_ROM_PAD_TO
- * when the gap follows the blob being closed -- the common case. The pad becomes
- * part of @p name, so the next blob names @p name as its `prev` like any other
- * link, with no throwaway identifier:
- *
- *      CHARACTER_ROM_END_PAD_TO(chrLastSprite, chrPrev,
- *                                CHR_TILES_PER_TABLE);   // last sprite
- *      CHARACTER_ROM_BEGIN(chrBush)                       // first BG tile
- *      #embed "..."
- *      CHARACTER_ROM_END(chrBush, chrLastSprite);
- *
- * @param name    This blob's identifier (as with ::CHARACTER_ROM_END).
- * @param prev    The blob declared immediately before (or ::CHR_ORIGIN).
- * @param to_tile Tile index @p name should end at (i.e. the next blob's
- *                start). Must be within one table (<= 256 tiles) of where
- *                the `#embed`ed data would otherwise end.
- */
-#define CHARACTER_ROM_END_PAD_TO(name, prev, to_tile)                  \
-  };                                                                    \
-  constexpr u8  name##_tile       = (u8)(prev##_tile + prev##_ntiles); \
-  constexpr u8  name##_raw_ntiles =                                    \
-      (u8)(sizeof(name##_raw) / sizeof(name##_raw[0]) / 16);           \
-  constexpr int name##_pad_tiles  = (int)(to_tile)                     \
-                          - (int)(name##_tile + name##_raw_ntiles);    \
-  static_assert(name##_pad_tiles >= 0,                                 \
-      "CHARACTER_ROM_END_PAD_TO: blob already passes to_tile");        \
-  static_assert(name##_pad_tiles <= (int)CHR_TILES_PER_TABLE,          \
-      "CHARACTER_ROM_END_PAD_TO: gap exceeds one pattern table");      \
-  constexpr u8  name##_ntiles     =                                    \
-      (u8)(name##_raw_ntiles + name##_pad_tiles);                      \
-  constexpr auto name##_accum     =                                    \
-      nes_chr::cat(nes_chr::cat(prev##_accum, nes_chr::make(name##_raw)), \
-                   std::array<u8, (size_t)name##_pad_tiles * 16>{});
-
-/* Materialize the padded CHR ROM image from a blob's accumulation (the whole
- * chain) and place it in the CHR section. Internal helper for
- * ::CHARACTER_ROM_END_FINAL -- not for direct use.
- *
- * `inline` gives the image external linkage with COMDAT (linkonce_odr) folding:
- * any number of TUs may include the blob list, yet the linker keeps exactly one
- * copy of the byte-identical image -- so there is no dedicated emit TU and no
- * magic define. The object name is fixed (never supplied by the caller), so a
- * second CHARACTER_ROM_END_FINAL in the SAME TU is still a redefinition error,
- * enforcing "one cartridge, one CHR ROM image". (Across TUs the lists are the
- * same header, hence ODR-identical, so folding is well-defined.) */
-#define _CHR_EMIT_IMAGE(name, total_bytes)                             \
-  [[gnu::section(_CHR_SECTION), gnu::used, gnu::retain]]               \
-  inline constexpr auto chr_rom_image = nes_chr::pad<total_bytes>(name##_accum); \
-  [[gnu::used, gnu::retain]]                                          \
-  inline constexpr unsigned ppu::chrRomBytes = (total_bytes)
-
-/**
- * @brief Close the FINAL blob in the chain and, in the emitting TU, emit the
- *        whole cartridge's CHR ROM image.
- *
- * Use in place of ::CHARACTER_ROM_END for the last blob: does everything that
- * does, then materializes the padded CHR image from the whole chain's
- * accumulation into the CHR section.
- *
- * @p total_bytes is the ENTIRE CHR ROM, not the 8 KB the PPU sees at once -- the
- * mapper banks windows of it into $0000-$1FFF. No default; omitting it is a
- * preprocessor error.
- *
- * The image object is named internally, so a second CHARACTER_ROM_END_FINAL in
- * one TU is a redefinition error: one CHR image, enforced by the compiler.
- *
- * @param name        This (final) blob's identifier.
- * @param prev        The blob declared immediately before (or ::CHR_ORIGIN).
- * @param total_bytes Total CHR ROM size in bytes (required; no default).
- */
-#define CHARACTER_ROM_END_FINAL(name, prev, total_bytes)             \
-  CHARACTER_ROM_END(name, prev)                                      \
-  _CHR_EMIT_IMAGE(name, total_bytes)
 
 #ifndef TARGET_NES
   #if defined(_WIN32)
@@ -401,14 +200,13 @@ namespace oam {
 
 namespace ppu {
     /**
-     * @brief Total bytes of the embedded flat CHR ROM image (the same
-     *        @p total_bytes ::CHARACTER_ROM_END_FINAL pads it to) -- defined
-     *        by that macro alongside the image itself, so it always matches
-     *        exactly what's actually embedded, on every target.
+     * @brief Total bytes of the embedded flat CHR ROM image -- defined by the
+     *        TU that embeds the image, alongside the image itself, so it
+     *        always matches exactly what's actually embedded, on every
+     *        target.
      *
-     * Declared unconditionally, since ::CHARACTER_ROM_END_FINAL is called on
-     * every target and a macro cannot branch on TARGET_NES -- so the symbol
-     * exists on NES too, simply unused. Off-NES tile-address translators wrap
+     * Defined unconditionally, so the symbol exists on NES too, simply
+     * unused. Off-NES tile-address translators wrap
      * their resolved offset against this, so a bank register addressing past
      * what the build embeds cannot read out of bounds: the software
      * counterpart to a smaller CHR chip's address pins aliasing.

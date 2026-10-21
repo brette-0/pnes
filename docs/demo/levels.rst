@@ -25,7 +25,9 @@ The graphical tile data is symbolically referenced from the CHR blob's generated
  namespace blob {
      namespace staticLevelTiles {
          constexpr unsigned char terrain = 0x51;
-         constexpr unsigned long __addr  = 0x1400; // used for BankOf()
+         constexpr unsigned long __lma   = 0x1400; // used for BankOf()
+         constexpr unsigned long __vma   = 0x0400; // where the ppu sees the entry
+         constexpr unsigned long __size  = 0x0400; // bytes the entry occupies
      }
  }
 

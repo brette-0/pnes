@@ -346,6 +346,48 @@ enable_language(CXX)
 # the host values the uitk swap leaves behind.
 set(_MOS_ENV_CXX "$ENV{CXX}")
 set(_MOS_ENV_CC "$ENV{CC}")
+
+# What every nested host-tool `cmake` below (tools/uitk, tools/blobman) must be
+# told explicitly, because a subprocess inherits NONE of it: a bare
+# `cmake -S <tool> -B <dir>` picks CMake's own built-in default generator, which
+# on any Unix host is "Unix Makefiles" -- regardless of this build being
+# configured with Ninja. On a machine (or Docker image) that has ninja but no
+# make, that nested configure dies with
+#
+#     CMake Error: CMake was unable to find a build program corresponding to
+#     "Unix Makefiles".  CMAKE_MAKE_PROGRAM is not set.
+#     CMake Error: CMAKE_CXX_COMPILER not set, after EnableLanguage
+#
+# (the second line is just the first one cascading -- no build tool means no
+# compiler check). Handing the nested configure this build's OWN generator, and
+# the program it drives, removes the guess entirely: whatever built this project
+# is by definition present. CMAKE_MAKE_PROGRAM is only forwarded when CMake
+# actually resolved one, so an unset cache entry is left for the nested
+# configure to resolve for itself rather than being pinned to an empty string.
+set(NESTED_HOST_CMAKE_ARGS -G "${CMAKE_GENERATOR}")
+if(CMAKE_MAKE_PROGRAM)
+    list(APPEND NESTED_HOST_CMAKE_ARGS -DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM})
+endif()
+
+# Pinning the generator above has one consequence worth handling here rather
+# than in an error message: CMake refuses to reconfigure an existing build
+# directory under a different generator than the one that created it
+# ("does not match the generator used previously"). Any nested build dir left
+# behind by an earlier configure of this project predates that pin and is
+# therefore on the default generator, so it would now fail permanently until
+# someone deleted it by hand. Drop the stale cache instead -- these are
+# disposable host-tool build trees, nothing in them is worth preserving.
+macro(clear_nested_build_dir_on_generator_change dir)
+    if(EXISTS "${dir}/CMakeCache.txt")
+        file(STRINGS "${dir}/CMakeCache.txt" _NESTED_CACHED_GENERATOR
+             REGEX "^CMAKE_GENERATOR:INTERNAL=")
+        if(NOT _NESTED_CACHED_GENERATOR STREQUAL
+           "CMAKE_GENERATOR:INTERNAL=${CMAKE_GENERATOR}")
+            file(REMOVE_RECURSE "${dir}")
+        endif()
+        unset(_NESTED_CACHED_GENERATOR)
+    endif()
+endmacro()
 # On nes/nes_pal (and any other bare-metal preset whose toolchain file sets
 # CMAKE_SYSTEM_NAME to a non-host value, e.g. ps2/gc/wii/3ds), that value is
 # already latched in by enable_language(CXX) above by the time find_package
@@ -391,8 +433,10 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
         unset(ENV{CC})
     endif()
 
+    clear_nested_build_dir_on_generator_change(${CMAKE_BINARY_DIR}/uitk-build)
     execute_process(
             COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tools/uitk -B ${CMAKE_BINARY_DIR}/uitk-build
+                    ${NESTED_HOST_CMAKE_ARGS}
             RESULT_VARIABLE UITK_CONFIGURE_RESULT)
     if(NOT UITK_CONFIGURE_RESULT EQUAL 0)
         message(FATAL_ERROR "uitk: failed to configure tools/uitk (see output above).")
@@ -454,6 +498,175 @@ else()
         "this configure step can generate them from demo/ui/*.uis, or "
         "populate demo/gen/ yourself first (e.g. download codegen-check's "
         "demo-gen CI artifact).")
+endif()
+
+# ----------------------------------------------------------------------
+# blobman -- repacks demo/chr/chr.bin (the cartridge's single CHR ROM image)
+# and demo/chr/chr.h (the symbolic tile ids beside it) from the layout in
+# demo/chr/config.toml, by building and running tools/blobman.
+#
+# Runs here, at CONFIGURE time, for the same reason the uitk-export step above
+# does: the pair has to be current BEFORE anything compiles against it.
+# demo/chr/config.toml is listed in CMAKE_CONFIGURE_DEPENDS below, together
+# with blobman's own sources and every .chr under demo/chr/assets/, so editing
+# the manifest or any piece of art is treated exactly like editing code -- a
+# plain `cmake --build <builddir>` reconfigures, repacks, and then rebuilds
+# whatever that touched. chr.h is an ordinary header, so the compiler's own
+# depfiles pick up its dependents; chr.bin is reached by #embed from
+# demo/src/graphics/chr_rom.cpp, which each TARGET_PLATFORM branch below
+# already pins with OBJECT_DEPENDS.
+#
+# Unlike demo/gen/, both outputs are COMMITTED -- so there is always something
+# to fall back to, and a host that cannot build blobman at all (no network for
+# toml++, no compiler) is a STATUS message and the committed pair, not a
+# configure failure. CI's blobman-check job is what proves the committed pair
+# still matches the manifest and the art.
+#
+# Built via its own nested `cmake` invocation rather than add_subdirectory,
+# for all the reasons spelled out on the uitk block above -- chiefly that a
+# nested subprocess never inherits CMAKE_TOOLCHAIN_FILE, so blobman always
+# builds as the host tool it is even when this build targets nes/nes_pal. The
+# CXX/CC swap around it is that same block's swap, for that same reason: see
+# the comments on _HOST_ENV_CXX / _MOS_ENV_CXX above.
+file(GLOB_RECURSE BLOBMAN_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tools/blobman/*.cpp)
+file(GLOB_RECURSE BLOBMAN_ART CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/chr/assets/*.chr)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             ${CMAKE_SOURCE_DIR}/demo/chr/config.toml
+             ${BLOBMAN_ART}
+             ${BLOBMAN_SOURCES}
+             ${CMAKE_SOURCE_DIR}/tools/blobman/CMakeLists.txt)
+
+# Is there a HOST compiler to build blobman with at all? Asked here, before the
+# nested configure, because the answer is legitimately "no" on some of the
+# cross-build images: docker/Dockerfile.ps2 is Alpine with the prebuilt MIPS
+# EE/IOP toolchain and NOTHING else -- no build-base, so no c++/g++/clang++ on
+# PATH, only mips64r5900el-ps2-elf-g++ and friends. Letting the nested cmake
+# discover that for itself works (the fallback below catches it either way), but
+# it costs a wasted configure and spills
+#
+#     CMake Error at CMakeLists.txt:18 (project):
+#       No CMAKE_CXX_COMPILER could be found.
+#
+# into the log of a build that is actually fine -- an error that reads like a
+# broken PS2 toolchain while being nothing of the sort. Probing first turns that
+# into the one STATUS line further down that says what really happened.
+#
+# $ENV{CXX} wins when the invoking shell set it, matching what the nested
+# configure would honor anyway; otherwise this is the same c++/g++/clang++
+# search CMake itself would run. NO_CMAKE_FIND_ROOT_PATH because a cross
+# toolchain file may have set CMAKE_FIND_ROOT_PATH_MODE_PROGRAM to ONLY, which
+# would confine this search to the target sysroot -- the exact opposite of what
+# a host-tool lookup wants.
+if(_HOST_ENV_CXX)
+    set(BLOBMAN_HOST_CXX "${_HOST_ENV_CXX}")
+else()
+    find_program(BLOBMAN_HOST_CXX NAMES c++ g++ clang++ NO_CMAKE_FIND_ROOT_PATH)
+endif()
+
+if(_HOST_ENV_CXX)
+    set(ENV{CXX} "${_HOST_ENV_CXX}")
+else()
+    unset(ENV{CXX})
+endif()
+if(_HOST_ENV_CC)
+    set(ENV{CC} "${_HOST_ENV_CC}")
+else()
+    unset(ENV{CC})
+endif()
+
+# Release: this is a throwaway host tool run once per configure, and an
+# optimized toml++ parse is the difference between that being unnoticeable and
+# not. Quiet on success, loud on failure -- OUTPUT_QUIET is deliberately NOT
+# paired with ERROR_QUIET, so a compile error still reaches the log.
+if(BLOBMAN_HOST_CXX)
+    clear_nested_build_dir_on_generator_change(${CMAKE_BINARY_DIR}/blobman-build)
+    # CMAKE_CXX_COMPILER is passed explicitly rather than left to the nested
+    # configure's own search: it is exactly what the probe above resolved, so
+    # the tool that gets built is the one this block decided on, and a second
+    # search under a cross-build environment cannot land somewhere else.
+    execute_process(
+            COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tools/blobman
+                                     -B ${CMAKE_BINARY_DIR}/blobman-build
+                                     -DCMAKE_BUILD_TYPE=Release
+                                     -DCMAKE_CXX_COMPILER=${BLOBMAN_HOST_CXX}
+                                     ${NESTED_HOST_CMAKE_ARGS}
+            RESULT_VARIABLE BLOBMAN_CONFIGURE_RESULT
+            OUTPUT_QUIET)
+else()
+    set(BLOBMAN_CONFIGURE_RESULT 1)
+endif()
+
+if(BLOBMAN_CONFIGURE_RESULT EQUAL 0)
+    execute_process(
+            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/blobman-build
+            RESULT_VARIABLE BLOBMAN_BUILD_RESULT
+            OUTPUT_QUIET)
+else()
+    set(BLOBMAN_BUILD_RESULT 1)
+endif()
+
+# Why the pair could not be repacked, phrased for both message branches below.
+# One quoted string per case, deliberately: set() with several string arguments
+# makes a LIST, which prints with ';' separators where the spaces should be
+# once interpolated into a message.
+if(BLOBMAN_HOST_CXX)
+    set(BLOBMAN_FALLBACK_REASON "tools/blobman failed to build with ${BLOBMAN_HOST_CXX} (see the output above -- most often no system toml++ and no network to fetch it)")
+else()
+    set(BLOBMAN_FALLBACK_REASON "this image/host has no C++ compiler of its own, only a cross toolchain (expected on the PS2 build image, for one)")
+endif()
+
+if(BLOBMAN_BUILD_RESULT EQUAL 0)
+    # -v, always: the per-entry fill report ("entry: ui filled 832 of 1024
+    # bytes") is the only visibility into a hunk quietly running out of room,
+    # and the configure log is where that belongs -- same reasoning as
+    # blobman-check's own invocation in .github/workflows/ci.yml.
+    #
+    # Relative paths with demo/chr as the working directory, and that is not
+    # cosmetic: the manifest's own includes resolve against it, and blobman
+    # echoes the -i path verbatim into chr.h's provenance comment, so an
+    # absolute path here would rewrite the committed header on every machine
+    # and never match what CI diffs against.
+    execute_process(
+            COMMAND ${CMAKE_BINARY_DIR}/blobman-build/blobman
+                    -i config.toml -o chr.bin -l cpp -v
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/demo/chr
+            RESULT_VARIABLE BLOBMAN_PACK_RESULT)
+    if(NOT BLOBMAN_PACK_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "blobman: packing demo/chr/config.toml failed (see output above). "
+            "The manifest or the art under demo/chr/assets/ is the problem -- "
+            "this is not a toolchain fallback case, so it is fatal.")
+    endif()
+elseif(EXISTS ${CMAKE_SOURCE_DIR}/demo/chr/chr.bin AND EXISTS ${CMAKE_SOURCE_DIR}/demo/chr/chr.h)
+    # STATUS, not WARNING: expected on the Docker/CI images that have no
+    # network for toml++'s FetchContent fallback, where a warning would just
+    # be permanent build noise. Still surfaced so a local configure says why
+    # it is compiling against the committed pair rather than a fresh pack.
+    message(STATUS
+        "blobman: ${BLOBMAN_FALLBACK_REASON}; using the committed "
+        "demo/chr/chr.bin + chr.h instead of repacking them from "
+        "demo/chr/config.toml. That is fine for a cross build -- the pair is "
+        "committed -- but edits to the manifest or to demo/chr/assets/ will "
+        "NOT be picked up here. Repack on a host with a C++20 compiler, or let "
+        "CI's blobman-check job catch the drift.")
+else()
+    message(FATAL_ERROR
+        "blobman: ${BLOBMAN_FALLBACK_REASON}, and demo/chr/chr.bin or chr.h is "
+        "missing -- nothing to fall back to. Either restore the committed pair "
+        "or give this host a C++20 compiler and a toml++ (system package or "
+        "network); nothing below can compile against a CHR ROM that is not "
+        "there.")
+endif()
+
+if(_MOS_ENV_CXX)
+    set(ENV{CXX} "${_MOS_ENV_CXX}")
+else()
+    unset(ENV{CXX})
+endif()
+if(_MOS_ENV_CC)
+    set(ENV{CC} "${_MOS_ENV_CC}")
+else()
+    unset(ENV{CC})
 endif()
 
 # ----------------------------------------------------------------------

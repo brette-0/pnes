@@ -222,19 +222,20 @@ public:
      * @brief The CHR bank number that holds @p Lma -- a byte offset into the
      *        flat CHR-ROM image -- ready to hand to ::SwitchCHRBank.
      *
-     * Pairs with blobman's generated header (tools/blobman): each entry there
-     * carries an `__addr` giving where its tiles were packed, so a game banks
-     * an entry in by offset rather than by a hand-counted bank number:
+     * Pairs with blobman's generated header (tools/blobman): each packed
+     * character set there carries an `__lma` giving where its tiles were
+     * packed, so a game banks one in by offset rather than by a hand-counted
+     * bank number:
      *
      *     VRC1::SwitchCHRBank(VRC1::chr1Control,
-     *                         VRC1::BankOf<blob::ui::__addr>());
+     *                         VRC1::BankOf<blob::ui::__lma>());
      *
      * @p Lma is a template parameter, not an argument, so both checks below
      * are compile-time: an offset that is not on a bank boundary cannot be
      * mapped to the start of a pattern table at all, and silently truncating
      * it would bank in the wrong tiles with no diagnostic. The 4 KiB
-     * granularity makes that stricter than MMC3's -- a VRC1 entry has to fill
-     * a whole pattern table's worth of alignment to be bankable.
+     * granularity makes that stricter than MMC3's -- a VRC1 character set has
+     * to fill a whole pattern table's worth of alignment to be bankable.
      *
      * @tparam Lma Byte offset into CHR ROM; must be a multiple of
      *             ::kChrBankSize.
@@ -246,6 +247,83 @@ public:
         static_assert(Lma / kChrBankSize <= kMaxChrBank,
                       "BankOf: CHR offset is past the 128 KiB VRC1's 5-bit bank number can reach");
         return static_cast<u8>(Lma / kChrBankSize);
+    }
+
+    /**
+     * @brief Total PPU address space the CHR registers cover: 8 KiB, both
+     *        pattern tables ($0000-$1FFF) -- two ::kChrBankSize windows.
+     */
+    static constexpr u32 kChrSpaceSize = 0x2000;
+
+    /**
+     * @brief Banks in one packed character set, writing every pattern table
+     *        its PPU range touches.
+     *
+     * Described BY its three placement numbers, hence the name -- where the
+     * characters were packed, where the PPU sees them, how far they reach --
+     * and nothing else is needed. Those are exactly the three constants
+     * blobman emits per packed set (tools/blobman, `__lma`/`__vma`/`__size`),
+     * though any source of the same three numbers does just as well. All
+     * three are template parameters, so which tables are involved, the offset
+     * arithmetic and every ::BankOf call fold away entirely -- what is left
+     * is the bare register writes, with literal operands:
+     *
+     *     VRC1::SwitchCharactersBy<blob::ui::__lma,
+     *                              blob::ui::__vma,
+     *                              blob::ui::__size>();
+     *
+     * blobman's header also emits a macro packing those three in this
+     * function's own parameter order, which is how a call site usually names
+     * a set -- once, rather than three times:
+     *
+     *     VRC1::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
+     *
+     * VRC1's granularity makes this stricter than MMC3's equivalent: a
+     * pattern table IS a bank here, so a set must start on a 4 KiB boundary,
+     * and the only two shapes that bank at all are one table (@p Size up to
+     * 4 KiB) or both (up to 8 KiB).
+     *
+     * TABLES ARE NOT SUBDIVIDED. A table the set does not fill to the end
+     * keeps showing whatever follows it in CHR ROM for the remainder --
+     * padding, or the next set along if one is packed there. A set relying on
+     * its neighbour filling the rest of a table still wants its own assert
+     * that the two are packed adjacently, since this call cannot see that
+     * intent.
+     *
+     * @note Not quite *only* register writes, unavoidably: bank bit 4 lives
+     *       in ::chrHighBits, which both tables share, so ::SwitchCHRBank
+     *       must read that shadow back to leave the other table's bit alone
+     *       (see ::chrHighBits). The mask and shift fold to constants; the
+     *       one shadow read does not.
+     *
+     * @tparam Lma  Byte offset into CHR ROM the characters are packed at.
+     * @tparam Vma  PPU address they are seen at; must be $0000 or $1000, a
+     *              pattern-table boundary.
+     * @tparam Size Their length in bytes.
+     */
+    template <u32 Lma, u32 Vma, u32 Size>
+    static constexpr void SwitchCharactersBy() {
+        static_assert(Size > 0, "SwitchCharactersBy: character set is empty");
+        static_assert(Vma + Size <= kChrSpaceSize,
+                      "SwitchCharactersBy: character set runs past the 8 KiB "
+                      "of PPU pattern-table space the CHR registers cover");
+        static_assert(Vma % kChrBankSize == 0,
+                      "SwitchCharactersBy: Vma is not on a pattern-table "
+                      "boundary -- VRC1 banks whole 4 KiB tables ($0000 and "
+                      "$1000), and no register can point at a table's interior");
+
+        // pattern table 0 ($0000-$0FFF): reached by anything starting there
+        if constexpr (Vma < kChrBankSize) {
+            SwitchCHRBank(chr0Control, BankOf<Lma>());
+        }
+
+        // pattern table 1 ($1000-$1FFF): reached either by characters based
+        // there, or by a set based at $0000 that spills over the halfway
+        // point. kChrBankSize - Vma is that spill distance, 0 for the based
+        // case.
+        if constexpr (Vma + Size > kChrBankSize) {
+            SwitchCHRBank(chr1Control, BankOf<Lma + (kChrBankSize - Vma)>());
+        }
     }
 
     /*
