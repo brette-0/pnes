@@ -19,8 +19,21 @@ local.cmake.example has a worked example."
 #define UI_BANK MODULE_PLACEMENT(PNES_UI_SECTION) MINSIZE
 
 namespace ui::text {
-    UI_BANK textBuffer* Make(const u8* buff, const u8 sBuff, const vec2<u8> box, const u8 splitter) {
+    UI_BANK textBuffer* Make(const u8* buff, const vec2<u8> box, const u8 splitter, const u8 terminator) {
         const auto rows = new textBuffer[box.y]();
+
+        // The length the caller used to pass, measured here instead. Both
+        // bytes are tiles (see the charmap overload in text.hpp), so this
+        // compares against the encoded terminator, not against 0x00 -- and
+        // the charmap has to give the terminator a tile of its own, or the
+        // first splitter in the text would end the string here.
+        //
+        // Capped at 255, which is every length the old u8 sBuff could express:
+        // for a buffer terminated at or before index 255 this lands on exactly
+        // that index, and an unterminated one truncates rather than running
+        // away through memory.
+        u8 sBuff = 0;
+        while (sBuff != 0xff && *(buff + sBuff) != terminator) sBuff++;
 
         u8 cursor = 0;
         u8 last   = 0;

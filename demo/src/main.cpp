@@ -9,7 +9,7 @@
 #include "modes/title.hpp"
 #include "modes/world.hpp"
 #include "banks.hpp"
-#include "pnes/logger.hpp"
+#include <pnes/logger.hpp>
 
 
 u8 scratchpad[5];

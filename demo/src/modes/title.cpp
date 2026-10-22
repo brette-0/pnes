@@ -176,23 +176,6 @@ namespace title {
         return SplitYForPixels(static_cast<u16>(splitRow) << 3);
     }
 
-    // PPU $0400-$07FF is DOUBLE-BOOKED by the manifest: demo/chr/config.toml
-    // packs both staticLevelTiles (the level preview behind the menu) and ui
-    // (every tile the menu itself is drawn from -- font, arrow, the button
-    // box, the sliders) at VMA $0400. One 1 KiB window covers that address
-    // under chrMode::fineFirst (R3), so the two cannot be on screen together
-    // from one bank setting: the preview band above ::SplitRow gets one, the
-    // menu band below it the other, and the scanline IRQ is what divides them.
-    //
-    // Hence a pair of named switches instead of the call spelled out at each
-    // site -- there are eight NMI handlers here and each one has to say which
-    // half of the frame it is setting up. Each compiles to the two register
-    // writes R3 takes (bank select, bank data), nothing more; see
-    // mmc3::SwitchCharactersBy, which folds the window and bank number to
-    // literals at compile time.
-    //
-    // level.cpp's nmi_handler/ApplyHudSplit pair is the same trade the other
-    // way up: HUD on top in ui tiles, playfield below in staticLevelTiles.
     static void BankPreviewTiles() {
         mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
     }
@@ -601,7 +584,7 @@ namespace title {
         constexpr u16 tyBase = kHudRows * 2;
 
         CallLevelGraphics([] {
-            ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(msg_mary)), 0}, SIZED_OBJ(msg_mary), 0);
+            ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - ::tech::nes_str::length(msg_mary)), 0}, SIZED_STR(msg_mary), 0);
         });
         constexpr u8 coinUI[] = {blob::ui::hud_coin, blob::ui::font + 0, blob::ui::font + 0};
         ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(coinUI)), 1}, SIZED_OBJ(coinUI), 0);

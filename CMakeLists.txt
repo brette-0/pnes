@@ -3360,8 +3360,9 @@ target_compile_definitions(pnes PUBLIC REGION=${REGION})
 
 # uitk-generated title.cpp (every target dir under demo/gen/title/) uses
 # charmap_generic but never includes demo/src/graphics/charmaps.hpp itself --
-# force it in ahead of every demo TU instead. Safe project-wide: it's just a
-# constexpr inline function (see its own header comment -- no ODR/LTO cost).
+# force it in ahead of every demo TU instead. Safe project-wide: it's just an
+# inline constexpr object (see its own header comment -- no ODR/LTO cost, and
+# nothing of the charmap itself reaches the ROM).
 #
 # The executable is `demo` on most targets, but `demo_elf` on the ones where
 # `demo` is the packaged deliverable instead (3DS, Switch, Wii U, DS/DSi -- see

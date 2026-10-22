@@ -12,9 +12,11 @@
  * - ::NI — force a function to never be inlined into its caller(s).
  * - ::MINSIZE — Clang-only size-optimisation hint (silently dropped
  *   under GCC).
- * - ::CHARMAP, ::STRING, ::STRING_NT — define per-project character maps and
- *   emit compile-time-translated strings as header-only `inline constexpr`
+ * - ::tech::nes_str::charmap — define per-project character maps and encode
+ *   terminated strings through them as header-only `inline constexpr`
  *   `std::array`s in `.rodata`.
+ * - ::SIZED_OBJ / ::SIZED_STR — expand to `pointer, count` for a buffer, with
+ *   and without an encoded string's trailing terminator.
  * - ::PopulateFromBuffer / ::PopulateFromProvider — generic strided
  *   byte copies used by the video and audio subsystems.
  * - ::CAT, ::STR, ::STRCAT — expand-then-paste and expand-then-stringize
@@ -651,34 +653,143 @@ shadow_scope_dynamic(Ts&...) -> shadow_scope_dynamic<Ts...>;
 #endif
 
 /**
- * @brief Compile-time support for ::CHARMAP / ::STRING.
+ * @brief Compile-time character maps, and the strings translated through them.
+ *
+ * A charmap is an ordinary object, built by ::tech::nes_str::charmap out of a
+ * braced list of ::tech::nes_str::Rule -- one rule per contiguous run of source
+ * characters, mapping `[lo, hi]` onto `base + (c - lo)`. Calling it translates
+ * one character; its ::tech::nes_str::Charmap::encode member translates a whole
+ * string literal into a `std::array<u8, N>` which, declared `inline constexpr`,
+ * the linker folds to a single `.rodata` object however many TUs include it.
+ *
+ * An encoded string is always terminated, and the terminator is mapped like
+ * every other character -- it is whatever tile `'\0'` maps to, not necessarily
+ * @c 0x00 -- so `sizeof(name)` is the source length INCLUDING it. ::SIZED_STR
+ * hands a drawing routine the text without the terminator; ::SIZED_OBJ passes
+ * the whole buffer, terminator included.
+ *
+ * A charmap is only ever constant-evaluated, so it costs no ROM: nothing of it
+ * survives into the image but the bytes of the strings it produced.
  */
 namespace tech::nes_str {
     /**
-     * @brief Fallback for a character with no ::CM entry.
+     * @brief Fallback for a character no ::tech::nes_str::Rule covers.
      *
      * Declared but never defined, and not @c constexpr: naming it during the
-     * constant evaluation of a ::STRING makes that evaluation non-constant,
-     * so an unmapped character is a compile error pointing at the offending string.
-     * Because a charmap is only ever evaluated at compile time, this is never
-     * ODR-used at run time, so the missing definition never reaches the linker.
+     * constant evaluation of an encoded string makes that evaluation
+     * non-constant, so an unmapped character is a compile error pointing at the
+     * offending string. Because a charmap is only ever evaluated at compile
+     * time, this is never ODR-used at run time, so the missing definition never
+     * reaches the linker.
      */
     [[noreturn]] u8 unmapped(char c);
 
-    /** @brief Map @p s[0 .. N-2] through @p Map into bytes (drops the literal NUL). */
-    template <u8 (*Map)(char), std::size_t N>
-    constexpr std::array<u8, N - 1> encode(const char (&s)[N]) {
-        std::array<u8, N - 1> out{};
-        for (std::size_t i = 0; i + 1 < N; ++i) out[i] = Map(s[i]);
-        return out;
-    }
+    /**
+     * @brief As ::tech::nes_str::unmapped, but for a malformed charmap rather
+     *        than a malformed string; @p why names the defect.
+     *
+     * Deliberately not a @c throw: a `throw` is rejected at parse time under
+     * `-fno-exceptions` even on a branch that never executes, and an llvm-mos
+     * target may well build that way. An undefined, non-@c constexpr function
+     * fails constant evaluation the same way under either setting.
+     */
+    [[noreturn]] void charmap_error(const char* why);
 
-    /** @brief As ::encode, but keeps a trailing 0x00 terminator. */
-    template <u8 (*Map)(char), std::size_t N>
-    constexpr std::array<u8, N> encode_nt(const char (&s)[N]) {
-        std::array<u8, N> out{};
-        for (std::size_t i = 0; i + 1 < N; ++i) out[i] = Map(s[i]);
-        return out;
+    /**
+     * @brief One mapping rule: every char in `[lo, hi]` maps to `base + (c - lo)`.
+     *
+     * Brace-initialised inside a ::tech::nes_str::charmap call, either as a
+     * whole run (`{ 'A', 'Z', base }`) or as one character (`{ ' ', tile }`).
+     * A character is an ordinary character literal here, so punctuation --
+     * `,` and `)` included -- needs no special handling.
+     *
+     * @note A run is only expressible as one rule when the CHR tiles are
+     *       contiguous in the same order as the source characters; scattered
+     *       glyphs degrade to one single-character rule each.
+     */
+    struct Rule {
+        char lo{}, hi{};
+        u8   base{};
+        constexpr Rule() = default;
+        /** @brief A single character @p c mapping to tile @p v. */
+        constexpr Rule(char c, u8 v)         : lo(c), hi(c), base(v) {}
+        /** @brief The run `[l, h]` mapping onto tiles starting at @p b. */
+        constexpr Rule(char l, char h, u8 b) : lo(l), hi(h), base(b) {}
+    };
+
+    /**
+     * @brief A character map: @p N rules, searched in declaration order.
+     *
+     * A structural type, so a charmap works as a template parameter too
+     * (`template <auto& Map>`). Build one with ::tech::nes_str::charmap rather
+     * than aggregate-initialising this directly -- the factory is where the
+     * rules get validated.
+     */
+    template <std::size_t N>
+    struct Charmap {
+        std::array<Rule, N> rules;
+
+        /** @brief Translate @p c, or fail the compile via ::tech::nes_str::unmapped. */
+        constexpr u8 operator()(char c) const {
+            for (const Rule& r : rules) {
+                if (c >= r.lo && c <= r.hi) return static_cast<u8>(r.base + (c - r.lo));
+            }
+            return unmapped(c);
+        }
+
+        /**
+         * @brief Map the whole of @p s -- its terminator included -- through
+         *        this charmap.
+         *
+         * The terminator is an ordinary character here, so it encodes to
+         * whatever `'\0'` maps to and is NOT necessarily @c 0x00. A charmap
+         * used to encode a string therefore needs a rule covering `'\0'`;
+         * without one the terminator is ::tech::nes_str::unmapped, i.e. a
+         * compile error at the offending string, exactly as any other unmapped
+         * character would be.
+         *
+         * `sizeof` the result is the source length including that terminator,
+         * so a drawing routine wants ::SIZED_STR, not ::SIZED_OBJ, or it writes
+         * one tile too many.
+         */
+        template <std::size_t M>
+        constexpr std::array<u8, M> encode(const char (&s)[M]) const {
+            std::array<u8, M> out{};
+            for (std::size_t i = 0; i < M; ++i) out[i] = (*this)(s[i]);
+            return out;
+        }
+    };
+
+    /**
+     * @brief Builds a validated ::tech::nes_str::Charmap from a braced list of
+     *        ::tech::nes_str::Rule.
+     *
+     * @c consteval rather than @c constexpr so the checks can neither be
+     * skipped nor cost a byte: a rule may not run backwards, may not walk its
+     * tile index past @c 0xff, and may not overlap another rule. A violation
+     * names ::tech::nes_str::charmap_error in the diagnostic, with the offending
+     * rule list visible in the enclosing "in call to" note.
+     *
+     * @param r The rules, in search order.
+     */
+    template <std::size_t N>
+    consteval Charmap<N> charmap(const Rule (&r)[N]) {
+        Charmap<N> m{};
+        for (std::size_t i = 0; i < N; ++i) m.rules[i] = r[i];
+        for (std::size_t i = 0; i < N; ++i) {
+            if (m.rules[i].lo > m.rules[i].hi) {
+                charmap_error("charmap rule runs backwards");
+            }
+            if (m.rules[i].base + (m.rules[i].hi - m.rules[i].lo) > 0xff) {
+                charmap_error("charmap rule overflows a tile index");
+            }
+            for (std::size_t j = i + 1; j < N; ++j) {
+                if (m.rules[i].lo <= m.rules[j].hi && m.rules[j].lo <= m.rules[i].hi) {
+                    charmap_error("charmap rules overlap");
+                }
+            }
+        }
+        return m;
     }
 
     /** @brief ::SIZED_OBJ plumbing: a pointer+count that works for both a raw C
@@ -687,81 +798,40 @@ namespace tech::nes_str {
     template <class T, std::size_t N> constexpr std::size_t   size(const T (&)[N])  { return N; }
     template <class A> constexpr auto data(const A& a) -> decltype(a.data()) { return a.data(); }
     template <class A> constexpr auto size(const A& a) -> decltype(a.size()) { return a.size(); }
+
+    /** @brief ::SIZED_STR plumbing: as ::tech::nes_str::size, less the one
+     *         terminator an encoded string always carries (see
+     *         ::tech::nes_str::Charmap::encode). Also the character count to
+     *         position a string by, where `sizeof` no longer is. */
+    template <class T, std::size_t N> constexpr std::size_t length(const T (&)[N]) { return N - 1; }
+    template <class A> constexpr auto length(const A& a) -> decltype(a.size()) { return a.size() - 1; }
 }
-
-/**
- * @brief Internal building block used inside ::CHARMAP.
- *
- * Expands to one arm of the charmap's @c constexpr lookup: when the input
- * character equals token @p ch, return byte @p val. ::CM entries are juxtaposed
- * (no commas) inside ::CHARMAP, exactly as before -- each is now an @c if
- * statement instead of a string-literal fragment.
- *
- * @param ch  Bareword character token (e.g. `M`); taken as `(#ch)[0]`.
- * @param val Byte value to return when @p ch is matched.
- */
-#define CM(ch, val) if (_c == (#ch)[0]) return (u8)(val);
-
-/**
- * @brief Defines a named character map used by ::STRING.
- *
- * Expands to a @c constexpr `charmap_<mapname>(char)` whose body is the
- * juxtaposed ::CM arms; an unmapped character falls through to
- * ::nes_str::unmapped, a compile error at the offending string. Being an
- * ordinary constexpr function it can live in a header and be included freely.
- *
- * @note ::CM takes bareword tokens (`CM(M, 0xed)`), stringized with the first
- *       character taken.
- *
- * @param mapname Identifier for the character map.
- */
-#define CHARMAP(mapname, ...)                   \
-constexpr u8 charmap_##mapname(char _c) {       \
-    __VA_ARGS__                                 \
-    return ::tech::nes_str::unmapped(_c);       \
-}
-
-/**
- * @brief Defines a string translated through a ::CHARMAP (no terminator).
- *
- * Header-only: each character of @p chars is mapped through `charmap_<mapname>`
- * at compile time into an @c inline @c constexpr `std::array<u8, N>` of the
- * unterminated source length, which the linker folds to one rodata object
- * however many TUs include it. `sizeof(name)` is therefore the character count,
- * usable in constant expressions. An unmapped character is a compile error.
- *
- * @note Requires `charmap_<mapname>` to be in scope at the point of use (include
- *       the header that declares the ::CHARMAP).
- *
- * @param mapname Name of a previously declared ::CHARMAP.
- * @param name    Symbol to define.
- * @param chars   Source characters to translate (bareword, not a string).
- */
-#define STRING(mapname, name, chars)            \
-inline constexpr auto name = ::tech::nes_str::encode<charmap_##mapname>(#chars)
-
-/**
- * @brief Defines a string translated through a ::CHARMAP, with a 0x00 terminator.
- *
- * Identical to ::STRING but keeps a trailing 0x00, so the array is
- * `sizeof(#chars)` bytes (the source length including the terminator).
- *
- * @param mapname Name of a previously declared ::CHARMAP.
- * @param name    Symbol to define.
- * @param chars   Source characters to translate (bareword, not a string).
- */
-#define STRING_NT(mapname, name, chars)         \
-inline constexpr auto name = ::tech::nes_str::encode_nt<charmap_##mapname>(#chars)
 
 /**
  * @brief Expands to `pointer, count` for passing a buffer+length pair.
  *
  * Works for both a raw C array and a `std::array` (see ::nes_str::data /
- * ::nes_str::size), so ::STRING results and plain arrays are accepted alike.
+ * ::nes_str::size), so encoded strings and plain arrays are accepted alike.
+ *
+ * @note For an encoded string this includes the terminator, which is a real
+ *       mapped tile and would be drawn -- use ::SIZED_STR there unless the
+ *       terminator is genuinely part of what is being written.
  *
  * @param obj A C array or `std::array`.
  */
 #define SIZED_OBJ(obj) ::tech::nes_str::data(obj), ::tech::nes_str::size(obj)
+
+/**
+ * @brief Expands to `pointer, count` for an encoded string, terminator excluded.
+ *
+ * ::tech::nes_str::Charmap::encode always terminates, and that terminator is
+ * itself a mapped tile rather than a byte a nametable write would ignore, so
+ * ::SIZED_OBJ of an encoded string draws one tile too many. ::SIZED_STR passes
+ * the text length instead (see ::nes_str::length).
+ *
+ * @param obj A C array or `std::array` whose last element is a terminator.
+ */
+#define SIZED_STR(obj) ::tech::nes_str::data(obj), ::tech::nes_str::length(obj)
 
 /**
  * @brief General-purpose byte copy from @p buffer into @p target with stride.

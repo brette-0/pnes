@@ -225,7 +225,7 @@ constexpr int kHideRegionsRole = Qt::UserRole + 17;
 constexpr int kDefaultOptionRole = Qt::UserRole + 18;
 // Per-textbox (ct or rt) override of the scene's Default Charmap -- empty
 // means "use the scene's Default Charmap"; non-empty names a different
-// CHARMAP mapname (see technology.hpp's CHARMAP macro) for this node's row
+// charmap (see technology.hpp's tech::nes_str::charmap) for this node's row
 // text/splitter to be encoded through instead.
 constexpr int kCharmapOverrideRole = Qt::UserRole + 19;
 // ctTextBox-only: when checked, codegen also emits an Erase_<Name> function
@@ -1003,12 +1003,14 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
 //     expects it, exactly like src/all/extras/ui/text.cpp's own UI_BANK.
 //
 //   - rtTextBox: the text is only known at runtime, so there's nothing to
-//     bake but the box/splitter -- the generated function is a thin AI
+//     bake but the box/splitter/charmap -- the generated function is a thin AI
 //     (always-inline) wrapper around ui::text::Make, defined inline in the
 //     header for the same reason ui::text::Draw's overloads are (an
 //     always_inline free function needs vague/COMDAT linkage to be safe
 //     across translation units, see text.hpp). No linker_prefix: an
-//     always-inline wrapper has no meaningful placement of its own.
+//     always-inline wrapper has no meaningful placement of its own. It takes
+//     only the buffer -- Make finds that buffer's end by scanning for the
+//     charmap's terminator tile, so there is no length to pass.
 //
 // Negative-space nodes emit nothing themselves -- an editor-only exclusion
 // zone with no runtime counterpart at all. We never bundle a component's
@@ -1204,17 +1206,20 @@ QString emitPosComponent(const QTreeWidgetItem* item, int exprRole, int literalR
 // the canvas previewed.
 //
 // With a scene charmap set (`charmapFn` non-empty), each row's text is
-// mapped through it at compile time -- the same ::tech::nes_str::encode
+// mapped through it at compile time -- the same `<charmap>.encode(...)`
 // technology demo/src/graphics/strings.hpp already hand-writes (e.g.
 // msg_title) -- and hoisted to a `<dataPrefixTok>inline constexpr auto
 // <Name>_rowN = ...` declaration at the namespace root, so it's a single
 // rodata object the linker folds regardless of how many TUs include it, not
 // a local buffer reallocated on every call. The Draw_ function then just
-// points WriteFromBufferToNameTable at it via ::SIZED_OBJ, which also
-// already supplies the exact (unterminated) row length `encode<>` produces
-// -- no `sizeof(...) - 1` needed the way a plain C string literal wants.
-// With no charmap set, this falls back to the previous plain
-// `static const char[]` behavior, for a scene that hasn't set one yet.
+// points WriteFromBufferToNameTable at it via ::SIZED_STR, not ::SIZED_OBJ:
+// `encode()` terminates, and the terminator is a mapped tile like any other
+// (it is whatever the charmap maps '\0' to, not a byte a nametable write
+// ignores), so ::SIZED_OBJ would draw one tile too many. ::SIZED_STR drops
+// exactly that one byte -- the same `sizeof(...) - 1` the plain C string
+// literal fallback below does by hand. With no charmap set, this falls back
+// to that previous plain `static const char[]` behavior, for a scene that
+// hasn't set one yet.
 //
 // On NES the panel is fixed, so unlike every other target it never needs the
 // vec2<u16> overload's per-tile page-aware address recomputation (see
@@ -1260,9 +1265,9 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, 
                 sourceArgs = QString("reinterpret_cast<const u8*>(%1), sizeof(%1) - 1").arg(rowVar);
             } else {
                 const QString dataName = QString("%1_row%2").arg(name).arg(row);
-                rootLines << QString("%1inline constexpr auto %2 = ::tech::nes_str::encode<%3>(\"%4\");")
+                rootLines << QString("%1inline constexpr auto %2 = %3.encode(\"%4\");")
                                  .arg(dataPrefixTok, dataName, charmapFn, cStringEscape(rowText));
-                sourceArgs = QString("SIZED_OBJ(%1)").arg(dataName);
+                sourceArgs = QString("SIZED_STR(%1)").arg(dataName);
             }
 
             if (isNes) {
@@ -1772,17 +1777,27 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             // land untranslated), so the splitter byte Make compares each
             // character against has to be encoded through the very same
             // charmap too, not left as a raw ASCII literal that would never
-            // match an encoded space/boundary byte.
-            const QString splitterArg = charmapFn.isEmpty()
-                                             ? QString("'%1'").arg(cCharEscape(splitter))
-                                             : QString("%1('%2')").arg(charmapFn, cCharEscape(splitter));
-            hppDecls << QString("inline AI ui::text::textBuffer* %1(const u8* buff, const u8 sBuff) {\n"
-                                 "    return ui::text::Make(buff, sBuff, vec2<u8>{%2, %3}, %4);\n"
+            // match an encoded space/boundary byte. Same for the terminator
+            // Make scans for to find the buffer's end, which is why there is
+            // no length parameter here.
+            //
+            // With a charmap, both bytes come from the charmap overload, which
+            // takes it as a template parameter so it stays compile-time only
+            // (see text.hpp) -- the splitter travels as a `char` NTTP for the
+            // same reason, so the charmap never gets called at runtime. With
+            // no charmap set, the primitive takes the raw ASCII splitter and a
+            // plain 0x00 terminator, matching the untranslated bytes such a
+            // scene's buffers hold.
+            const QString callExpr =
+                charmapFn.isEmpty()
+                    ? QString("ui::text::Make(buff, vec2<u8>{%1, %2}, '%3', 0)")
+                          .arg(w).arg(h).arg(cCharEscape(splitter))
+                    : QString("ui::text::Make<%1, '%2'>(buff, vec2<u8>{%3, %4})")
+                          .arg(charmapFn, cCharEscape(splitter)).arg(w).arg(h);
+            hppDecls << QString("inline AI ui::text::textBuffer* %1(const u8* buff) {\n"
+                                 "    return %2;\n"
                                  "}\n")
-                             .arg(name)
-                             .arg(w)
-                             .arg(h)
-                             .arg(splitterArg);
+                             .arg(name, callExpr);
         }
     }
 
@@ -2346,20 +2361,22 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                                 "TITLE_DATA for the hand-written equivalent). Left empty, nothing is emitted. "
                                 "Only ever emitted when exporting for NES.");
 
-    // The mapname passed to ::tech::nes_str::encode<charmap_<name>> for
-    // every ctTextBox's row text, and to charmap_<name> directly for a
+    // The mapname whose `charmap_<name>.encode(...)` encodes every
+    // ctTextBox's row text, and whose `charmap_<name>(...)` encodes a
     // rtTextBox's splitter byte (see genCtTextBoxBody/generateCode) --
-    // `charmap_<name>` itself is project code (defined via technology.hpp's
-    // CHARMAP macro, e.g. demo/src/graphics/charmaps.hpp's charmap_generic),
-    // not something uitk can generate, so this only ever names it. Left
-    // empty, a scene falls back to its previous plain `static const char[]`
-    // behavior instead of referencing a symbol that doesn't exist. This is
+    // `charmap_<name>` itself is project code (an object built with
+    // technology.hpp's tech::nes_str::charmap, e.g.
+    // demo/src/graphics/charmaps.hpp's charmap_generic), not something uitk
+    // can generate, so this only ever names it. Left empty, a scene falls
+    // back to its previous plain `static const char[]` behavior instead of
+    // referencing a symbol that doesn't exist. This is
     // only the scene-wide default -- any individual textbox can name a
     // different mapname via its own Charmap Override property
     // (kCharmapOverrideRole), which wins over this for that node alone.
     auto* charmapEdit = new QLineEdit(content);
-    charmapEdit->setToolTip("Default mapname of the CHARMAP (technology.hpp) every ctTextBox's row text -- and "
-                             "every rtTextBox's splitter byte -- is encoded through, e.g. \"generic\" for "
+    charmapEdit->setToolTip("Default mapname of the charmap (tech::nes_str::charmap, technology.hpp) every "
+                             "ctTextBox's row text -- and every rtTextBox's splitter byte -- is encoded "
+                             "through, e.g. \"generic\" for "
                              "charmap_generic. charmap_<name> must already be defined and in scope wherever "
                              "the generated header is included. Left empty, text is emitted as a plain, "
                              "unencoded C string instead (unless a node's own Charmap Override sets one). "
@@ -2767,8 +2784,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     splitterEdit->setMaxLength(1);
     splitterEdit->setToolTip("The single character that marks a word boundary when wrapping text "
                               "onto the next row (default: space).");
-    charmapOverrideEdit->setToolTip("CHARMAP mapname (technology.hpp) to encode this node's row text/splitter "
-                                     "through, in place of the scene's Default Charmap.\n"
+    charmapOverrideEdit->setToolTip("Charmap mapname (tech::nes_str::charmap, technology.hpp) to encode this "
+                                     "node's row text/splitter through, in place of the scene's Default "
+                                     "Charmap.\n"
                                      "Leave blank to use the scene's Default Charmap.");
     provideErasingCheck->setToolTip("Also generate an Erase_<Name>() function that blanks this box's whole "
                                      "footprint with its charmap's ' ' tile, via ppu::WriteRepeatedToNameTable.");

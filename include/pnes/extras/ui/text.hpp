@@ -8,6 +8,8 @@
 
 using namespace br0::intsh;
 
+// move charmap code here
+
 // text boxes
 
 namespace ui::text {
@@ -25,55 +27,30 @@ namespace ui::text {
         u8 size;
     };
 
-    /*
-     *  Same wrapping rule as Draw, but instead of writing rows to the
-     *  nametable it records where each row would have started and how
-     *  long it is.
-     *
-     *  Returns a heap-allocated array of box.y textBuffer entries --
-     *  one per row, caller owns it (delete[] once done). addr points
-     *  into buff at that row's first byte, size is the row's length in
-     *  bytes, splitter excluded. Rows left unused because the buffer
-     *  ran out first are zeroed (addr == nullptr, size == 0).
-     */
-    NI textBuffer* Make(const u8* buff, u8 sBuff, vec2<u8> box, u8 splitter);
+    // Finds the end of buff itself by scanning for `terminator`, so there is no
+    // length to pass: a charmap-encoded string carries its terminator (see
+    // Charmap::encode), and both bytes here are tiles, not ASCII. The scan
+    // stops at 255 bytes, the most the old explicit length could express
+    // anyway, so an unterminated buffer truncates instead of running away.
+    NI textBuffer* Make(const u8* buff, vec2<u8> box, u8 splitter, u8 terminator);
 
-    /*
-     *  Draws a Make() result: writes chunks[row] to nametable row
-     *  pos.y + row for row in [0, boxY), stopping early the first time
-     *  it hits a row Make left zeroed (addr == nullptr) -- i.e. the
-     *  buffer ran out before boxY rows were filled.
-     *
-     *  Does not take ownership of chunks -- caller allocated it via
-     *  Make() and is responsible for delete[]ing it, whether or not
-     *  this broke out early.
-     *
-     *  Pays (x,y)->address (a divide+modulo) exactly once, up front, then
-     *  walks rows by a plain +32 add -- see the address overload below if
-     *  even that one division doesn't belong on the caller's hot path.
-     */
+    // Charmap overload: takes the charmap itself and lifts the two bytes above
+    // out of it, so a call site names neither. @p Map is a template parameter,
+    // not an argument, for two reasons -- a charmap is only ever
+    // constant-evaluated, so nothing of it reaches the ROM, and its
+    // operator()'s fall-through to the deliberately undefined
+    // nes_str::unmapped must never become a real call. Both bytes are bound to
+    // constexpr locals for that second reason: an unoptimised build is allowed
+    // not to fold a call in a plain argument position.
+    template <auto& Map, char Splitter = ' '>
+    AI inline textBuffer* Make(const u8* buff, const vec2<u8> box) {
+        constexpr u8 splitter   = Map(Splitter);
+        constexpr u8 terminator = Map('\0');
+        return Make(buff, box, splitter, terminator);
+    }
+
     AI void Draw(const textBuffer* chunks, vec2<u16> pos, vec2<u8> box, Alignment align);
 
-    /*
-     *  Address overload of Draw(): @p address is row 0's nametable address
-     *  (see ::ppu::CartesianToAddress), for a caller that already has it
-     *  precomputed -- e.g. from inside an ISR, where the divide+modulo the
-     *  vec2 overload above pays isn't affordable at all. Every later row is
-     *  address + row*32 (one nametable tile-row), so this does zero
-     *  division of its own.
-     *
-     *  Only correct within a single nametable page (address's row < 30) --
-     *  callers whose box could cross that boundary need the vec2 overload,
-     *  which still gets it right via CartesianToAddress.
-     *
-     *  Both overloads are declared here but DEFINED in text.cpp under
-     *  ::UI_BANK, not header-inline: a section attribute only pins an
-     *  out-of-line, externally-linked definition, and an `inline`/::AI
-     *  body has no such copy for the section to pin (::AI and section
-     *  placement are mutually exclusive -- see technology.hpp). Giving
-     *  this overload deterministic bank placement means giving up the
-     *  header-inline/COMDAT trick the vec2 overload below still uses.
-     */
     NI void Draw(const textBuffer* rows, u16 address, vec2<u8> box, Alignment align);
 
     NI void Clear(
