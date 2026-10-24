@@ -275,8 +275,8 @@ NI FIXED bool Blocked(const u16 px, const u16 py, const vec2<u8> dimensions, con
 // overwrite the window cell with the revealed static tile (immediate).
 //
 // Collects AT MOST ONE coin per call, even if the AABB straddles several. Bounds
-// both the per-frame VRAM-queue burst (PushCoinVram queues 4 writes/coin) and the
-// CPU burst the same way. Spreading a multi-coin cluster's collection over a few
+// both the per-frame VRAM-queue burst (PushCoinVram queues 2 paired records, i.e.
+// 4 tile writes, per coin) and the CPU burst the same way. Spreading a multi-coin cluster's collection over a few
 // frames as the player passes through is not perceptible.
 //
 // The "same cell as last frame -> skip the walk" guard below is a POSITION check,

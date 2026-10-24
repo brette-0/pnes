@@ -39,7 +39,31 @@ namespace level {
     // scanline IRQ fires below the HUD (see kHudSplitLatch / irq_handler).
     static FIXED void ApplyHudSplit();
 
-    constexpr u8 kCoinVramCap = 48;         // 16 tile writes = 4 coins (2x2 each)
+#ifdef TARGET_NES
+    // Records of {addr_hi, addr_lo, left tile, right tile} -- ONE latched address
+    // per horizontally-adjacent PAIR, the second byte riding the PPU's own +1
+    // increment. A 2x2 coin is 2 records = 8 bytes, so this holds 4 coins.
+    //
+    // Pairing is what keeps the drain inside vblank: the naive form pays a latch
+    // reset and two PPUADDR writes per TILE, i.e. 4 of each per coin, to move 4
+    // bytes. This pays 2.
+    constexpr u8 kCoinVramRec = 4;
+    constexpr u8 kCoinVramCap = 8 * kCoinVramRec;    // 4 coins, 2 records each
+#else
+    // Records of {addr_hi, addr_lo, value} -- one per tile, 4 per coin.
+    //
+    // Deliberately NOT paired off-NES. Pairing needs `address + 1` to stay inside
+    // its nametable row, and this backend's nametable is the runtime viewport's own
+    // width (emu::ComputeNtGeometry) -- which can be ODD, so an even left column is
+    // no longer a guarantee that the right one is in the same row. There is no
+    // vblank to fit inside here anyway, so the simple form is the correct trade.
+    constexpr u8 kCoinVramRec = 3;
+    constexpr u8 kCoinVramCap = 16 * kCoinVramRec;   // 4 coins, 4 records each
+#endif
+    // The per-frame ceiling is one coin per player (the one-coin cap in
+    // CollectCoinsImpl), so 2 coins, drained every NMI -- half the capacity above.
+    // The queue cannot overflow in any shipping configuration; the spare is slack,
+    // not a budget.
     static u8 CoinVram[kCoinVramCap];
     static u8 CoinVramLen;                  // bytes used
 
@@ -71,12 +95,45 @@ namespace level {
     // ACTORS: sole caller is PushCoinVram (player.cpp), now in the actors bank --
     // CoinVram/CoinVramLen stay put (RAM, not bank-sensitive); only the code that
     // writes them needs to be reachable. See banks.hpp's ::actor_tag comment.
+    //
+    // The bounds check is a backstop, NOT a retry: by the time PushCoinVram runs,
+    // CollectCoinsImpl has already blanked the DynData run and revealed the static
+    // tile in ViewMap, so a dropped record is a coin that is permanently air to
+    // collision while still DRAWN until its column is next streamed. Nothing
+    // re-queues it. Per kCoinVramCap above this is unreachable at 2 players; if a
+    // third collector is ever added, raise the cap rather than relying on this.
+#ifdef TARGET_NES
+    ACTORS void CoinVramPush(const u16 address, const u8 v0, const u8 v1) {
+        if (CoinVramLen + kCoinVramRec > kCoinVramCap) return;
+        CoinVram[CoinVramLen++] = static_cast<u8>(address >> 8);
+        CoinVram[CoinVramLen++] = static_cast<u8>(address & 0xFF);
+        CoinVram[CoinVramLen++] = v0;
+        CoinVram[CoinVramLen++] = v1;
+    }
+#else
     ACTORS void CoinVramPush(const u16 address, const u8 value) {
-        if (CoinVramLen + 3 > kCoinVramCap) return;        // full: drop (next frame retries)
+        if (CoinVramLen + kCoinVramRec > kCoinVramCap) return;
         CoinVram[CoinVramLen++] = static_cast<u8>(address >> 8);
         CoinVram[CoinVramLen++] = static_cast<u8>(address & 0xFF);
         CoinVram[CoinVramLen++] = value;
     }
+#endif
+
+#ifdef TARGET_NES
+    // Local to the coin drain, NOT a ::ppu helper: this is one specific vblank
+    // budget's trick, not a general nametable writer, and it carries a
+    // precondition (POLARITY clear, pair inside one row) that only its single
+    // caller can honour. ::AI so it folds into nmi_handler rather than becoming
+    // a bank-sensitive JSR target an interrupt could reach -- see
+    // technology.hpp's ::AI note.
+    AI static void CoinWritePair(const u16 address, const u8 v0, const u8 v1) {
+        tech::peek(ppu::raw::PPUSTATUS);
+        tech::poke(ppu::raw::PPUADDR, static_cast<u8>(address >> 8));
+        tech::poke(ppu::raw::PPUADDR, static_cast<u8>(address & 0xFF));
+        tech::poke(ppu::raw::PPUDATA, v0);
+        tech::poke(ppu::raw::PPUDATA, v1);
+    }
+#endif
 
     // kHudRows lives in levels.hpp so the collision bitmap (producer) and the
     // actor row projection (ClampRow, below) share one origin.
@@ -395,8 +452,21 @@ namespace level {
 
         if (CoinVramLen) SHADOW(ppu::PPUMASK) {
             ppu::PPUMASK = 0;
-            for (u8 i = 0; i < CoinVramLen; i += 3)
-                ppu::WriteSingleToNameTable((CoinVram[i] << 8) | CoinVram[i + 1], CoinVram[i + 2]);
+#ifdef TARGET_NES
+            // CoinWritePair advances by the PPU's increment for its second byte, so
+            // horizontal (+1) has to be set -- and the column-streaming block above
+            // leaves POLARITY SET (it passes polarity=1 for its vertical strips).
+            // Clear it once here, not per record. Leaving it clear afterwards is
+            // safe: every multi-byte ::ppu writer sets POLARITY explicitly on entry.
+            ppu::PPUCTRL = ppu::PPUCTRL & ~ppu::ctrl::POLARITY;
+            for (u8 i = 0; i < CoinVramLen; i += kCoinVramRec)
+                CoinWritePair((CoinVram[i] << 8) | CoinVram[i + 1],
+                              CoinVram[i + 2], CoinVram[i + 3]);
+#else
+            for (u8 i = 0; i < CoinVramLen; i += kCoinVramRec)
+                ppu::WriteSingleToNameTable((CoinVram[i] << 8) | CoinVram[i + 1],
+                                            CoinVram[i + 2]);
+#endif
         }
         CoinVramReset();
 

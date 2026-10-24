@@ -105,15 +105,20 @@ ACTORS static void PushCoinVram(const CoinPick& pick) {
     const u16 tx = static_cast<u16>(pick.col) << 1;
     const u16 ty = static_cast<u16>(2 + (pick.row << 1));
 #ifdef TARGET_NES
+    // Two records, one per tile row: the queue latches an address once per adjacent
+    // pair, so the right-hand tile rides the PPU's increment. tx = col*2 is always
+    // EVEN and a row is a fixed 32 tiles here, so a pair can never straddle the end
+    // of one -- the precondition CoinWritePair relies on (level.cpp).
+    //
     // TODO: profile CartesianToAddress on NES vs this inline formula before shipping.
-    // ty = 2 + row*2 <= 28 < 30, so nt_v = 0; remaining tiles follow by addition.
+    // ty = 2 + row*2 <= 28 < 30, so nt_v = 0; the bottom row follows by addition.
     const u16 nt_h = static_cast<u16>((tx >> 5) & 1) << 10;
     const u16 base = 0x2000 + nt_h + (static_cast<u16>(ty) << 5) + (tx & 0x1F);
-    CoinVramPush(base,      Metatiles_UL[m]);
-    CoinVramPush(base +  1, Metatiles_UR[m]);
-    CoinVramPush(base + 32, Metatiles_BL[m]);
-    CoinVramPush(base + 33, Metatiles_BR[m]);
+    CoinVramPush(base,      Metatiles_UL[m], Metatiles_UR[m]);
+    CoinVramPush(base + 32, Metatiles_BL[m], Metatiles_BR[m]);
 #else
+    // Unpaired: four tiles, four projections. See level.cpp's kCoinVramRec for why
+    // this backend does not take the pairing.
     CoinVramPush(ppu::CartesianToAddress({tx,     ty}),     Metatiles_UL[m]);
     CoinVramPush(ppu::CartesianToAddress({static_cast<u16>(tx + 1), ty}),     Metatiles_UR[m]);
     CoinVramPush(ppu::CartesianToAddress({tx,     static_cast<u16>(ty + 1)}), Metatiles_BL[m]);

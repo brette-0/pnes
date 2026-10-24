@@ -46,7 +46,16 @@ namespace level {
 
     // Deferred VRAM write queue (coin pickups -> NMI drain).
     // Pushing is done by the player logic; draining is done by the NMI.
+#ifdef TARGET_NES
+    // One call queues a horizontally-adjacent PAIR sharing a single address latch,
+    // so a 2x2 coin is two calls (top row, bottom row) rather than four -- the
+    // drain has a 2,273-cycle vblank to fit inside. See level.cpp for why the pair
+    // is safe here and why it is not taken off-NES.
+    void CoinVramPush(u16 address, u8 v0, u8 v1);
+#else
+    // One call queues one tile, so a 2x2 coin is four calls.
     void CoinVramPush(u16 address, u8 value);
+#endif
 
     // Updates the whole actor roster (both players today, NPCs later) in one call.
     // ::ACTORS-tagged (player.cpp) -- reached via mmc3::Call<UpdateActors>, never
