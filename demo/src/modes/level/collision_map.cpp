@@ -70,6 +70,10 @@ namespace {
     colmap_cold CollectorAnchor colPlayer2Anchor;
 }
 
+// The one shared pick slot -- see collision_map.hpp for why this is not a
+// caller-supplied out-pointer.
+colmap_cold CoinPick coinPick;
+
 // Stamp one column's composite metatiles into ring slot `slot`. Walks stat/dyn
 // down levelHeight cells in lockstep, dynamic-over-static -- same compositing
 // as GetNextMetaTile. Cursor copies are consumed (passed by value).
@@ -290,14 +294,21 @@ NI FIXED bool Blocked(const u16 px, const u16 py, const vec2<u8> dimensions, con
 // Shared body for CollectCoins/CollectCoins2: the two used to be independent
 // ~2.3 KiB copies differing only in which CollectorAnchor they touched.
 // NI FIXED: same rationale as Blocked above.
-NI FIXED static u8 CollectCoinsImpl(CollectorAnchor& anchor, const u16 px, const u16 py,
-                            const vec2<u8> dimensions, CoinPick* out, const u8 maxOut) {
+NI FIXED static bool CollectCoinsImpl(CollectorAnchor& anchor, const u16 px, const u16 py,
+                            const vec2<u8> dimensions) {
     const u8 w = dimensions.x; const u8 h = dimensions.y;
-    i16 rowTop = static_cast<i16>(py >> 4) - kHudRows;
-    i16 rowBot = static_cast<i16>((py + h - 1) >> 4) - kHudRows;
-    if (rowBot < 0 || rowTop >= levelHeight) return 0;
-    if (rowTop < 0)            rowTop = 0;
-    if (rowBot >= levelHeight) rowBot = levelHeight - 1;
+    i16 sTop = static_cast<i16>(py >> 4) - kHudRows;
+    i16 sBot = static_cast<i16>((py + h - 1) >> 4) - kHudRows;
+    if (sBot < 0 || sTop >= levelHeight) return false;
+    if (sTop < 0)            sTop = 0;
+    if (sBot >= levelHeight) sBot = levelHeight - 1;
+    // Signed only until clamped. Past this point both bounds are in
+    // [0, levelHeight), so they -- and every row loop counter derived from them --
+    // are u8: an i16 row index costs a 16-bit compare and increment per cell in
+    // both AABB walks below, and this function's cost is dominated by what it
+    // pays per cell.
+    const u8 rowTop = static_cast<u8>(sTop);
+    const u8 rowBot = static_cast<u8>(sBot);
 
     const u16 colL = px >> 4;
     const u16 colR = (px + w - 1) >> 4;
@@ -306,18 +317,17 @@ NI FIXED static u8 CollectCoinsImpl(CollectorAnchor& anchor, const u16 px, const
     // travel since last frame, a tiny RLE nudge. Must stay unconditional: gating
     // it on "a coin is present" lets anchor.cell freeze and the next collection
     // pays the whole accumulated drift in one spike (tried, and it spiked).
-    const u16 anchorCell = static_cast<u16>(colL) * levelHeight + static_cast<u16>(rowTop);
+    const u16 anchorCell = static_cast<u16>(colL) * levelHeight + rowTop;
     const i16 step      = static_cast<i16>(anchorCell) - static_cast<i16>(anchor.cell);
-    const u8   rowB     = static_cast<u8>(rowBot);
     const bool sameColR = (colR == anchor.colR);
-    const bool sameRowB = (rowB == anchor.rowB);
+    const bool sameRowB = (rowBot == anchor.rowB);
     anchor.cell = anchorCell;
     anchor.colR = colR;
-    anchor.rowB = rowB;
+    anchor.rowB = rowBot;
     // Same cells as last frame AND already verified empty -> skip the walk. Guards
     // all four AABB edges since colR/rowB can change independently of the anchor.
     // anchor.dry is what keeps this safe under the one-coin cap (see file comment).
-    if (step == 0 && sameColR && sameRowB && anchor.dry) return 0;
+    if (step == 0 && sameColR && sameRowB && anchor.dry) return false;
     // After level load step is bounded to ±(levelHeight+1) ≤ 15; use the i8 path
     // (single-byte loop counter on 6502) except on the first call after ColMapSeed
     // where the player may be far from the seed point.
@@ -342,12 +352,12 @@ NI FIXED static u8 CollectCoinsImpl(CollectorAnchor& anchor, const u16 px, const
             u8 slot = ColMapOrigin + static_cast<u8>(d);
             if (slot >= ColMapWidth()) slot -= ColMapWidth();
             const u8* colp = ViewMap + kSlotOffset[slot];
-            for (i16 r = rowTop; !anyCoin && r <= rowBot; r++) {
+            for (u8 r = rowTop; !anyCoin && r <= rowBot; r++) {
                 if (GetMetatileCollisions(colp[r]) == MetatileCollision::Collect)
                     anyCoin = true;
             }
         }
-        if (!anyCoin) { anchor.dry = true; return 0; }   // verified empty: safe to skip next time
+        if (!anyCoin) { anchor.dry = true; return false; }   // verified empty: safe to skip next time
     }
 
     // ONE probe pair copied off the anchor, walked monotonically column-major through
@@ -355,8 +365,11 @@ NI FIXED static u8 CollectCoinsImpl(CollectorAnchor& anchor, const u16 px, const
     // Stops at the FIRST coin found -- see the one-coin-per-call note above.
     DynamicCursor pd   = anchor.dyn;
     Cursor        ps   = anchor.stat;
-    const i16     rows = rowBot - rowTop;       // 0-based row span of the AABB
-    u8 n = 0;
+    // Cells to step to reach the next column's top row: one full column minus the
+    // rows the walk already descended. Hoisted and narrowed to u8 -- it was a
+    // 16-bit `levelHeight - rows` recomputed at every column boundary.
+    const u8      cross = static_cast<u8>(levelHeight - (rowBot - rowTop));
+    bool got = false;
     for (u16 c = colL; ; c++) {
         const u16  d     = c - ColMapBaseCol;
         const bool inWin = d < ColMapWidth();   // column outside window = air
@@ -366,7 +379,7 @@ NI FIXED static u8 CollectCoinsImpl(CollectorAnchor& anchor, const u16 px, const
             if (slot >= ColMapWidth()) slot -= ColMapWidth();
             colp = ViewMap + kSlotOffset[slot];
         }
-        for (i16 r = rowTop; r <= rowBot; r++) {
+        for (u8 r = rowTop; r <= rowBot; r++) {
             // pd.Fetch() reads DynData and GetMetatileCollisions reads the
             // RAM metatile mirror -- both ambient, no window-2 switch.
             const bool isCollect = inWin && pd.Fetch() != 0 &&
@@ -380,34 +393,32 @@ NI FIXED static u8 CollectCoinsImpl(CollectorAnchor& anchor, const u16 px, const
                 *pd.dp = 0;                     // permanent removal (length-1 coin run)
                 const u8 reveal = ps.Fetch();   // static metatile to expose
                 colp[r] = reveal;               // window now shows the static cell
-                if (n < maxOut) out[n] = { c, static_cast<u8>(r), reveal };
-                n++;
+                coinPick = { c, r, reveal };
+                got = true;
                 break;   // one coin per call -- see the comment above
             }
             if (r != rowBot) { pd.Move(1); ps.Move(1); }   // step down to the next row
         }
-        if (n || c == colR) break;
-        pd.Move(levelHeight - rows);            // cross to the next column's top row
-        ps.Move(levelHeight - rows);
+        if (got || c == colR) break;
+        pd.Move(cross);                         // cross to the next column's top row
+        ps.Move(cross);
     }
-    // n>0: we deliberately stopped after the first coin, so this AABB may still hold
+    // got: we deliberately stopped after the first coin, so this AABB may still hold
     // another one -- keep re-scanning next frame even if the player doesn't move.
-    // n==0 here would mean anyCoin lied (shouldn't happen); treat as verified-empty
+    // !got here would mean anyCoin lied (shouldn't happen); treat as verified-empty
     // either way so a stuck AABB can't spin forever re-scanning something that isn't there.
-    anchor.dry = (n == 0);
-    return n;
+    anchor.dry = !got;
+    return got;
 }
 
 // Thin wrappers selecting which player's persistent anchor to use -- see
 // CollectCoinsImpl's own comment for why the body lives there and not here.
-FIXED u8 CollectCoins(const u16 px, const u16 py, const vec2<u8> dimensions,
-                CoinPick* out, const u8 maxOut) {
-    return CollectCoinsImpl(colPlayerAnchor, px, py, dimensions, out, maxOut);
+FIXED bool CollectCoins(const u16 px, const u16 py, const vec2<u8> dimensions) {
+    return CollectCoinsImpl(colPlayerAnchor, px, py, dimensions);
 }
 
-FIXED u8 CollectCoins2(const u16 px, const u16 py, const vec2<u8> dimensions,
-                 CoinPick* out, const u8 maxOut) {
-    return CollectCoinsImpl(colPlayer2Anchor, px, py, dimensions, out, maxOut);
+FIXED bool CollectCoins2(const u16 px, const u16 py, const vec2<u8> dimensions) {
+    return CollectCoinsImpl(colPlayer2Anchor, px, py, dimensions);
 }
 
 }   // namespace level

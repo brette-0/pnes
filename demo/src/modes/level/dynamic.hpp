@@ -8,7 +8,7 @@ using namespace br0::intsh;
 namespace level {
 
 // ---------------------------------------------------------------------------
-// Dynamic tile layer (prototype scaffolding)
+// Dynamic tile layer
 //
 // A second RLE plane authored as a separate Tiled layer, compressed with the
 // same {length, data} scheme and covering the same WxH metatile grid as the
@@ -23,12 +23,10 @@ namespace level {
 // (they never change). So a DynamicCursor streams lengths from ROM but peeks
 // data from RAM.
 //
-// STATUS: no level ships a dynamic layer yet, so the ROM sources are null and
-// three integration points are deliberately stubbed / left uncalled:
-//   (a) LoadDynamicLayer  -- ROM->RAM copy, called from LoadLevel once data exists
-//   (b) render compositing -- dynamic-over-static inside the column builders
-//   (c) the actor double-probe -- needs real actor collision response
-// The data structures, cursor, collision query and removal jump table are real.
+// All three integration points are live: LoadDynamicLayer is called from
+// LoadLevel (levels.cpp), ColMapStamp composites dynamic-over-static into
+// ViewMap, and CollectCoinsImpl walks the probe pair (collision_map.cpp).
+// 1-1 ships a real dynamic layer.
 // ---------------------------------------------------------------------------
 
 // Max dynamic RUNS held in RAM. The dynamic plane is sparse (mostly air), so a
@@ -96,8 +94,8 @@ DynHit CollidesDynamic(const DynamicCursor& origin, u16 px, u16 py, u8 w, u8 h);
 void RemoveDynamic(const DynHit& h, const Cursor &under);
 
 // Copy the active level's dynamic ROM run-data into DynData and point DynLengths
-// at the level's dynamic lengths. STUB: call from LoadLevel once a level ships a
-// dynamic layer (pass nullptrs / 0 for a level that has none).
+// at the level's dynamic lengths. Called from LoadLevel; pass nullptrs / 0 for a
+// level that ships no dynamic layer.
 void LoadDynamicLayer(const u8* dynLengthsROM, const u8* dynDataROM, u16 runCount);
 
 }   // namespace level

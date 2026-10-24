@@ -128,13 +128,13 @@ ACTORS static void PushCoinVram(const CoinPick& pick) {
 
 // CollectCoins/CollectCoins2 remove at most one coin per call (the "one pickup
 // per frame" technique -- see the comment above CollectCoins in
-// collision_map.cpp), so picks only ever needs room for one.
+// collision_map.cpp), so the pick comes back in the single shared level::coinPick
+// slot and is only valid when the call returned true.
 ACTORS static void CollectCoinsFor(const Actor* self, const Player* p) {
-    CoinPick picks[1];
-    const u8 n = (p == &player1)
-        ? CollectCoins( ActorTX(self), self->screen.y, self->GetSize(), picks, 1)
-        : CollectCoins2(ActorTX(self), self->screen.y, self->GetSize(), picks, 1);
-    if (n) PushCoinVram(picks[0]);
+    const bool got = (p == &player1)
+        ? CollectCoins( ActorTX(self), self->screen.y, self->GetSize())
+        : CollectCoins2(ActorTX(self), self->screen.y, self->GetSize());
+    if (got) PushCoinVram(coinPick);
 }
 
 // ---------------------------------------------------------------------------

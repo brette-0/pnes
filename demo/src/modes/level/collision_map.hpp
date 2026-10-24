@@ -113,14 +113,24 @@ bool Blocked(u16 px, u16 py, vec2<u8> dimensions, bool collectBlocks);
 // these into nametable tile writes; CollectCoins has already done the data side.
 struct CoinPick { u16 col; u8 row; u8 reveal; };
 
-// Collect every coin (Collect-class cell) the AABB overlaps.  For each: the run is
-// looked up (a rare RLE walk off the hot path) and blanked in DynData so it never
-// recomposites when the column re-enters the window, and the window cell is replaced
-// with the revealed static metatile so collision + render see it gone immediately.
-// The picks (cell + reveal) are written to `out` (up to `maxOut`); returns the count
-// (which may exceed maxOut if the AABB straddles more coins than the caller budgeted).
+// The pick from the most recent CollectCoins/CollectCoins2 that returned true.
+// A single shared slot rather than a caller-supplied `CoinPick* out` + `maxOut`
+// pair: the collectors take AT MOST ONE coin per call by design, so an array and
+// a budget were always a one-element array and a constant 1 -- three parameter
+// bytes and an indirect store that the register allocator paid for on every
+// call, including the common no-coin one.  Read it ONLY when the call returned
+// true; it is stale otherwise, and the next call overwrites it.  `reveal` cannot
+// serve as its own "nothing here" sentinel: metatile $00 is air, which is a
+// perfectly ordinary thing to reveal under a coin.
+extern CoinPick coinPick;
+
+// Collect one coin (Collect-class cell) the AABB overlaps, if any: the run is
+// blanked in DynData so it never recomposites when the column re-enters the
+// window, and the window cell is replaced with the revealed static metatile so
+// collision + render see it gone immediately.  Returns whether a coin was taken;
+// the cell + revealed metatile land in `coinPick` above.
 // Same world-pixel / HUD-strip convention as Blocked.
-u8 CollectCoins(u16 px, u16 py, vec2<u8> dimensions, CoinPick* out, u8 maxOut);
-u8 CollectCoins2(u16 px, u16 py, vec2<u8> dimensions, CoinPick* out, u8 maxOut);
+bool CollectCoins(u16 px, u16 py, vec2<u8> dimensions);
+bool CollectCoins2(u16 px, u16 py, vec2<u8> dimensions);
 
 }   // namespace level
