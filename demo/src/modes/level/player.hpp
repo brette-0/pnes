@@ -49,8 +49,11 @@ struct Player {
     i16 xForce;    // horizontal acceleration remainder (1/256-subpixel/frame)
     i16 yForce;    // gravity remainder (1/256-subpixel/frame)
     u8  runTimer;
+    // Per-frame entry points for a player: input and the camera/scroll
+    // coupling live here, then each calls the matching Actor method for the
+    // half shared with every actor (switched on actorType, not a hook pointer).
+    void Start();
     void Update();
-    void Reset();
 };
 
 }   // namespace level

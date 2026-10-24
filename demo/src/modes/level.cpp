@@ -108,6 +108,26 @@ namespace level {
     // it each frame because the PPU scroll register is integer-pixel only.
     u16 cameraX;
 
+    // The scroll value the raster actually uses, latched in the NMI next to the
+    // OAM DMA so the background and the sprites are never a frame apart.
+    // ApplyHudSplit runs from the scanline IRQ ~16 lines into the *visible*
+    // frame, by which point the main loop has long since returned from
+    // WaitForPresent and re-entered UpdateActors, which moves cameraX for the
+    // frame after this one. Reading cameraX live there scrolled the background
+    // a frame ahead of the sprite positions the NMI had already shipped: P1
+    // never showed it (its screen.x is pinned near the viewport centre while
+    // scrolling, so it rides the camera by construction), but P2 -- whose
+    // screen.x is derived from cameraX and committed to OAM a frame earlier --
+    // trailed the camera by exactly the scroll amount, 1px per frame of scroll.
+    // The column streamed by nmi_handler is placed from the same logic frame,
+    // so it lines up with this latch too.
+    static atomic u16 rasterCameraX;
+#if defined(TARGET_NDS) || defined(TARGET_GBA)
+    // Same latch for the vertical follow on the handhelds: the bump is derived
+    // from P1's sprite Y, which has to be the Y the OAM DMA just shipped.
+    static atomic oam::oam_t rasterPlayerY;
+#endif
+
     atomic tech::enum_flags<eLevelStreamCommands> levelStreamCommand;
     u8 TileBuffer[56];
 
@@ -281,14 +301,15 @@ namespace level {
             ColMapSeed(0, { TileData }, { DynLengths, DynData, 0 });
         });
 
-        // Player::Reset is ::ACTORS; ::COLD can't reach a different bank-5
-        // domain by a plain call, so this needs an explicit farcall. This
-        // block has nothing to do with UpdateActors, so name the tag
-        // directly rather than routing through an unrelated bound function.
+        // Player::Start is ::ACTORS (it stamps actorType and seeds the actor
+        // through Actor::Start); ::COLD can't reach a different bank-5 domain
+        // by a plain call, so this needs an explicit farcall. This block has
+        // nothing to do with UpdateActors, so name the tag directly rather
+        // than routing through an unrelated bound function.
         mmc3::CallInBlock<actor_tag>([] {
-            player1.Reset();
+            player1.Start();
 #ifdef PLAYER2_SUPPORTED
-            player2.Reset();
+            player2.Start();
 #endif
         });
         oam::RefreshSprites(OAMBuffer);   /* seed the first frame's sprite snapshot */
@@ -348,6 +369,13 @@ namespace level {
     FIXED void nmi_handler() {
         lastPort1 = port1; lastPort2 = port2;
         oam::RefreshSprites(OAMBuffer);
+
+        // Latched here, with the sprite snapshot this DMA just shipped, and read
+        // by ApplyHudSplit from the scanline IRQ -- see ::rasterCameraX.
+        rasterCameraX = cameraX;
+#if defined(TARGET_NDS) || defined(TARGET_GBA)
+        rasterPlayerY = player1.actor.screen.y;
+#endif
 
         using enum eLevelStreamCommands;
         if (levelStreamCommand & eLevelStreamCommands::STREAM_LEVEL_DONE) SHADOW(ppu::PPUMASK) {
@@ -426,11 +454,11 @@ namespace level {
         #if defined(TARGET_NDS) || defined(TARGET_GBA)
             const i16 mid    = static_cast<i16>(video::viewport_py() >> 1);
             const i16 anchor = static_cast<i16>(240 - video::viewport_py());
-            const i16 raw    = static_cast<i16>(player1.actor.screen.y) - mid;
+            const i16 raw    = static_cast<i16>(rasterPlayerY) - mid;
             const i16 bump   = raw < 0 ? 0 : (raw > anchor ? anchor : raw);
-            ppu::SetScroll({cameraX, static_cast<u16>(16 + bump)});
+            ppu::SetScroll({rasterCameraX, static_cast<u16>(16 + bump)});
         #else
-            ppu::SetScroll({cameraX, kHudSplitRow});
+            ppu::SetScroll({rasterCameraX, kHudSplitRow});
         #endif
 
         // The playfield's half of the double-booked $0400 window -- see

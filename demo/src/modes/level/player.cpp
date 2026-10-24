@@ -18,7 +18,7 @@ namespace level {
 //
 // ACTORS: static but level::-namespaced, so without an explicit tag they'd
 // fall into the generic resident catch-all instead of the actors bank. All
-// private to this TU, reachable only from Player::Update/Reset (also ACTORS).
+// private to this TU, reachable only from Player::Update/Start (also ACTORS).
 // ---------------------------------------------------------------------------
 
 ACTORS static u8 PlayerPort(const Player* p)     { return p == &player1 ? port1     : port2;     }
@@ -37,6 +37,49 @@ ACTORS static void PlayerRefreshX(const Player* p) {
     oam::sprite_t* s = OAMBuffer + (p == &player1 ? 1 : 1 + kMarySprites);
     const oam::oam_t sx = p->actor.screen.x;
     s[0].x = sx;         s[1].x = sx + 8u;
+}
+
+// ---------------------------------------------------------------------------
+// P2's screen X -- anchored to P1, which is what the camera is anchored to.
+//
+// cameraX is integer-pixel, and P1's screen.x is exact against it by
+// construction (the camera absorbs P1's off-centre motion sub-pixel for
+// sub-pixel), so P1 never quantizes against the scrolling background.
+// Deriving P2 as floor(w2/8) - cameraX instead composes two *independent*
+// floors: hold the two players a constant sub-pixel distance D apart and
+// floor(w2/8) - floor(w1/8) alternates between floor(D/8) and ceil(D/8) as
+// P1's sub-pixel phase advances, so P2 wobbled a pixel against the
+// background every other frame -- worst at matched walking speeds, invisible
+// when P2 stands still (floor(w2/8) is then constant and she rides cameraX
+// cleanly), which is why it only showed up *sometimes*.
+//
+// Shifting the *difference* once keeps P2 exactly (w2-w1)>>3 pixels from P1,
+// so the quantization is a fixed sub-pixel offset rather than a per-frame
+// beat. Both players are on screen (P2 is clamped to the viewport below), so
+// the difference is at most a viewport's worth of sub-pixels and fits i16.
+ACTORS static void PlayerFollowCamera(Player* p) {
+    Actor*       self = &p->actor;
+    const Actor* lead = &player1.actor;
+    const auto   maxX = static_cast<i16>(video::viewport_px() - 16);
+
+    const i16 delta = static_cast<i16>(self->worldSpace.x - lead->worldSpace.x);
+    i16       sx    = static_cast<i16>(lead->screen.x) + static_cast<i16>(delta >> 3);
+
+    // Camera push-off: re-seat worldSpace from the clamped screen position so
+    // the line above reproduces it exactly next frame -- P2 then rides the
+    // camera in lockstep (she inherits P1's sub-pixel phase, which is the
+    // phase the camera itself moves on) instead of re-clamping every frame
+    // off a stale sub-pixel remainder.
+    if (sx < 0 || sx > maxX) {
+        sx = sx < 0 ? 0 : maxX;
+        self->worldSpace.x = static_cast<u16>(lead->worldSpace.x
+            + static_cast<u16>(static_cast<i16>(sx - static_cast<i16>(lead->screen.x)) << 3));
+    }
+
+    if (static_cast<oam::oam_t>(sx) != self->screen.x) {
+        self->screen.x = static_cast<oam::oam_t>(sx);
+        PlayerRefreshX(p);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -193,52 +236,33 @@ ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u1
         // Recompose canonical sub-pixel X from camera + clamped screen position.
         self->worldSpace.x = static_cast<u16>(((cameraX + self->screen.x) << 3) | (static_cast<u16>(rawX) & 7));
     } else {
-        // P2: worldSpace.x is canonical; derive screen.x from it, clamping only at
-        // viewport edges (camera push-off).
-        self->worldSpace.x = static_cast<u16>((static_cast<u16>(rawX >> 3) << 3) | (static_cast<u16>(rawX) & 7u));
-        const i16 world_px = static_cast<i16>(self->worldSpace.x >> 3);
-        i16 sx = world_px - static_cast<i16>(cameraX);
-        if (sx < 0) {
-            sx = 0;
-            self->worldSpace.x = static_cast<u16>((static_cast<u16>(cameraX) << 3) | (static_cast<u16>(rawX) & 7u));
-        } else if (sx > static_cast<i16>(playerMaxXPos)) {
-            sx = static_cast<i16>(playerMaxXPos);
-            self->worldSpace.x = static_cast<u16>((static_cast<u16>(cameraX + playerMaxXPos) << 3) | (static_cast<u16>(rawX) & 7u));
-        }
-        if (static_cast<oam::oam_t>(sx) != self->screen.x) {
-            self->screen.x = static_cast<oam::oam_t>(sx);
-            PlayerRefreshX(p);
-        }
+        // P2: worldSpace.x is canonical; screen.x follows from P1 (and so from
+        // the camera P1 drives) in PlayerFollowCamera, which also handles the
+        // viewport-edge clamp.
+        self->worldSpace.x = static_cast<u16>(rawX);
+        PlayerFollowCamera(p);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Player::Update / Player::Reset -- ::ACTORS, reached via
-// mmc3::Call<UpdateActors>/CallInBlock<actor_tag>, never by an ordinary call.
+// Player::Start / Player::Update -- the per-frame entry point for a player,
+// ::ACTORS, reached via mmc3::Call<UpdateActors> / CallInBlock<actor_tag>,
+// never by an ordinary call from another bank. Each owns what only a player
+// does (input, the camera/scroll coupling) and calls its Actor's matching
+// method for the half that's shared with every other actor and switched on
+// actorType there.
 // ---------------------------------------------------------------------------
 
 ACTORS void Player::Update() {
     if (paused) return;
     Actor* self = &actor;
 
-    // P2 doesn't drive scroll; cameraX may have moved this frame (P1 went first).
-    // Re-derive screen.x from worldSpace and clamp to the viewport edge.
-    if (this != &player1) {
-        const i16 maxX     = static_cast<i16>(video::viewport_px() - 16);
-        const i16 world_px = static_cast<i16>(self->worldSpace.x >> 3);
-        i16 sx = world_px - static_cast<i16>(cameraX);
-        if (sx < 0) {
-            sx = 0;
-            self->worldSpace.x = static_cast<u16>((static_cast<u16>(cameraX) << 3) | (self->worldSpace.x & 7u));
-        } else if (sx > maxX) {
-            sx = maxX;
-            self->worldSpace.x = static_cast<u16>((static_cast<u16>(cameraX + maxX) << 3) | (self->worldSpace.x & 7u));
-        }
-        if (static_cast<oam::oam_t>(sx) != self->screen.x) {
-            self->screen.x = static_cast<oam::oam_t>(sx);
-            PlayerRefreshX(this);
-        }
-    }
+    // P2 doesn't drive scroll; the camera may have moved this frame (P1 went
+    // first, and P1's Update is what moves it). Re-anchor her screen.x to P1
+    // before anything reads it -- grounded/collision below work off
+    // worldSpace, but the OAM position has to track the camera every frame,
+    // including the frames P2 holds still.
+    if (this != &player1) PlayerFollowCamera(this);
 
     const u16 tx  = ActorTX(self);   // cached: shared by grounded check + ProcessMovement
     bool grounded = IsBlocked(self, tx, static_cast<u16>(self->screen.y + 1));
@@ -311,14 +335,24 @@ ACTORS void Player::Update() {
 
     // Pickup runs on the committed position; queues nametable writes for NMI drain.
     CollectCoinsFor(self, this);
+
+    // Shared actor tail, switched on eActorType::Player over in actor.cpp:
+    // runs on the committed position, so anything common to all actors
+    // (animation advance, state transitions) lands there, not here.
+    self->Update();
 }
 
-ACTORS void Player::Reset() {
+ACTORS void Player::Start() {
+    // Stamped here rather than by the caller: actorType drives the shared
+    // half of the behavior (Actor::Start/Update switch on it), and this is the
+    // point where this Actor becomes a player's.
+    actor.actorType = Actor::eActorType::Player;
     actor.gravity   = 0;
     actor.moveForce = vec2<i8>{0, 0};
     xForce   = 0;
     yForce   = 0;
     runTimer = 0;
+    actor.Start();
 }
 
 // Single per-frame entry point into the actors bank: updates the whole roster

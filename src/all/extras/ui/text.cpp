@@ -18,29 +18,42 @@ local.cmake.example has a worked example."
 #endif
 #define UI_BANK MODULE_PLACEMENT(PNES_UI_SECTION) MINSIZE
 
-namespace ui::text {
+namespace ui::text::detail {
     UI_BANK textBuffer* Make(const u8* buff, const vec2<u8> box, const u8 splitter, const u8 terminator) {
         const auto rows = new textBuffer[box.y]();
 
         // The length the caller used to pass, measured here instead. Both
-        // bytes are tiles (see the charmap overload in text.hpp), so this
+        // bytes are tiles (see ui::text::Make in text.hpp), so this
         // compares against the encoded terminator, not against 0x00 -- and
         // the charmap has to give the terminator a tile of its own, or the
         // first splitter in the text would end the string here.
         //
-        // Capped at 255, which is every length the old u8 sBuff could express:
-        // for a buffer terminated at or before index 255 this lands on exactly
-        // that index, and an unterminated one truncates rather than running
-        // away through memory.
-        u8 sBuff = 0;
-        while (sBuff != 0xff && *(buff + sBuff) != terminator) sBuff++;
+        // Capped at 960 -- 32*30, the most tiles any nametable box can show,
+        // so no reachable text is cut short (the old 255 cap truncated a box
+        // taller than 32x8, and a full-screen one at barely a quarter of its
+        // capacity). The cap is a constant rather than box.x*box.y because
+        // the 6502 has no multiply: the product form cost 78 bytes more than
+        // this one, measured.
+        //
+        // The guard still has to be tight, not merely present: an unterminated
+        // buffer scanning on through $2000-$401f would not just read garbage
+        // but CHANGE PPU/APU state -- reading $2002 clears the vblank flag,
+        // $2007 steps the VRAM address -- so a 0xffff guard would be no guard
+        // at all on this target, however much u16 sBuff can address.
+        //
+        // sBuff is u16, so every position compared against it is too: a u8
+        // cursor would wrap to 0 at 255 and spin forever on text longer than
+        // that, which is the whole case this widening exists to serve. Only
+        // textBuffer::size stays u8, bounded by box.x a row at a time.
+        u16 sBuff = 0;
+        while (sBuff != 960 && *(buff + sBuff) != terminator) sBuff++;
 
-        u8 cursor = 0;
-        u8 last   = 0;
-        u8 row    = 0;
+        u16 cursor = 0;
+        u16 last   = 0;
+        u8  row    = 0;
 
         while (cursor < sBuff && row < box.y) {
-            u8   lastWhite  = last;
+            u16  lastWhite  = last;
             bool foundWhite = false;
 
             for (; cursor < sBuff && cursor - last < box.x; cursor++) {
@@ -50,10 +63,10 @@ namespace ui::text {
                 }
             }
 
-            const u8 end = (cursor == sBuff) ? cursor : (foundWhite ? lastWhite : cursor);
+            const u16 end = (cursor == sBuff) ? cursor : (foundWhite ? lastWhite : cursor);
 
             rows[row].addr = const_cast<u8*>(buff + last);
-            rows[row].size = end - last;
+            rows[row].size = static_cast<u8>(end - last);
             row++;
 
             last   = (end < sBuff) ? end + 1 : end;
@@ -62,7 +75,9 @@ namespace ui::text {
 
         return rows;
     }
+}
 
+namespace ui::text {
     // rowAddr steps by one nametable row per iteration. One nametable is this
     // target's own viewport width, floored at the NES-native 32 minimum
     // (matching ::emu::ComputeNtGeometry, src/emu/emu.hpp, and

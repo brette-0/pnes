@@ -47,9 +47,9 @@ class Actor {
         return GetSize(this->actorType);
     }
 
-    void (*start)(Actor* self);    // behavior hooks: plain fn pointers, no vtable
-    void (*update)(Actor* self);   // null for now
-
+    // Behavior is dispatched on actorType (see Actor::Start/Update in
+    // actor.cpp), not through per-actor function pointers: no 2 bytes of hook
+    // storage per actor and no indirect JSR per call.
     void Start();
     void Update();
 

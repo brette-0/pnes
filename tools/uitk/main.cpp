@@ -1781,19 +1781,17 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             // Make scans for to find the buffer's end, which is why there is
             // no length parameter here.
             //
-            // With a charmap, both bytes come from the charmap overload, which
-            // takes it as a template parameter so it stays compile-time only
-            // (see text.hpp) -- the splitter travels as a `char` NTTP for the
-            // same reason, so the charmap never gets called at runtime. With
-            // no charmap set, the primitive takes the raw ASCII splitter and a
-            // plain 0x00 terminator, matching the untranslated bytes such a
-            // scene's buffers hold.
-            const QString callExpr =
-                charmapFn.isEmpty()
-                    ? QString("ui::text::Make(buff, vec2<u8>{%1, %2}, '%3', 0)")
-                          .arg(w).arg(h).arg(cCharEscape(splitter))
-                    : QString("ui::text::Make<%1, '%2'>(buff, vec2<u8>{%3, %4})")
-                          .arg(charmapFn, cCharEscape(splitter)).arg(w).arg(h);
+            // Make takes the charmap itself and lifts both bytes out of it,
+            // and takes it as a template parameter so it stays compile-time
+            // only (see text.hpp) -- the splitter travels as a `char` NTTP for
+            // the same reason, so the charmap never gets called at runtime.
+            // With no charmap set, a scene's buffers hold untranslated bytes,
+            // which is exactly ui::text::ascii -- the identity charmap, whose
+            // splitter is the raw ASCII character and whose terminator is a
+            // plain 0x00. There is no second, byte-taking Make to reach for.
+            const QString mapExpr = charmapFn.isEmpty() ? QStringLiteral("ui::text::ascii") : charmapFn;
+            const QString callExpr = QString("ui::text::Make<%1, '%2'>(buff, vec2<u8>{%3, %4})")
+                                         .arg(mapExpr, cCharEscape(splitter)).arg(w).arg(h);
             hppDecls << QString("inline AI ui::text::textBuffer* %1(const u8* buff) {\n"
                                  "    return %2;\n"
                                  "}\n")

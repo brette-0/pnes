@@ -1,5 +1,5 @@
 #include "actor.hpp"
-
+#include "modes/level.hpp"
 #include "modes/level/levels.hpp"
 #include "modes/level/collision_map.hpp"
 #include "banks.hpp"   // ACTORS
@@ -45,8 +45,33 @@ static void TranslateWorldSpace(vec2<u16>& worldSpace, const vec2<i8> delta) {
     worldSpace.y += delta.y;
 }
 
-ACTORS void Actor::Start() {this->start(this);}
-ACTORS void Actor::Update() {this->update(this);}
+// The shared half of actor behavior, switched on actorType rather than reached
+// through per-actor function pointers. These are the common steps every actor
+// runs (and their per-type variations); the parts no other actor will ever
+// share -- player input, the camera/scroll coupling -- stay in Player, which
+// calls down into these. An actor owned by a concrete type (the players) is
+// entered through that type; an actor known only as an Actor* (future NPCs in
+// a roster) is entered here.
+ACTORS void Actor::Start() {
+    switch (this->actorType) {
+        case eActorType::Player:
+            break;
+        case eActorType::Mushlet:
+            break;
+        case eActorType::End:
+            break;
+    }
+}
+ACTORS void Actor::Update() {
+    switch (this->actorType) {
+        case eActorType::Player:
+            break;
+        case eActorType::Mushlet:
+            break;
+        case eActorType::End:
+            break;
+    }
+}
 
 // NOT ::ACTORS: called from EnterLevelSetup (level.cpp), which is ::COLD --
 // COLD code can only reach FIXED, resident ($C000-$DFFF), and its own bank,
