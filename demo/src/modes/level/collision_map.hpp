@@ -103,9 +103,17 @@ void ColMapSlideLeft(const Cursor &newLeftStat, DynamicCursor newLeftDyn);
 
 // AABB block test, world-pixel inputs.  py is world pixel Y; the HUD strip is
 // removed internally so the row index lands in level space, consistent with how
-// ColMapStamp packed it.  `collectBlocks` decides the audience: true for the
-// player (coins block, pending pickup), false for enemies (coins pass).  Columns
-// outside the window or rows outside [0,levelHeight) read as air.
+// ColMapStamp packed it.  Columns outside the window or rows outside
+// [0,levelHeight) read as air.
+//
+// `collectBlocks` is VESTIGIAL: every call site passes false (player.cpp's
+// IsBlocked, actor.cpp's Update), so coins never stop anyone and LTO folds the
+// parameter away -- the inner loop compares against Solid only.  It is kept as
+// a parameter rather than deleted because the signature documents the axis, but
+// do not read it as a live option: an earlier comment here claimed the player
+// passed true ("coins block, pending pickup") and that was never the behaviour
+// in this revision.  Coins are taken by CollectCoins on a separate pass; making
+// them solid would stop the player dead on top of one.
 bool Blocked(u16 px, u16 py, vec2<u8> dimensions, bool collectBlocks);
 
 // One collected coin: its world metatile cell and the static metatile revealed

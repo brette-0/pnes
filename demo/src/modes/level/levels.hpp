@@ -13,6 +13,14 @@ namespace level {
     constexpr auto levelHeight = 14;
     constexpr i16 kHudRows = 1;
     extern u16 nColumns;
+
+    // Highest cameraX the level allows: (nColumns - viewport_mx()) << 4.
+    // Derived from nColumns, so constant for the whole level -- but it sits in
+    // ProcessMovement's camera-scroll path, which recomputed it every frame P1
+    // moved horizontally. A 16-bit subtract plus a 16-bit shift-by-4 (eight
+    // shift/rotate pairs on a 6502) to reach an answer that cannot change.
+    // Set by LoadLevel alongside nColumns.
+    extern u16 maxCameraX;
     extern const u8* TileData;
     extern const u8 LevelDataAttributes[];
     extern Cursor edgeR;

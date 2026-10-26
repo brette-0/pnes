@@ -3,6 +3,7 @@
 #include "levels.hpp"                  // levelHeight, kHudRows
 #include "../../graphics/metatiles.hpp"   // GetMetatileCollisions, MetatileCollision
 #include "../../banks.hpp"             // FIXED, LEVEL_CODE
+#include "../../raster_band.hpp"      // demo::RasterBand (profiling aid, off by default)
 
 #include <array>
 
@@ -68,6 +69,14 @@ namespace {
     // Independent anchor for player 2, same invariants -- avoids bouncing a
     // shared cursor across the inter-player distance every frame.
     colmap_cold CollectorAnchor colPlayer2Anchor;
+
+    // Highest base column the window may hold: nColumns - ColMapWidth(), floored
+    // at 0 for a level narrower than the window. Derived from nColumns, which
+    // LoadLevel sets once and nothing changes afterwards -- so it is constant for
+    // the whole level, and ColMapTrack was recomputing it (a 16-bit subtract, a
+    // sign test and a conditional zero) every single frame to reach the same
+    // answer. Seeded in ColMapSeed, which runs after LoadLevel at level entry.
+    colmap_cold u16 ColMapMaxBase;
 }
 
 // The one shared pick slot -- see collision_map.hpp for why this is not a
@@ -91,6 +100,26 @@ NI LEVEL_CODE void ColMapStamp(const u8 slot, Cursor stat, DynamicCursor dyn) {
     const u8* dlen = dyn.lp;
     u8        dp   = dyn.progress;
 
+    // ~90 cycles per cell, and ~36 of that is register shuffling, not memory:
+    // the loop touches four pointers, the 6502 has one register that can index
+    // `(zp),y`, so Y alternates between 0 (for *ddat / *sdat / *dlen) and the
+    // row (for col[r]) on every cell, each alternation a txa/tay pair with
+    // pha/pla around it to save the value in flight.
+    //
+    // Two source-level fixes were tried (2026-10-24) and BOTH failed; do not
+    // re-try them. Walking `col` as a pointer (`*col++`) gave a BYTE-IDENTICAL
+    // function -- LLVM strength-reduces it straight back to the indexed form.
+    // Replacing the counter with a pointer-compare loop (`while (col != end)`)
+    // was WORSE: 144 bytes and 17 shuffle ops against 142 and 13. The shuffling
+    // is llvm-mos's register allocator, not the way this is written, so moving
+    // it needs asm or a different data layout.
+    //
+    // Note what is NOT the problem, because the obvious reading is wrong and an
+    // earlier analysis acted on it: `*dlen` and `*sdat` read banked PRG-ROM,
+    // but window 2 is pinned to the level's bank for the whole session
+    // (levels.cpp), and a read from MAPPED ROM costs a 6502 exactly what a read
+    // from RAM costs. There is no "windowed fetch" penalty per cell. Copying
+    // DynLengths into RAM would buy nothing and spend 512 bytes of it.
     #pragma clang loop unroll(disable)
     for (u8 r = 0; r < levelHeight; r++) {
         const u8 d = *ddat;
@@ -109,6 +138,8 @@ NI LEVEL_CODE void ColMapStamp(const u8 slot, Cursor stat, DynamicCursor dyn) {
 NI LEVEL_CODE void ColMapSeed(const u16 leftCol, Cursor stat, DynamicCursor dyn) {
     ColMapBaseCol = leftCol;
     ColMapOrigin  = 0;
+    ColMapMaxBase = nColumns > ColMapWidth()
+                  ? static_cast<u16>(nColumns - ColMapWidth()) : 0;
     colLeftStat   = stat;          // leftmost held column (base), row 0
     colLeftDyn    = dyn;
     colPlayerAnchor.stat = stat;   // collector anchor: parked on (leftCol, row 0) now;
@@ -161,38 +192,48 @@ static void AdvancePairBackward(Cursor& s, DynamicCursor& d) {
     d.lp = dlp; d.dp = ddp; d.progress = dprog;
 }
 
-// Lazily centre the window on the camera. Desired base = camLeftCol - 4, clamped
-// to the level. Each loop iteration slides one column and walks both edge cursor
-// pairs, preserving [base, base+width-1]. Steady scroll does 0 or 1 slides/call.
-// NI: keep this driver's frame out of the giant PlayerUpdate ZP frame.
-// LEVEL_CODE: called only from level::main()'s loop.
-NI LEVEL_CODE void ColMapTrack(const u16 camLeftCol) {
-    i16 desired = static_cast<i16>(camLeftCol) - 4;
-    if (desired < 0) desired = 0;
-    i16 hi = static_cast<i16>(nColumns) - static_cast<i16>(ColMapWidth());
-    if (hi < 0) hi = 0;                       // level narrower than the window
-    if (desired > hi) desired = hi;
-
+// The slide itself. Split out of ColMapTrack so the common frame does not pay
+// for it: inlining AdvancePairForward/Backward and ColMapSlideRight/Left here
+// costs a 3-byte soft-stack frame, 5 pushes and 3 register spills, and leaving
+// that in ColMapTrack meant paying the whole prologue/epilogue on EVERY frame
+// to then decide not to slide at all -- ~75 cycles a frame for nothing, on the
+// ~169 frames in 175 that hold still. Now it is paid only when the window
+// actually moves.
+// NI: keep this frame out of ColMapTrack's (and out of the giant PlayerUpdate ZP
+// frame, which is what the original note here was guarding against).
+NI LEVEL_CODE static void ColMapSlideTo(const u16 desired) {
     u8 colIter = 0;
-    while (static_cast<i16>(ColMapBaseCol) < desired) {   // window slides right
-#ifdef TARGET_NES
-        ppu::SetColorPriority(static_cast<u8>((++colIter << 5) & 0xE0));
-#endif
+    while (ColMapBaseCol < desired) {         // window slides right
+        demo::RasterBand(static_cast<u8>((++colIter << 5) & 0xE0));
         AdvancePairForward(colRightStat, colRightDyn);    // entering column
         ColMapSlideRight(colRightStat, colRightDyn);      // base++
         AdvancePairForward(colLeftStat, colLeftDyn);      // re-anchor left edge
     }
-    while (static_cast<i16>(ColMapBaseCol) > desired) {   // window slides left
-#ifdef TARGET_NES
-        ppu::SetColorPriority(static_cast<u8>((++colIter << 5) & 0xE0));
-#endif
+    while (ColMapBaseCol > desired) {          // window slides left
+        demo::RasterBand(static_cast<u8>((++colIter << 5) & 0xE0));
         AdvancePairBackward(colLeftStat, colLeftDyn);     // entering column
         ColMapSlideLeft(colLeftStat, colLeftDyn);         // base--
         AdvancePairBackward(colRightStat, colRightDyn);   // re-anchor right edge
     }
-#ifdef TARGET_NES
-    ppu::SetColorPriority(0);
-#endif
+    demo::RasterBand(0);
+}
+
+// Lazily centre the window on the camera. Desired base = camLeftCol - 4, clamped
+// to the level. Steady scroll does 0 or 1 slides/call, so this is written to be
+// as close to free as possible on the no-slide frame: the whole body is two
+// compares and a branch, which is why it carries no soft-stack frame at all --
+// see ColMapSlideTo for what used to be inlined here.
+//
+// All UNSIGNED. This used to run in i16 because `camLeftCol - 4` can go
+// negative, but only the first guard below needs that: after clamping, `desired`
+// and ColMapBaseCol are both non-negative, so the loop tests were paying signed
+// 16-bit compares, and the sign-extending casts feeding them, for a range that
+// cannot be negative.
+// LEVEL_CODE: called only from level::main()'s loop.
+NI LEVEL_CODE void ColMapTrack(const u16 camLeftCol) {
+    u16 desired = camLeftCol > 4 ? static_cast<u16>(camLeftCol - 4) : 0;
+    if (desired > ColMapMaxBase) desired = ColMapMaxBase;   // hoisted, see its decl
+    if (ColMapBaseCol != desired) ColMapSlideTo(desired);
 }
 
 // Slide the window right: the dropped leftmost slot (ColMapOrigin) is reused

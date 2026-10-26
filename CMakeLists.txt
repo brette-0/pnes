@@ -1353,6 +1353,40 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             VERBATIM
     )
 
+    # ------------------------------------------------------------------
+    # .mlb fixup, so Mesen can name symbols in the profiler / debugger /
+    # trace logger instead of showing bare PRG addresses.
+    #
+    # The llvm-mos SDK emits demo.mlb itself, with `G:` code addresses as raw
+    # ELF VMAs -- $e000 for fixed-bank code, and the bank-encoded pseudo-VMAs
+    # ($18000, $5826c, $8a400) for banked domains. Mesen wants PRG FILE
+    # OFFSETS, which is what its profiler reports as `PRG: $xxxxx`, so the
+    # SDK's file names nothing. This rewrites them in place.
+    #
+    # The script re-derives each offset from demo/link.ld's documented
+    # (bank + 1) << 16 encoding and then BYTE-VERIFIES every one against the
+    # linked ROM, failing the build on a mismatch. That matters because
+    # link.ld's own comment warns the ORIGIN encoding and the FULL() order are
+    # "kept in agreement by hand" -- so this step doubles as a check that they
+    # still are. Runs after the link, so it sees the .nes this build produced.
+    # ------------------------------------------------------------------
+    # OPTIONAL, deliberately: nothing else in this build needs Python (the
+    # Tiled exporters under demo/tiled are run by hand), so a missing
+    # interpreter must not break a ROM build. Without it you just get the
+    # SDK's unusable .mlb and have to resolve captures by hand.
+    find_program(PNES_PYTHON3 NAMES python3 python)
+    if(PNES_PYTHON3)
+        add_custom_command(TARGET demo POST_BUILD
+                COMMAND ${PNES_PYTHON3} ${CMAKE_SOURCE_DIR}/tools/fix_mlb.py
+                $<TARGET_FILE_DIR:demo>/$<TARGET_FILE_BASE_NAME:demo>
+                VERBATIM
+        )
+    else()
+        message(STATUS "pnes: python3 not found -- skipping the .mlb fixup, so "
+                       "Mesen will show bare PRG addresses instead of symbol "
+                       "names (tools/fix_mlb.py can be run by hand later)")
+    endif()
+
     # FamiStudio and the hand-written assembly objects are required by
     # every build configuration.
     target_link_options(demo PRIVATE

@@ -12,6 +12,7 @@
 #include "../graphics/metasprites.hpp"
 #include "../graphics/metatiles.hpp"
 
+#include "../raster_band.hpp"
 #include "level/levels.hpp"
 #include "level/collision_map.hpp"
 #include "level/dynamic.hpp"
@@ -335,21 +336,23 @@ namespace level {
         ppu::SetScroll({0, 0});
 
         // Farcalled: module+engine share one bank, songs+SFX another, both
-        // mapped for the duration -- see banks.hpp's ::audio_tag. Nested
-        // CallInBlock, not CallPairedBlock: the engine walks audio_data_tag
-        // while running, so it must still be mapped when audio_tag's block
-        // runs -- entering audio_data_tag from inside audio_tag's own block
-        // is what guarantees that ordering.
+        // mapped for the duration -- see banks.hpp's ::audio_tag. The engine
+        // walks audio_data_tag while running, so both windows must be live for
+        // the whole call, which is exactly what CallPairedBlock does: it
+        // expands to CallInBlock<audio_tag>(CallInBlock<audio_data_tag>(...)),
+        // the same nesting this used to spell out by hand, plus a static_assert
+        // that the two tags do not share a window (they are $8000 and $A000 --
+        // if they ever collided, the second bank would silently displace the
+        // first). An earlier comment here claimed the hand-nesting was required
+        // *instead of* CallPairedBlock; that distinction never existed.
         //
         // audio::Init itself is NOT called here: it's one-shot device/asset
         // setup (on native backends it decodes and buffers the whole music
         // + SFX library), not per-level work. Calling it on every level entry
         // re-decoded and re-buffered all of that from scratch each time --
         // see RESET in main.cpp, which now runs it once at boot instead.
-        mmc3::CallInBlock<audio_tag>([] {
-            mmc3::CallInBlock<audio_data_tag>([] {
-                audio::TrackPlay(0);
-            });
+        mmc3::CallPairedBlock<audio_tag, audio_data_tag>([] {
+            audio::TrackPlay(0);
         });
 
         // ColMapSeed is ::LEVEL_CODE too -- same reason and pattern as LoadLevel's
@@ -404,17 +407,19 @@ namespace level {
 
             // Both players (and future NPCs) update behind ONE farcall into
             // the actors bank, not one window switch per actor.
-            ppu::SetColorPriority(0x40);   // green band:        UpdateActors
+            demo::RasterBand(0x40);        // green band:        UpdateActors
             mmc3::Call<level::UpdateActors>();
-            ppu::SetColorPriority(0x80);   // blue band:         ColMapTrack (slides override internally)
+            demo::RasterBand(0x80);        // blue band:         ColMapTrack (slides override internally)
 
             ColMapTrack(cameraX >> 4);
 
-            ppu::SetColorPriority(0x20);   // red band:          Update
-            mmc3::CallInBlock<audio_tag>([] {
-                mmc3::CallInBlock<audio_data_tag>([] { audio::Update(); });
-            });
-            ppu::SetColorPriority(0);
+            demo::RasterBand(0x20);        // red band:          Update
+            // Both audio windows live for the whole call -- see the
+            // CallPairedBlock note at EnterLevelSetup's TrackPlay. The two
+            // trampolines cost ~170 cyc/frame and that is irreducible: both
+            // bank switches are real, and CallPairedBlock IS this nesting.
+            mmc3::CallPairedBlock<audio_tag, audio_data_tag>([] { audio::Update(); });
+            demo::RasterBand(0);           // untint before the frame is presented
 
             video::WaitForPresent();
         }
@@ -475,7 +480,7 @@ namespace level {
             levelStreamCommand = {};
         }
 
-        ppu::SetColorPriority(0);
+        demo::RasterBand(0);
 
         // PPU $0400-$07FF is DOUBLE-BOOKED by the manifest: demo/chr/config.toml
         // packs both staticLevelTiles and ui at VMA $0400, so the single 1 KiB

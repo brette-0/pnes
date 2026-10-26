@@ -141,7 +141,10 @@ ACTORS static void CollectCoinsFor(const Actor* self, const Player* p) {
 // Movement -- shared between P1 (drives scroll) and P2 (world-canonical X).
 // ---------------------------------------------------------------------------
 
-ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u16 tx) {
+// `blockedBelow` is Update's grounded probe -- the PHYSICAL answer to
+// "is (tx, screen.y + 1) solid", not its `grounded` flag. See its use below.
+ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u16 tx,
+                                   const bool blockedBelow) {
     Actor* self = &p->actor;
 
     // ReSharper disable once CppVariableCanBeMadeConstexpr
@@ -156,7 +159,23 @@ ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u1
         const i16 dy   = static_cast<i16>(rawY >> 3) - static_cast<i16>(self->worldSpace.y >> 3);
         if (dy) {
             const u16 ny = static_cast<u16>(self->screen.y) + dy;
-            if (!IsBlocked(self, tx, ny)) {
+            // dy == 1 makes this the BIT-IDENTICAL query Update already ran for
+            // `grounded`: same tx (passed down for exactly this reason), same
+            // GetSize(), same collectBlocks=false, and ny == screen.y + 1.
+            // Nothing between the two touches screen.y or ViewMap -- Update only
+            // moves moveForce/xForce/yForce, and CollectCoinsFor (the one writer
+            // of ViewMap in this path) runs after ProcessMovement returns. So
+            // reuse it instead of paying another Blocked.
+            //
+            // It must be the PHYSICAL probe, never Update's `grounded`: jump
+            // launch clears that flag as a logical state change while the cell
+            // below is still solid, and a rising player is exactly when getting
+            // this wrong would wedge them in the floor.
+            //
+            // Only dy == 1. A falling player reaches dy == 4 (kMaxFall), where
+            // the two probes are genuinely different cells.
+            const bool hit = dy == 1 ? blockedBelow : IsBlocked(self, tx, ny);
+            if (!hit) {
                 self->worldSpace.y = static_cast<u16>(rawY) & 0x7ff;
                 self->screen.y     = static_cast<oam::oam_t>(self->worldSpace.y >> 3);
                 PlayerRefreshY(p);
@@ -189,7 +208,7 @@ ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u1
         // P1: absorb off-centre X motion into camera scroll.
         // ReSharper disable once CppVariableCanBeMadeConstexpr
         const auto playerScrollPos = (video::viewport_px() >> 1);
-        const u16 maxCam = (nColumns - viewport_mx()) << 4;
+        const u16 maxCam = maxCameraX;   // level-constant, hoisted -- see levels.hpp
         i16       sx     = static_cast<i16>(self->screen.x) + dx;
         const i16 excess = sx - static_cast<i16>(playerScrollPos);
 
@@ -270,7 +289,11 @@ ACTORS void Player::Update() {
     if (this != &player1) PlayerFollowCamera(this);
 
     const u16 tx  = ActorTX(self);   // cached: shared by grounded check + ProcessMovement
-    bool grounded = IsBlocked(self, tx, static_cast<u16>(self->screen.y + 1));
+    // Kept separate from `grounded` below, which is a LOGICAL flag the jump path
+    // clears. This is the physical probe result, and ProcessMovement reuses it
+    // when its own vertical probe would ask the identical question.
+    const bool blockedBelow = IsBlocked(self, tx, static_cast<u16>(self->screen.y + 1));
+    bool grounded = blockedBelow;
 
     const u8   port     = PlayerPort(this);
     const u8   lastPort = PlayerLastPort(this);
@@ -336,7 +359,7 @@ ACTORS void Player::Update() {
     }
     self->moveForce.y = vy;
 
-    ProcessMovement(this, self->moveForce, tx);
+    ProcessMovement(this, self->moveForce, tx, blockedBelow);
 
     // Pickup runs on the committed position; queues nametable writes for NMI drain.
     CollectCoinsFor(self, this);

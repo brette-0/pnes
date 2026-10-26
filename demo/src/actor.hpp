@@ -27,8 +27,9 @@ class Actor {
     // Collision is now a shared composite-metatile window read (see collision_map.hpp
     // / Blocked), so the actor no longer carries any per-actor collision cursors.  The
     // old surround constellation (four static column cursors + a dynamic anchor) lived
-    // in zero page on every actor and is gone.  Enemies query Blocked(collectBlocks=
-    // false) so coins pass; the player passes true so coins stop it (pending pickup).
+    // in zero page on every actor and is gone.  Every caller passes
+    // collectBlocks=false, so coins pass for actors and player alike -- see
+    // collision_map.hpp on why that parameter is vestigial.
     vec2<u16> worldSpace;          // top-left origin, sub-pixel: bottom 3 bits = subpx, so >>3 = px
     vec2<oam::oam_t> screen;       // on-screen sprite position (OAM coords)
     vec2<i8> moveForce;            // subpixel movement force (8 subpx = 1px)

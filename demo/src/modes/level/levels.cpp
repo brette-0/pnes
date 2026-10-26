@@ -15,6 +15,7 @@ namespace level {
     Cursor edgeR;
     Cursor edgeL;
     u16 nColumns;
+    u16 maxCameraX;   // derived from nColumns; see levels.hpp
 
     const u8* TileData;   // static plane: flat column-major ROM array, see types.hpp
 
@@ -105,6 +106,10 @@ namespace level {
         // TileData holds the active level's STATIC PLANE (walls/ground).
         TileData = Levels[n].TileData;
         nColumns = Levels[n].nColumns;
+        // Derived once here rather than per frame in ProcessMovement's camera
+        // path. Guarded: a level narrower than the viewport cannot scroll.
+        maxCameraX = nColumns > viewport_mx()
+                   ? static_cast<u16>((nColumns - viewport_mx()) << 4) : 0;
 
         // Window 2's bank is a RUNTIME choice keyed by level index, not a
         // compile-time tag -- see banks.hpp's ::LevelDynamicBank/
