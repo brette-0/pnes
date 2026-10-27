@@ -3,7 +3,6 @@
 #include "levels.hpp"                  // levelHeight, kHudRows
 #include "../../graphics/metatiles.hpp"   // GetMetatileCollisions, MetatileCollision
 #include "../../banks.hpp"             // FIXED, LEVEL_CODE
-#include "../../raster_band.hpp"      // demo::RasterBand (profiling aid, off by default)
 
 #include <array>
 
@@ -204,18 +203,16 @@ static void AdvancePairBackward(Cursor& s, DynamicCursor& d) {
 NI LEVEL_CODE static void ColMapSlideTo(const u16 desired) {
     u8 colIter = 0;
     while (ColMapBaseCol < desired) {         // window slides right
-        demo::RasterBand(static_cast<u8>((++colIter << 5) & 0xE0));
         AdvancePairForward(colRightStat, colRightDyn);    // entering column
         ColMapSlideRight(colRightStat, colRightDyn);      // base++
         AdvancePairForward(colLeftStat, colLeftDyn);      // re-anchor left edge
     }
     while (ColMapBaseCol > desired) {          // window slides left
-        demo::RasterBand(static_cast<u8>((++colIter << 5) & 0xE0));
         AdvancePairBackward(colLeftStat, colLeftDyn);     // entering column
         ColMapSlideLeft(colLeftStat, colLeftDyn);         // base--
         AdvancePairBackward(colRightStat, colRightDyn);   // re-anchor right edge
     }
-    demo::RasterBand(0);
+    
 }
 
 // Lazily centre the window on the camera. Desired base = camLeftCol - 4, clamped

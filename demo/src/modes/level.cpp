@@ -12,7 +12,6 @@
 #include "../graphics/metasprites.hpp"
 #include "../graphics/metatiles.hpp"
 
-#include "../raster_band.hpp"
 #include "level/levels.hpp"
 #include "level/collision_map.hpp"
 #include "level/dynamic.hpp"
@@ -405,21 +404,11 @@ namespace level {
                 paused = !paused;
             }
 
-            // Both players (and future NPCs) update behind ONE farcall into
-            // the actors bank, not one window switch per actor.
-            demo::RasterBand(0x40);        // green band:        UpdateActors
             mmc3::Call<level::UpdateActors>();
-            demo::RasterBand(0x80);        // blue band:         ColMapTrack (slides override internally)
 
             ColMapTrack(cameraX >> 4);
 
-            demo::RasterBand(0x20);        // red band:          Update
-            // Both audio windows live for the whole call -- see the
-            // CallPairedBlock note at EnterLevelSetup's TrackPlay. The two
-            // trampolines cost ~170 cyc/frame and that is irreducible: both
-            // bank switches are real, and CallPairedBlock IS this nesting.
             mmc3::CallPairedBlock<audio_tag, audio_data_tag>([] { audio::Update(); });
-            demo::RasterBand(0);           // untint before the frame is presented
 
             video::WaitForPresent();
         }
@@ -479,19 +468,6 @@ namespace level {
         if (levelStreamCommand & STREAM_LEVEL_DONE) {
             levelStreamCommand = {};
         }
-
-        demo::RasterBand(0);
-
-        // PPU $0400-$07FF is DOUBLE-BOOKED by the manifest: demo/chr/config.toml
-        // packs both staticLevelTiles and ui at VMA $0400, so the single 1 KiB
-        // window covering it (R3, under chrMode::fineFirst) cannot show both at
-        // once -- it has to carry a different bank above and below the HUD
-        // split. Above is the HUD, the top kHudSplitRow pixels, drawn entirely
-        // in ui tiles (hud_coin, font, hud_whitespace), so ui is what goes on
-        // here in vblank, before the first visible scanline fetches anything.
-        // ApplyHudSplit swaps it back for the playfield once the scanline IRQ
-        // fires below the strip; title.cpp's nmi_handler/ApplySplit pair is the
-        // same trade the other way up (preview on top, menu below).
         mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
 
         mmc3::ScheduleScanlineIRQ(kHudSplitMMC3, {0, kHudSplitRow});
