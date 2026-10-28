@@ -45,13 +45,6 @@ static void TranslateWorldSpace(vec2<u16>& worldSpace, const vec2<i8> delta) {
     worldSpace.y += delta.y;
 }
 
-// The shared half of actor behavior, switched on actorType rather than reached
-// through per-actor function pointers. These are the common steps every actor
-// runs (and their per-type variations); the parts no other actor will ever
-// share -- player input, the camera/scroll coupling -- stay in Player, which
-// calls down into these. An actor owned by a concrete type (the players) is
-// entered through that type; an actor known only as an Actor* (future NPCs in
-// a roster) is entered here.
 ACTORS void Actor::Start() {
     switch (this->actorType) {
         case eActorType::Player:

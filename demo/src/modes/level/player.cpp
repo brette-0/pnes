@@ -7,6 +7,7 @@
 #include "levels.hpp"
 #include "../level.hpp"
 #include "../../banks.hpp"   // ACTORS
+#include <pnes/extras/debug/emphasis.hpp>
 
 using namespace demo;
 using enum level::eLevelStreamCommands;
@@ -14,20 +15,34 @@ using enum level::eLevelStreamCommands;
 namespace level {
 
 // ---------------------------------------------------------------------------
-// Per-player accessors -- resolved from `this` rather than a free ActorToPlayer.
+// Deferred column build
 //
-// ACTORS: static but level::-namespaced, so without an explicit tag they'd
-// fall into the generic resident catch-all instead of the actors bank. All
-// private to this TU, reachable only from Player::Update/Start (also ACTORS).
-// ---------------------------------------------------------------------------
+// ProcessMovement detects the 16px camera-column boundary but no longer builds
+// the column there. It records the request here and UpdateActors drains it once
+// the whole roster has run -- see UpdateActors at the bottom of this file for
+// why that is the right drain point and what it does and does not buy.
+//
+// One slot, no queue: the hysteresis in ProcessMovement admits at most one
+// boundary per frame (|scroll| <= 16 + dead zone), and the drain runs in the
+// same frame as the request, so this is always NONE on entry to UpdateActors.
+//
+// Pinned to absolute .bss on NES for the same reason as collision_map.cpp's
+// window state: page zero is scarce (FamiStudio's ZEROPAGE segment sits right
+// above it) and three bytes touched once per ~6 frames do not earn a slot.
+#ifdef TARGET_NES
+#define pending_cold __attribute__((section(".bss")))
+#else
+#define pending_cold
+#endif
+
+enum class ePendingColumn : u8 { NONE = 0, NEXT, PREV };
+
+pending_cold static ePendingColumn pendingColumnKind;
+pending_cold static u16            pendingColumnIndex;
 
 ACTORS static u8 PlayerPort(const Player* p)     { return p == &player1 ? port1     : port2;     }
 ACTORS static u8 PlayerLastPort(const Player* p) { return p == &player1 ? lastPort1 : lastPort2; }
 
-// Direct OAM writes replace OAMFromProvider's per-sprite function-pointer calls
-// (2 indirect JSRs + loop overhead) with 2 plain stores each. Mary is two
-// hardware 8x16 columns (see msMary in metasprites.cpp), so each is 16px
-// tall already -- no per-row Y split needed, just the left/right X offset.
 ACTORS static void PlayerRefreshY(const Player* p) {
     oam::sprite_t* s = OAMBuffer + (p == &player1 ? 1 : 1 + kMarySprites);
     const oam::oam_t sy = p->actor.screen.y;
@@ -39,24 +54,6 @@ ACTORS static void PlayerRefreshX(const Player* p) {
     s[0].x = sx;         s[1].x = sx + 8u;
 }
 
-// ---------------------------------------------------------------------------
-// P2's screen X -- anchored to P1, which is what the camera is anchored to.
-//
-// cameraX is integer-pixel, and P1's screen.x is exact against it by
-// construction (the camera absorbs P1's off-centre motion sub-pixel for
-// sub-pixel), so P1 never quantizes against the scrolling background.
-// Deriving P2 as floor(w2/8) - cameraX instead composes two *independent*
-// floors: hold the two players a constant sub-pixel distance D apart and
-// floor(w2/8) - floor(w1/8) alternates between floor(D/8) and ceil(D/8) as
-// P1's sub-pixel phase advances, so P2 wobbled a pixel against the
-// background every other frame -- worst at matched walking speeds, invisible
-// when P2 stands still (floor(w2/8) is then constant and she rides cameraX
-// cleanly), which is why it only showed up *sometimes*.
-//
-// Shifting the *difference* once keeps P2 exactly (w2-w1)>>3 pixels from P1,
-// so the quantization is a fixed sub-pixel offset rather than a per-frame
-// beat. Both players are on screen (P2 is clamped to the viewport below), so
-// the difference is at most a viewport's worth of sub-pixels and fits i16.
 ACTORS static void PlayerFollowCamera(Player* p) {
     Actor*       self = &p->actor;
     const Actor* lead = &player1.actor;
@@ -65,11 +62,6 @@ ACTORS static void PlayerFollowCamera(Player* p) {
     const i16 delta = static_cast<i16>(self->worldSpace.x - lead->worldSpace.x);
     i16       sx    = static_cast<i16>(lead->screen.x) + static_cast<i16>(delta >> 3);
 
-    // Camera push-off: re-seat worldSpace from the clamped screen position so
-    // the line above reproduces it exactly next frame -- P2 then rides the
-    // camera in lockstep (she inherits P1's sub-pixel phase, which is the
-    // phase the camera itself moves on) instead of re-clamping every frame
-    // off a stale sub-pixel remainder.
     if (sx < 0 || sx > maxX) {
         sx = sx < 0 ? 0 : maxX;
         self->worldSpace.x = static_cast<u16>(lead->worldSpace.x
@@ -92,26 +84,11 @@ ACTORS static bool IsBlocked(const Actor* self, const u16 wx, const u16 wy) {
     return level::Blocked(wx, wy, self->GetSize(), /*collectBlocks=*/false);
 }
 
-// ---------------------------------------------------------------------------
-// Coin collection -- thin wrappers over the two independent RLE cursor bundles.
-// PushCoinVram translates a picked cell into VRAM writes queued for NMI drain.
-// ---------------------------------------------------------------------------
-
-// The four Metatiles_* reads below are RAM mirrors now (see metatiles.hpp's
-// LoadMetatilePlanes) and CoinVramPush only touches the RAM CoinVram queue,
-// so this needs no window-2 switch.
 ACTORS static void PushCoinVram(const CoinPick& pick) {
     const u8  m  = pick.reveal;
     const u16 tx = static_cast<u16>(pick.col) << 1;
     const u16 ty = static_cast<u16>(2 + (pick.row << 1));
 #ifdef TARGET_NES
-    // Two records, one per tile row: the queue latches an address once per adjacent
-    // pair, so the right-hand tile rides the PPU's increment. tx = col*2 is always
-    // EVEN and a row is a fixed 32 tiles here, so a pair can never straddle the end
-    // of one -- the precondition CoinWritePair relies on (level.cpp).
-    //
-    // TODO: profile CartesianToAddress on NES vs this inline formula before shipping.
-    // ty = 2 + row*2 <= 28 < 30, so nt_v = 0; the bottom row follows by addition.
     const u16 nt_h = static_cast<u16>((tx >> 5) & 1) << 10;
     const u16 base = 0x2000 + nt_h + (static_cast<u16>(ty) << 5) + (tx & 0x1F);
     CoinVramPush(base,      Metatiles_UL[m], Metatiles_UR[m]);
@@ -126,54 +103,35 @@ ACTORS static void PushCoinVram(const CoinPick& pick) {
 #endif
 }
 
-// CollectCoins/CollectCoins2 remove at most one coin per call (the "one pickup
-// per frame" technique -- see the comment above CollectCoins in
-// collision_map.cpp), so the pick comes back in the single shared level::coinPick
-// slot and is only valid when the call returned true.
+// The CoinGateSkips test is the whole point of the gate: on a frame where the
+// AABB resolves to the same cells the collector already scanned empty -- which
+// is most frames, since a cell is 16px and the player covers ~2.5px/frame --
+// there is provably nothing to find, so we never make the call and never pay
+// its entry. See CoinGateSkips (collision_map.hpp) for why the pixel test is
+// equivalent to the cell-window test it replaces.
 ACTORS static void CollectCoinsFor(const Actor* self, const Player* p) {
-    const bool got = (p == &player1)
-        ? CollectCoins( ActorTX(self), self->screen.y, self->GetSize())
-        : CollectCoins2(ActorTX(self), self->screen.y, self->GetSize());
+    const u16 px = ActorTX(self);
+    const u16 py = self->screen.y;
+    bool got;
+    if (p == &player1) {
+        if (CoinGateSkips(coinGate1, px, py)) return;
+        got = CollectCoins(px, py, self->GetSize());
+    } else {
+        if (CoinGateSkips(coinGate2, px, py)) return;
+        got = CollectCoins2(px, py, self->GetSize());
+    }
     if (got) PushCoinVram(coinPick);
 }
 
-// ---------------------------------------------------------------------------
-// Movement -- shared between P1 (drives scroll) and P2 (world-canonical X).
-// ---------------------------------------------------------------------------
-
-// `blockedBelow` is Update's grounded probe -- the PHYSICAL answer to
-// "is (tx, screen.y + 1) solid", not its `grounded` flag. See its use below.
 ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u16 tx,
                                    const bool blockedBelow) {
     Actor* self = &p->actor;
-
-    // ReSharper disable once CppVariableCanBeMadeConstexpr
     const auto playerMaxXPos = (video::viewport_px() - 16);
-    // tx is passed in from Update (already computed for the grounded check there),
-    // so all three Blocked calls below share a single ActorTX derivation.
-
-    // Vertical: accumulate sub-pixel force; only the whole-pixel carry triggers
-    // collision / sprite moves.  Gravity & jump retain sub-pixel precision.
     {
         const int rawY = static_cast<int>(self->worldSpace.y) + moveForce.y;
         const i16 dy   = static_cast<i16>(rawY >> 3) - static_cast<i16>(self->worldSpace.y >> 3);
         if (dy) {
             const u16 ny = static_cast<u16>(self->screen.y) + dy;
-            // dy == 1 makes this the BIT-IDENTICAL query Update already ran for
-            // `grounded`: same tx (passed down for exactly this reason), same
-            // GetSize(), same collectBlocks=false, and ny == screen.y + 1.
-            // Nothing between the two touches screen.y or ViewMap -- Update only
-            // moves moveForce/xForce/yForce, and CollectCoinsFor (the one writer
-            // of ViewMap in this path) runs after ProcessMovement returns. So
-            // reuse it instead of paying another Blocked.
-            //
-            // It must be the PHYSICAL probe, never Update's `grounded`: jump
-            // launch clears that flag as a logical state change while the cell
-            // below is still solid, and a rising player is exactly when getting
-            // this wrong would wedge them in the floor.
-            //
-            // Only dy == 1. A falling player reaches dy == 4 (kMaxFall), where
-            // the two probes are genuinely different cells.
             const bool hit = dy == 1 ? blockedBelow : IsBlocked(self, tx, ny);
             if (!hit) {
                 self->worldSpace.y = static_cast<u16>(rawY) & 0x7ff;
@@ -228,26 +186,32 @@ ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u1
             // Hysteresis: a column build fires only once the camera has travelled a
             // full 16px column past the last build.  |scroll| <= 16 + dead zone =>
             // at most one boundary per frame, so one non-looping build suffices.
+            //
+            // The build itself is deferred to UpdateActors (see ::pendingColumnKind).
+            // lastXWorldSpace is still advanced HERE, not at the drain: it is what
+            // the hysteresis above tests, so leaving it stale would re-trigger the
+            // same boundary next frame. The NMI also reads it, but only under
+            // STREAM_LEVEL_DONE, and DONE is now published by the drain once the
+            // buffers are actually complete -- so the advance is invisible until
+            // the column matching it exists.
             if (scroll > 0) {
                 if (cameraX >= lastXWorldSpace + 16 && lastXWorldSpace + 16 != maxCam) {
                     levelStreamCommand = STREAM_LEVEL_RIGHT;
                     if (lastDeltaScroll < 0)
                         levelStreamCommand = levelStreamCommand | STREAM_LEVEL_SWAP;
-                    const u16 colBuiltR = ((lastXWorldSpace + 16) >> 4) + viewport_mx();
-                    BuildNextColumn(TileBuffer, colBuiltR);
+                    pendingColumnIndex = ((lastXWorldSpace + 16) >> 4) + viewport_mx();
+                    pendingColumnKind  = ePendingColumn::NEXT;
                     lastDeltaScroll = static_cast<i8>(scroll);
                     lastXWorldSpace += 16;
-                    levelStreamCommand = levelStreamCommand | STREAM_LEVEL_DONE;
                 }
             } else if (cameraX <= lastXWorldSpace - 16 && lastXWorldSpace != 16) {
                 levelStreamCommand = STREAM_LEVEL_LEFT;
                 if (lastDeltaScroll > 0)
                     levelStreamCommand = levelStreamCommand | STREAM_LEVEL_SWAP;
                 lastDeltaScroll = static_cast<i8>(scroll);
-                const u16 colBuiltL = ((lastXWorldSpace - 16) >> 4) - 1;
-                BuildPrevColumn(TileBuffer, colBuiltL);
+                pendingColumnIndex = ((lastXWorldSpace - 16) >> 4) - 1;
+                pendingColumnKind  = ePendingColumn::PREV;
                 lastXWorldSpace -= 16;
-                levelStreamCommand = levelStreamCommand | STREAM_LEVEL_DONE;
             }
         }
 
@@ -268,30 +232,15 @@ ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u1
     }
 }
 
-// ---------------------------------------------------------------------------
-// Player::Start / Player::Update -- the per-frame entry point for a player,
-// ::ACTORS, reached via mmc3::Call<UpdateActors> / CallInBlock<actor_tag>,
-// never by an ordinary call from another bank. Each owns what only a player
-// does (input, the camera/scroll coupling) and calls its Actor's matching
-// method for the half that's shared with every other actor and switched on
-// actorType there.
-// ---------------------------------------------------------------------------
-
 ACTORS void Player::Update() {
     if (paused) return;
     Actor* self = &actor;
 
-    // P2 doesn't drive scroll; the camera may have moved this frame (P1 went
-    // first, and P1's Update is what moves it). Re-anchor her screen.x to P1
-    // before anything reads it -- grounded/collision below work off
-    // worldSpace, but the OAM position has to track the camera every frame,
-    // including the frames P2 holds still.
+    debug::SetColour(ppu::mask::RED);
     if (this != &player1) PlayerFollowCamera(this);
 
-    const u16 tx  = ActorTX(self);   // cached: shared by grounded check + ProcessMovement
-    // Kept separate from `grounded` below, which is a LOGICAL flag the jump path
-    // clears. This is the physical probe result, and ProcessMovement reuses it
-    // when its own vertical probe would ask the identical question.
+    const u16 tx  = ActorTX(self);
+    debug::SetColour(ppu::mask::GREEN);
     const bool blockedBelow = IsBlocked(self, tx, static_cast<u16>(self->screen.y + 1));
     bool grounded = blockedBelow;
 
@@ -359,21 +308,19 @@ ACTORS void Player::Update() {
     }
     self->moveForce.y = vy;
 
+    debug::SetColour(ppu::mask::BLUE);
     ProcessMovement(this, self->moveForce, tx, blockedBelow);
 
     // Pickup runs on the committed position; queues nametable writes for NMI drain.
+    debug::SetColour(ppu::mask::RED | ppu::mask::GREEN);
     CollectCoinsFor(self, this);
 
-    // Shared actor tail, switched on eActorType::Player over in actor.cpp:
-    // runs on the committed position, so anything common to all actors
-    // (animation advance, state transitions) lands there, not here.
+    debug::SetColour(ppu::mask::RED | ppu::mask::BLUE);
     self->Update();
+    debug::SetColour(0);
 }
 
 ACTORS void Player::Start() {
-    // Stamped here rather than by the caller: actorType drives the shared
-    // half of the behavior (Actor::Start/Update switch on it), and this is the
-    // point where this Actor becomes a player's.
     actor.actorType = Actor::eActorType::Player;
     actor.gravity   = 0;
     actor.moveForce = vec2<i8>{0, 0};
@@ -383,13 +330,58 @@ ACTORS void Player::Start() {
     actor.Start();
 }
 
+// Run the column build recorded by ProcessMovement and publish it to the NMI.
+//
+// NI: UpdateActors is itself inlined into mmc3::Call's ::FIXED window
+// trampoline, so without this the two builders follow it in and ~600 bytes of
+// column-building land in the always-mapped $E000-$FFFF bank -- measured, not
+// theoretical: the first cut of this change moved .prg_rom_actors from 3983 to
+// 3399 bytes and grew .prg_rom_fixed by the same amount. Same failure mode
+// ColMapSeed and LoadLevel carry their own NI for. One jsr into the actors
+// bank keeps the builders where they belong.
+NI ACTORS static void DrainPendingColumn() {
+    if (pendingColumnKind == ePendingColumn::NEXT)
+        BuildNextColumn(TileBuffer, pendingColumnIndex);
+    else
+        BuildPrevColumn(TileBuffer, pendingColumnIndex);
+    pendingColumnKind = ePendingColumn::NONE;
+    // Publish last: the NMI reads TileBuffer/AttributeBuffer (and the
+    // lastXWorldSpace that addresses them) only once DONE is set, so the
+    // direction/swap bits set at detection time sit inert until here. An NMI
+    // landing in that gap simply writes nothing and the drain lands on the
+    // next one, with lastXWorldSpace and the column still agreeing.
+    levelStreamCommand = levelStreamCommand | STREAM_LEVEL_DONE;
+}
+
 // Single per-frame entry point into the actors bank: updates the whole roster
 // behind ONE window switch instead of one per actor.
+//
+// The deferred column build is drained HERE rather than from level::main()'s
+// loop for two reasons. BuildNextColumn/BuildPrevColumn are ::ACTORS, so a
+// drain from main() (::LEVEL_CODE) would need a second mmc3 window switch,
+// against the one-switch-per-frame design this function exists to enforce. And
+// it has to run before ColMapTrack, which is the next thing main() does: the
+// build reads the composite window through ColMapColumn, so draining here keeps
+// it reading the exact ViewMap state the inline build used to see. Nothing
+// about the produced column changes.
+//
+// What this buys: the ~1300-1500 cycle build leaves Player::Update's body and
+// its soft-stack frame, and gets its own emphasis band. What it does NOT buy:
+// any reduction in total frame work -- the drain is in the same frame as the
+// request, before the same WaitForPresent. Splitting the build across two
+// frames is what would cut the worst-case frame, and that needs a real state
+// machine here (direction reversal mid-build, level edges), not just a move.
 ACTORS void UpdateActors() {
     player1.Update();
 #ifdef PLAYER2_SUPPORTED
-    if (multiplayer) player2.Update();
+    if (multiplayer) {
+        player2.Update();
+    }
 #endif
+
+    if (pendingColumnKind != ePendingColumn::NONE) {
+        DrainPendingColumn();
+    }
 }
 
 }   // namespace level

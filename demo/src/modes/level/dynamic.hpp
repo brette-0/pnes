@@ -29,9 +29,10 @@ namespace level {
 // 1-1 ships a real dynamic layer.
 // ---------------------------------------------------------------------------
 
-// Max dynamic RUNS held in RAM. The dynamic plane is sparse (mostly air), so a
-// long level still compresses to well under this. Overflow becomes a build-time
-// check once real export exists.
+// Max dynamic RUNS held in RAM. This is a RAM budget, nothing more: 512 runs is
+// what DynData is willing to spend. Whether a given level's dynamic plane fits
+// is a property of that level's data, which this header knows nothing about --
+// enforcing it is a build-time check, still to be written.
 constexpr u16 DynRunCapacity = 512;
 
 // Mutable, RAM-resident copy of the dynamic plane's run-data bytes (metatile

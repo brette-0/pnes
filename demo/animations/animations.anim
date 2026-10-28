@@ -1,0 +1,19 @@
+# pnes animator project
+
+[project]
+# The blobman manifest the tiles come from, relative to this file.
+chr         = "../chr/config.toml"
+# Sidecar folder holding the .msprite manifests, relative to this file.
+metasprites = "metasprites"
+# How tiles were grouped when this was authored: "8x8" or "8x16".
+# One tile slot of a metasprite is 8x8 or 8x16 accordingly.
+tile_mode   = "8x16"
+# The metasprites of this project, in order. Each names a file in
+# the folder above.
+files       = [
+    "mary.msprite",
+]
+
+[[palette]]
+name    = "test"
+colours = [ 0x16, 0x27, 0x30 ]    # NES master-palette indices for colours 1-3

@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "_base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "linux",
+      "inherits": "_base",
+      "displayName": "Linux",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "macos",
+      "inherits": "_base",
+      "displayName": "macOS",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows",
+      "inherits": "_base",
+      "displayName": "Windows",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux", "configurePreset": "linux" },
+    { "name": "macos", "configurePreset": "macos" },
+    { "name": "windows", "configurePreset": "windows" }
+  ]
+}

@@ -34,6 +34,38 @@ static constexpr std::array<u16, kColMapWidth> kSlotOffset = []() constexpr {
     return a;
 }();
 
+// Row -> single-row mask bit, one table per plane. A `1 << r` on 6502 is a shift
+// LOOP (no variable shift instruction), so every mask build and every mask clear
+// would pay ~8 iterations; this is one indexed load.
+static constexpr std::array<u8, levelHeight> kBitLo = []() constexpr {
+    std::array<u8, levelHeight> a{};
+    for (u8 r = 0; r < levelHeight; r++) a[r] = r < 8 ? static_cast<u8>(1u << r) : 0;
+    return a;
+}();
+static constexpr std::array<u8, levelHeight> kBitHi = []() constexpr {
+    std::array<u8, levelHeight> a{};
+    for (u8 r = 0; r < levelHeight; r++) a[r] = r >= 8 ? static_cast<u8>(1u << (r - 8)) : 0;
+    return a;
+}();
+
+// Prefix masks: kPref*[k] has bits 0..k-1 set, so the mask for the row RANGE
+// [t, b] is kPref[b + 1] ^ kPref[t]. Four indexed loads and two eors, general
+// for any row count, 30 bytes of ROM -- versus a per-row loop to OR kBit
+// together, or a 2D span table. This is what turns an AABB's row extent into a
+// constant-time query.
+static constexpr std::array<u8, levelHeight + 1> kPrefLo = []() constexpr {
+    std::array<u8, levelHeight + 1> a{};
+    for (u8 k = 0; k <= levelHeight; k++)
+        a[k] = k >= 8 ? 0xFF : static_cast<u8>((1u << k) - 1u);
+    return a;
+}();
+static constexpr std::array<u8, levelHeight + 1> kPrefHi = []() constexpr {
+    std::array<u8, levelHeight + 1> a{};
+    for (u8 k = 0; k <= levelHeight; k++)
+        a[k] = k <= 8 ? 0 : static_cast<u8>((1u << (k - 8)) - 1u);
+    return a;
+}();
+
 // Producer edge cursors, internal to this TU. *Left sits on the row-0 cell of the
 // leftmost held column, *Right on the rightmost, for both planes. ColMapTrack
 // walks all four in lockstep with the window's base, so a slide only hops one
@@ -44,30 +76,50 @@ namespace {
     colmap_cold DynamicCursor colLeftDyn;
     colmap_cold DynamicCursor colRightDyn;
 
-    // The collector's PERSISTENT cursor pair. Unlike the edge cursors above (which
-    // track the window), this tracks the PLAYER: parked on the AABB's top-left cell,
-    // nudged only by per-frame travel, seeded once at load and never rebuilt -- so a
-    // collected coin costs a tiny AABB-local delta, not a walk from the window edge.
-    // dyn indexes DynData to blank a coin; stat reveals the metatile underneath.
-    // cell is the delta reference for re-anchoring; colR/rowB are the last AABB's
-    // edges for the early-exit guard. dry is set only once the CURRENT AABB has
-    // scanned empty -- guards against skipping a coin left by the one-coin-per-call
-    // cap (see CollectCoinsImpl) before it's ever seen again.
+    // ---- Per-slot derived state, rebuilt on column entry -------------------
     //
-    // One struct, two instances (P1/P2): CollectCoins/CollectCoins2 used to be
-    // ~2.3 KiB apiece of near-identical logic -- see CollectCoinsImpl.
-    struct CollectorAnchor {
-        Cursor        stat;
-        DynamicCursor dyn;
-        u16           cell;
-        u16           colR;
-        u8            rowB;
-        bool          dry;
-    };
-    colmap_cold CollectorAnchor colPlayerAnchor;
-    // Independent anchor for player 2, same invariants -- avoids bouncing a
-    // shared cursor across the inter-player distance every frame.
-    colmap_cold CollectorAnchor colPlayer2Anchor;
+    // The window already removed the RLE from collision. These remove the
+    // PER-CELL LOOP and the collector's cursors, by deriving everything a query
+    // wants ONCE per column entry instead of once per query.
+    //
+    // There used to be a persistent per-player cursor pair here (CollectorAnchor)
+    // parked on the player's AABB and nudged every frame. It was the collector's
+    // whole cost: `Cursor::Move` is a pointer add and free, but DynamicCursor::Move
+    // walks the RLE at ~24 cycles a step, the nudge had to stay unconditional (a
+    // gated one lets the delta accumulate and spike later -- tried, and it spiked),
+    // and crossing a metatile column makes the delta levelHeight cells, so a
+    // running player paid ~340 cycles EVERY sixth frame, per player, plus a
+    // 16-bit multiply-by-levelHeight to compute the delta reference at all.
+    // Deriving per column instead makes that cost proportional to column entries
+    // (one per 16 pixels of scroll) rather than to player frames, and the walk
+    // that remains is bounded by levelHeight and only runs on a frame a coin is
+    // actually taken.
+
+    // Collision-class occupancy, one bit per row: bit r set means row r of that
+    // column holds a cell of that class. levelHeight(=14) rows, held as two
+    // parallel u8 planes rather than one u16 array -- a u8 array indexed by slot
+    // is `lda abs,x`, where a u16 array needs the index doubled first. Same
+    // reason kSlotOffset exists instead of a multiply.
+    colmap_cold u8 ColSolidLo[kColMapWidth];
+    colmap_cold u8 ColSolidHi[kColMapWidth];
+    colmap_cold u8 ColCollLo[kColMapWidth];
+    colmap_cold u8 ColCollHi[kColMapWidth];
+
+    // The column's flat static bytes. The static plane is column-major and
+    // uncompressed, so a whole static Cursor collapses to this one pointer and
+    // the metatile revealed under a collected coin is ColStatBase[slot][row] --
+    // no cursor, no walk.
+    colmap_cold const u8* ColStatBase[kColMapWidth];
+
+    // The DYNAMIC cursor's state at the column's row 0. The dynamic plane is RLE,
+    // so unlike the static plane a row cannot be indexed -- it has to be walked.
+    // Storing the column head and walking down on demand confines that walk to
+    // <= levelHeight steps on a take frame. Split into parallel arrays for the
+    // same indexing reason as the masks: a 5-byte DynamicCursor array would need
+    // a multiply by 5 to index.
+    colmap_cold const u8* ColRunLen[kColMapWidth];    // -> DynLengths
+    colmap_cold u8*       ColRunData[kColMapWidth];   // -> DynData
+    colmap_cold u8        ColRunProg[kColMapWidth];
 
     // Highest base column the window may hold: nColumns - ColMapWidth(), floored
     // at 0 for a level narrower than the window. Derived from nColumns, which
@@ -76,11 +128,75 @@ namespace {
     // sign test and a conditional zero) every single frame to reach the same
     // answer. Seeded in ColMapSeed, which runs after LoadLevel at level entry.
     colmap_cold u16 ColMapMaxBase;
+
+    // Memoized column resolution for Blocked.
+    //
+    // Resolving a world column to its ViewMap base is the expensive half of a
+    // Blocked call: a 16-bit subtract against ColMapBaseCol, a window test, the
+    // non-pow2 ring wrap, a 16-bit kSlotOffset load and a 16-bit add -- ~58
+    // cycles, twice, for the two columns a 16px AABB spans. Blocked runs up to
+    // three times per player per frame on positions that differ by one pixel,
+    // so it was resolving the SAME column pair two or three times over.
+    //
+    // Keyed on the resolved column PAIR rather than on px: the pair is what the
+    // bases depend on, so the memo stays correct for any AABB width, and the
+    // hit test is two 16-bit compares instead of the slot math.
+    //
+    // The bases depend on ColMapBaseCol/ColMapOrigin, so the slide paths
+    // invalidate (see ColMapSlideRight/Left and ColMapSeed). Nothing else moves
+    // the window.
+    colmap_cold u16  colMemoL;
+    colmap_cold u16  colMemoR;
+    colmap_cold u8   colMemoA;   // slot for colMemoL; kNoSlot = outside window = air
+    colmap_cold u8   colMemoB;   // slot for colMemoR; == colMemoA when single-column
+    colmap_cold bool colMemoValid;
+
+    // The memo caches the resolved SLOT rather than a ViewMap base pointer now:
+    // every per-slot array above is indexed by it, so a pointer would have to be
+    // turned back into an index to reach them.
+    constexpr u8 kNoSlot = 0xFF;
 }
 
 // The one shared pick slot -- see collision_map.hpp for why this is not a
 // caller-supplied out-pointer.
 colmap_cold CoinPick coinPick;
+
+// Caller-side collector gates, one per player -- see CoinGateSkips.
+colmap_cold CoinGate coinGate1;
+colmap_cold CoinGate coinGate2;
+
+// CollectCoinsImpl's three outcomes.  It no longer returns a bare bool because
+// the wrappers need to distinguish "scanned, nothing there" (the window is
+// verified empty, so the gate may skip next frame) from "never got far enough
+// to look" (off-field: the gate must NOT skip).
+enum : u8 { kScanOffField = 0, kScanEmpty = 1, kScanTook = 2 };
+
+// Rebuild slot `slot`'s collision occupancy planes from the composite bytes just
+// stamped into it. Every Blocked / collector query then reads two bytes instead
+// of decoding Metatiles_ATTR per cell, so the decode cost moves from "once per
+// cell per query" to "once per cell per column entry".
+//
+// Deliberately a SECOND pass over the finished levelHeight bytes rather than
+// extra work inside ColMapStamp's loop: that loop is already contended on four
+// pointers against the 6502's single `(zp),y` index register (see its comment),
+// and folding an ATTR decode plus two table loads into it would spill further.
+// Here there is one pointer and three ROM tables, and it runs only on entry.
+// AI: all three call sites are ColMapStamp's tail, i.e. one site after inlining,
+// and the concrete ColSolid*/ColColl* globals fold to absolute addressing.
+AI static void ColMapMasks(const u8 slot, const u8* col) {
+    u8 sLo = 0, sHi = 0, cLo = 0, cHi = 0;
+    #pragma clang loop unroll(disable)
+    for (u8 r = 0; r < levelHeight; r++) {
+        const MetatileCollision cls = GetMetatileCollisions(col[r]);
+        if (cls == MetatileCollision::Solid) {
+            sLo |= kBitLo[r]; sHi |= kBitHi[r];
+        } else if (cls == MetatileCollision::Collect) {
+            cLo |= kBitLo[r]; cHi |= kBitHi[r];
+        }
+    }
+    ColSolidLo[slot] = sLo; ColSolidHi[slot] = sHi;
+    ColCollLo[slot]  = cLo; ColCollHi[slot]  = cHi;
+}
 
 // Stamp one column's composite metatiles into ring slot `slot`. Walks stat/dyn
 // down levelHeight cells in lockstep, dynamic-over-static -- same compositing
@@ -92,6 +208,14 @@ colmap_cold CoinPick coinPick;
 // LoadLevel's runtime choice (banks.hpp's ::LevelDataBank).
 NI LEVEL_CODE void ColMapStamp(const u8 slot, Cursor stat, DynamicCursor dyn) {
     u8* col = ViewMap + kSlotOffset[slot];
+
+    // Capture both planes' row-0 anchors for this column BEFORE the walk consumes
+    // the cursor copies. This is what lets the collector reach any row of this
+    // column later without a cursor of its own -- see their declarations.
+    ColStatBase[slot] = stat.dp;
+    ColRunLen[slot]   = dyn.lp;
+    ColRunData[slot]  = dyn.dp;
+    ColRunProg[slot]  = dyn.progress;
 
     // Static is a flat ROM pointer; dynamic still walks RLE.
     const u8* sdat = stat.dp;
@@ -126,6 +250,8 @@ NI LEVEL_CODE void ColMapStamp(const u8 slot, Cursor stat, DynamicCursor dyn) {
         ++sdat;                                  // flat: one byte per cell
         if (++dp >= *dlen) { ++dlen; ++ddat; dp = 0; }
     }
+
+    ColMapMasks(slot, col);
 }
 
 // Seed the whole window from a single static+dynamic Cursor parked on (leftCol,
@@ -141,13 +267,14 @@ NI LEVEL_CODE void ColMapSeed(const u16 leftCol, Cursor stat, DynamicCursor dyn)
                   ? static_cast<u16>(nColumns - ColMapWidth()) : 0;
     colLeftStat   = stat;          // leftmost held column (base), row 0
     colLeftDyn    = dyn;
-    colPlayerAnchor.stat = stat;   // collector anchor: parked on (leftCol, row 0) now;
-    colPlayerAnchor.dyn  = dyn;    //   the first CollectCoins re-anchors it to the player
-    colPlayerAnchor.cell = static_cast<u16>(leftCol) * levelHeight;
-    colPlayerAnchor.colR = leftCol;
-    colPlayerAnchor.rowB = 0;
-    colPlayerAnchor.dry  = false;  // unverified: first call for this AABB must scan
-    colPlayer2Anchor = colPlayerAnchor;   // P2 anchor seeded identically; diverges as P2 moves
+    // No collector cursors to seed any more: the collector reads whichever column
+    // it needs out of the per-slot anchors ColMapStamp records below, so there is
+    // no per-player state to park or to drift.
+    // dry = false: unverified, so the first call for either player must scan.
+    // px/py are not consulted while dry is false, so they need no real seed.
+    coinGate1 = { 0, 0, false };
+    coinGate2 = coinGate1;
+    colMemoValid = false;   // whole window just changed under the memo
     const auto width = ColMapWidth();
     for (u8 i = 0; i < width; i++) {
         if (i == width - 1) {          // rightmost held, row 0
@@ -212,7 +339,7 @@ NI LEVEL_CODE static void ColMapSlideTo(const u16 desired) {
         ColMapSlideLeft(colLeftStat, colLeftDyn);         // base--
         AdvancePairBackward(colRightStat, colRightDyn);   // re-anchor right edge
     }
-    
+
 }
 
 // Lazily centre the window on the camera. Desired base = camLeftCol - 4, clamped
@@ -240,6 +367,7 @@ LEVEL_CODE void ColMapSlideRight(const Cursor &newRightStat, DynamicCursor newRi
     ColMapStamp(ColMapOrigin, newRightStat, newRightDyn);
     ColMapBaseCol++;
     if (++ColMapOrigin >= ColMapWidth()) ColMapOrigin = 0;
+    colMemoValid = false;   // bases are relative to the window -- see the memo's decl
 }
 
 // Mirror: drop the rightmost column, admit (base-1) on the left. Rotate origin
@@ -250,30 +378,86 @@ LEVEL_CODE void ColMapSlideLeft(const Cursor &newLeftStat, DynamicCursor newLeft
     if (ColMapOrigin == 0) ColMapOrigin = ColMapWidth() - 1;
     else                   ColMapOrigin--;
     ColMapStamp(ColMapOrigin, newLeftStat, newLeftDyn);
+    colMemoValid = false;   // bases are relative to the window -- see the memo's decl
+}
+
+// Resolve world column -> ring slot, or kNoSlot when outside the window. This is
+// the one copy of the slot math: a 16-bit subtract against the base, a window
+// test, and the non-pow2 ring's single conditional wrap. ColMapColumn (render
+// path) and the collision/collector paths all go through it.
+// AI: callers want the concrete globals folded to absolute addressing, and each
+// one needs a different thing out of the result.
+AI static u8 ColMapSlot(const u16 col) {
+    const u16 d = col - ColMapBaseCol;
+    if (d >= ColMapWidth()) return kNoSlot;       // outside window = air
+    u8 slot = ColMapOrigin + static_cast<u8>(d);
+    if (slot >= ColMapWidth()) slot -= ColMapWidth();
+    return slot;
+}
+
+// Resolve the column PAIR an AABB spans into the memo, unless it is already the
+// pair held. Keyed on the pair rather than on px, so it stays correct for any
+// AABB width and the hit test is two 16-bit compares instead of the slot math.
+// Blocked runs up to three times per player per frame on positions a pixel
+// apart, and the collector asks about a pair too, so this is nearly always a hit.
+AI static void ColMemoFor(const u16 colL, const u16 colR) {
+    if (colMemoValid && colL == colMemoL && colR == colMemoR) return;
+    colMemoL     = colL;
+    colMemoR     = colR;
+    colMemoA     = ColMapSlot(colL);
+    colMemoB     = colR == colL ? colMemoA : ColMapSlot(colR);
+    colMemoValid = true;
+}
+
+// Does any row in [mask] of this column hold a Solid / Collect cell? Constant
+// time: two ANDs against the per-slot occupancy planes, independent of how many
+// rows the AABB spans and with no Metatiles_ATTR decode -- that decode happened
+// once per cell on column entry, in ColMapMasks.
+// AI so ColSolid*/ColColl* stay concrete globals (absolute,x) rather than being
+// passed as pointers, which would force an indirect ZP base in the hot path.
+AI static bool SolidHits(const u8 slot, const u8 mLo, const u8 mHi) {
+    if (slot == kNoSlot) return false;
+    return ((ColSolidLo[slot] & mLo) | (ColSolidHi[slot] & mHi)) != 0;
+}
+AI static bool CollectHits(const u8 slot, const u8 mLo, const u8 mHi) {
+    if (slot == kNoSlot) return false;
+    return ((ColCollLo[slot] & mLo) | (ColCollHi[slot] & mHi)) != 0;
 }
 
 // Resolve world column `col` to its levelHeight metatiles in the ring, or nullptr
-// if outside the window. Same slot math as Blocked's inner resolve; shared so the
-// render path reads the SAME decompressed column the window already produced.
+// if outside the window. Shared so the render path reads the SAME decompressed
+// column the window already produced.
 // FIXED: sole callers are BuildNextColumn/BuildPrevColumn (::ACTORS) -- grouped
 // with sibling Blocked (same static state, already FIXED) so both actor-bank and
 // level-domain callers reach it by ordinary call.
 FIXED const u8* ColMapColumn(const u16 col) {
-    const u16 d = col - ColMapBaseCol;
-    if (d >= ColMapWidth()) return nullptr;       // outside window = air (caller skips)
-    u8 slot = ColMapOrigin + static_cast<u8>(d);
-    if (slot >= ColMapWidth()) slot -= ColMapWidth();
+    const u8 slot = ColMapSlot(col);
+    if (slot == kNoSlot) return nullptr;          // outside window = air (caller skips)
     return ViewMap + kSlotOffset[slot];
 }
 
 // AABB block test on world-pixel inputs. HUD strip removed so the row index lands
-// in level space. Resolves the ring slot ONCE per swept column, then the inner row
-// loop is a flat index + one-mask decode -- no RLE. `collectBlocks` picks the
-// audience: the player (true) bonks on coins too, enemies (false) only stop on
-// walls. Columns outside the window read as air, no clamp needed.
-// NI: called 4x from Player::Update plus Actor::Move; LTO was duplicating the
-// whole body into every call site instead of one JSR target.
-// FIXED: 402 bytes standalone, always mapped whenever level code runs.
+// in level space.
+//
+// There is NO per-cell loop left. The swept column pair resolves through the memo
+// (two 16-bit compares on the common frame, because consecutive probes sit a pixel
+// or two apart), the AABB's row extent becomes one 14-bit mask out of the kPref
+// prefix tables, and the answer is an AND against each column's occupancy plane.
+// Constant time in the AABB's height, and no Metatiles_ATTR decode -- that was
+// paid once per cell when the column entered the window.
+//
+// `collectBlocks` picks the audience: a caller passing true bonks on coins too,
+// false only stops on walls. Columns outside the window read as air, no clamp
+// needed.
+//
+// PRECONDITION: w <= 17, so the AABB spans at most TWO metatile columns. Every
+// caller passes GetSize(), which is {16,16} for both entries of
+// ActorTypeMetadata (actor.hpp). A wider actor needs a general colL..colR loop
+// restored, not merely a longer memo -- the two-slot form below would silently
+// skip its middle columns.
+// NI: called 3x from Player::Update; LTO was duplicating the whole body into
+// every call site instead of one JSR target.
+// FIXED: always mapped whenever level code runs.
 NI FIXED bool Blocked(const u16 px, const u16 py, const vec2<u8> dimensions, const bool collectBlocks) {
     const u8 w = dimensions.x; const u8 h = dimensions.y;
     i16 rowTop = static_cast<i16>(py >> 4) - kHudRows;
@@ -288,175 +472,145 @@ NI FIXED bool Blocked(const u16 px, const u16 py, const vec2<u8> dimensions, con
 
     const u16 colL = px >> 4;
     const u16 colR = (px + w - 1) >> 4;
-    // ViewMap (RAM) and the metatile planes (now PRG-RAM mirrors, see
-    // metatiles.hpp's LoadMetatilePlanes) are both ambient -- no window-2
-    // switch needed here anymore.
-    for (u16 c = colL; c <= colR; c++) {
-        const u16 d = c - ColMapBaseCol;
-        if (d >= ColMapWidth()) continue;       // column outside window = air
-        u8 slot = ColMapOrigin + static_cast<u8>(d);
-        if (slot >= ColMapWidth()) slot -= ColMapWidth();   // non-pow2 ring: one wrap
-        // kSlotOffset replaces slot*levelHeight (16-bit software multiply) with a
-        // ROM table lookup.  Start colp at rowT so the inner walk is a bare *colp.
-        const u8* colp = ViewMap + kSlotOffset[slot] + rowT;
-        for (u8 cnt = rowB - rowT + 1; cnt != 0; --cnt, ++colp) {
-            const MetatileCollision cls = GetMetatileCollisions(*colp);
-            if (cls == MetatileCollision::Solid) return true;
-            if (collectBlocks && cls == MetatileCollision::Collect) return true;
-        }
+    // ViewMap and the per-slot planes are plain RAM and ambient -- no window-2
+    // switch needed here.
+    ColMemoFor(colL, colR);
+
+    // Rows [rowT, rowB] as one mask. See kPrefLo/kPrefHi.
+    const u8 mLo = static_cast<u8>(kPrefLo[rowB + 1] ^ kPrefLo[rowT]);
+    const u8 mHi = static_cast<u8>(kPrefHi[rowB + 1] ^ kPrefHi[rowT]);
+
+    if (SolidHits(colMemoA, mLo, mHi)) return true;
+    if (collectBlocks && CollectHits(colMemoA, mLo, mHi)) return true;
+    if (colMemoB != colMemoA) {
+        if (SolidHits(colMemoB, mLo, mHi)) return true;
+        if (collectBlocks && CollectHits(colMemoB, mLo, mHi)) return true;
     }
     return false;
 }
 
-// Collect coins overlapping the AABB. Same column/row projection as Blocked. Uses
-// a PERSISTENT collector pair (anchor.dyn/anchor.stat) parked on the player instead
-// of walking from the window's left edge every call, so cost doesn't grow with the
-// player's depth into the window. Each call re-anchors to the AABB's top-left cell
-// with a single Move (<= ~1 cell of travel), then walks ONE probe pair monotonically
-// through the AABB in column-major order. Blank the run in DynData (permanent) and
-// overwrite the window cell with the revealed static tile (immediate).
+// Take one dynamic coin out of resolved column `slot`, over rows [rowT, rowB].
+//
+// Only called once the column's Collect occupancy plane says a Collect cell is in
+// range, so the RLE walk below runs on a take-CANDIDATE frame rather than every
+// frame -- which is the whole difference from the old persistent-anchor collector.
+// The walk starts at the column's row-0 dynamic head (recorded by ColMapStamp) and
+// steps down at most levelHeight times, in lockstep with the row scan, so a cell's
+// owning run is reached without a cursor of the collector's own.
+//
+// The composite byte is re-tested per row rather than trusting the mask to name
+// the row, because ViewMap is composite: a STATIC Collect-class tile sets the same
+// bit, and only a non-air dynamic cell is a coin that can be taken. Finding one of
+// those must not stop the scan, hence the loop rather than a single probe.
+//
+// NI FIXED: two call sites, and the body is large enough that inlining it would
+// duplicate the whole walk; FIXED for the same reason as Blocked.
+NI FIXED static bool TakeFromColumn(const u8 slot, const u8 rowT, const u8 rowB, const u16 col) {
+    u8* const colp = ViewMap + kSlotOffset[slot];
+    DynamicCursor pd{ ColRunLen[slot], ColRunData[slot], ColRunProg[slot] };
+    if (rowT != 0) pd.Move(static_cast<i8>(rowT));
+
+    for (u8 r = rowT; ; r++) {
+        if (GetMetatileCollisions(colp[r]) == MetatileCollision::Collect && pd.Fetch() != 0) {
+            // *pd.dp = 0 is DynData[pd.Run()] = 0 without the round trip: pd.dp
+            // already points at that DynData byte, so this skips a 16-bit subtract
+            // immediately followed by a 16-bit re-add to index back in.
+            *pd.dp = 0;                              // permanent removal
+            const u8 reveal = ColStatBase[slot][r];  // static plane is flat: direct index
+            colp[r] = reveal;                        // window shows it gone immediately
+
+            // The occupancy planes are DERIVED from these bytes, so they have to
+            // follow: clear the coin's Collect bit and give the row the revealed
+            // tile's class, or the next Blocked would still see a coin here.
+            const u8 bLo = kBitLo[r], bHi = kBitHi[r];
+            ColCollLo[slot] = static_cast<u8>(ColCollLo[slot] & ~bLo);
+            ColCollHi[slot] = static_cast<u8>(ColCollHi[slot] & ~bHi);
+            const MetatileCollision rc = GetMetatileCollisions(reveal);
+            if (rc == MetatileCollision::Solid) {
+                ColSolidLo[slot] |= bLo; ColSolidHi[slot] |= bHi;
+            } else if (rc == MetatileCollision::Collect) {
+                ColCollLo[slot] |= bLo; ColCollHi[slot] |= bHi;
+            }
+
+            coinPick = { col, r, reveal };
+            return true;
+        }
+        if (r == rowB) return false;
+        pd.Move(1);                                  // next row, same column
+    }
+}
+
+// Collect one coin overlapping the AABB. Same column/row projection as Blocked,
+// through the same memo.
+//
+// The common frame -- no coin in range -- is now two ANDs and a return, with no
+// cursor touched and no cell visited: the Collect occupancy planes already know
+// the answer. What used to stand here was a persistent per-player cursor pair
+// nudged by the player's travel every single call, a 16-bit multiply-by-levelHeight
+// to compute that nudge, and a per-cell ViewMap pre-scan that re-derived the slot
+// math the memo had already done. See the per-slot state's declaration for why
+// that cost was a spike rather than a constant.
 //
 // Collects AT MOST ONE coin per call, even if the AABB straddles several. Bounds
 // both the per-frame VRAM-queue burst (PushCoinVram queues 2 paired records, i.e.
-// 4 tile writes, per coin) and the CPU burst the same way. Spreading a multi-coin cluster's collection over a few
-// frames as the player passes through is not perceptible.
+// 4 tile writes, per coin) and the CPU burst the same way. Spreading a multi-coin
+// cluster's collection over a few frames as the player passes through is not
+// perceptible.
 //
-// The "same cell as last frame -> skip the walk" guard below is a POSITION check,
-// which is unsafe alone under the one-coin cap: a cell is 16px wide and the player
-// moves ~2.5px/frame, so "same cell" holds for many frames just from walking
-// through it. If a coin was left behind when the cap kicked in, a position-only
-// guard would skip re-scanning until the player leaves the AABB ("phase through").
-// anchor.dry closes that gap: the guard may only skip once this cell is actually
-// VERIFIED empty, so a stationary AABB keeps getting re-scanned until drained.
-//
-// Shared body for CollectCoins/CollectCoins2: the two used to be independent
-// ~2.3 KiB copies differing only in which CollectorAnchor they touched.
+// Both players share this outright now: there is no per-player state left, so
+// CollectCoins/CollectCoins2 differ only in which gate they store.
 // NI FIXED: same rationale as Blocked above.
-NI FIXED static bool CollectCoinsImpl(CollectorAnchor& anchor, const u16 px, const u16 py,
-                            const vec2<u8> dimensions) {
+NI FIXED static u8 CollectCoinsImpl(const u16 px, const u16 py, const vec2<u8> dimensions) {
     const u8 w = dimensions.x; const u8 h = dimensions.y;
     i16 sTop = static_cast<i16>(py >> 4) - kHudRows;
     i16 sBot = static_cast<i16>((py + h - 1) >> 4) - kHudRows;
-    if (sBot < 0 || sTop >= levelHeight) return false;
+    if (sBot < 0 || sTop >= levelHeight) return kScanOffField;
     if (sTop < 0)            sTop = 0;
     if (sBot >= levelHeight) sBot = levelHeight - 1;
     // Signed only until clamped. Past this point both bounds are in
-    // [0, levelHeight), so they -- and every row loop counter derived from them --
-    // are u8: an i16 row index costs a 16-bit compare and increment per cell in
-    // both AABB walks below, and this function's cost is dominated by what it
-    // pays per cell.
+    // [0, levelHeight), so they are u8.
     const u8 rowTop = static_cast<u8>(sTop);
     const u8 rowBot = static_cast<u8>(sBot);
 
     const u16 colL = px >> 4;
     const u16 colR = (px + w - 1) >> 4;
+    ColMemoFor(colL, colR);
 
-    // Re-anchor the persistent collector pair EVERY frame -- step is the player's
-    // travel since last frame, a tiny RLE nudge. Must stay unconditional: gating
-    // it on "a coin is present" lets anchor.cell freeze and the next collection
-    // pays the whole accumulated drift in one spike (tried, and it spiked).
-    const u16 anchorCell = static_cast<u16>(colL) * levelHeight + rowTop;
-    const i16 step      = static_cast<i16>(anchorCell) - static_cast<i16>(anchor.cell);
-    const bool sameColR = (colR == anchor.colR);
-    const bool sameRowB = (rowBot == anchor.rowB);
-    anchor.cell = anchorCell;
-    anchor.colR = colR;
-    anchor.rowB = rowBot;
-    // Same cells as last frame AND already verified empty -> skip the walk. Guards
-    // all four AABB edges since colR/rowB can change independently of the anchor.
-    // anchor.dry is what keeps this safe under the one-coin cap (see file comment).
-    if (step == 0 && sameColR && sameRowB && anchor.dry) return false;
-    // After level load step is bounded to ±(levelHeight+1) ≤ 15; use the i8 path
-    // (single-byte loop counter on 6502) except on the first call after ColMapSeed
-    // where the player may be far from the seed point.
-    if (step >= -128 && step <= 127) {
-        anchor.dyn.Move(static_cast<i8>(step));
-        anchor.stat.Move(static_cast<i8>(step));
-    } else {
-        anchor.dyn.Seek(step);
-        anchor.stat.Seek(step);
-    }
+    const u8 mLo = static_cast<u8>(kPrefLo[rowBot + 1] ^ kPrefLo[rowTop]);
+    const u8 mHi = static_cast<u8>(kPrefHi[rowBot + 1] ^ kPrefHi[rowTop]);
 
-    // ViewMap pre-scan: a cheap gate before the cursor probe walk. Fires for static
-    // Collect tiles too (ViewMap is composite), but the probe's pd.Fetch()!=0 guard
-    // rejects those. Skips the probe walk entirely on the common no-coin frame.
-    {
-        // Same reasoning as Blocked(): ViewMap and the metatile planes are
-        // both ambient RAM now, no window-2 switch needed.
-        bool anyCoin = false;
-        for (u16 c = colL; !anyCoin && c <= colR; c++) {
-            const u16 d = c - ColMapBaseCol;
-            if (d >= ColMapWidth()) continue;
-            u8 slot = ColMapOrigin + static_cast<u8>(d);
-            if (slot >= ColMapWidth()) slot -= ColMapWidth();
-            const u8* colp = ViewMap + kSlotOffset[slot];
-            for (u8 r = rowTop; !anyCoin && r <= rowBot; r++) {
-                if (GetMetatileCollisions(colp[r]) == MetatileCollision::Collect)
-                    anyCoin = true;
-            }
-        }
-        if (!anyCoin) { anchor.dry = true; return false; }   // verified empty: safe to skip next time
-    }
+    if (CollectHits(colMemoA, mLo, mHi)
+        && TakeFromColumn(colMemoA, rowTop, rowBot, colL)) return kScanTook;
+    if (colMemoB != colMemoA && CollectHits(colMemoB, mLo, mHi)
+        && TakeFromColumn(colMemoB, rowTop, rowBot, colR)) return kScanTook;
 
-    // ONE probe pair copied off the anchor, walked monotonically column-major through
-    // the AABB -- no per-coin re-walk (that quadratic cost is the thing being avoided).
-    // Stops at the FIRST coin found -- see the one-coin-per-call note above.
-    DynamicCursor pd   = anchor.dyn;
-    Cursor        ps   = anchor.stat;
-    // Cells to step to reach the next column's top row: one full column minus the
-    // rows the walk already descended. Hoisted and narrowed to u8 -- it was a
-    // 16-bit `levelHeight - rows` recomputed at every column boundary.
-    const u8      cross = static_cast<u8>(levelHeight - (rowBot - rowTop));
-    bool got = false;
-    for (u16 c = colL; ; c++) {
-        const u16  d     = c - ColMapBaseCol;
-        const bool inWin = d < ColMapWidth();   // column outside window = air
-        u8* colp = nullptr;
-        if (inWin) {
-            u8 slot = ColMapOrigin + static_cast<u8>(d);
-            if (slot >= ColMapWidth()) slot -= ColMapWidth();
-            colp = ViewMap + kSlotOffset[slot];
-        }
-        for (u8 r = rowTop; r <= rowBot; r++) {
-            // pd.Fetch() reads DynData and GetMetatileCollisions reads the
-            // RAM metatile mirror -- both ambient, no window-2 switch.
-            const bool isCollect = inWin && pd.Fetch() != 0 &&
-                GetMetatileCollisions(colp[r]) == MetatileCollision::Collect;
-            if (isCollect) {
-                // *pd.dp = 0 is DynData[pd.Run()] = 0 (Run() is just dp-DynData)
-                // without the round trip: pd.dp already points at that DynData
-                // byte, so this skips a 16-bit subtract (Run()) immediately
-                // followed by a 16-bit re-add (indexing back into DynData) --
-                // 64 bytes -> 30 bytes measured in isolation.
-                *pd.dp = 0;                     // permanent removal (length-1 coin run)
-                const u8 reveal = ps.Fetch();   // static metatile to expose
-                colp[r] = reveal;               // window now shows the static cell
-                coinPick = { c, r, reveal };
-                got = true;
-                break;   // one coin per call -- see the comment above
-            }
-            if (r != rowBot) { pd.Move(1); ps.Move(1); }   // step down to the next row
-        }
-        if (got || c == colR) break;
-        pd.Move(cross);                         // cross to the next column's top row
-        ps.Move(cross);
-    }
-    // got: we deliberately stopped after the first coin, so this AABB may still hold
-    // another one -- keep re-scanning next frame even if the player doesn't move.
-    // !got here would mean anyCoin lied (shouldn't happen); treat as verified-empty
-    // either way so a stuck AABB can't spin forever re-scanning something that isn't there.
-    anchor.dry = !got;
-    return got;
+    // Nothing takeable in range. Reported verified-empty even when a Collect bit
+    // was set but turned out to be a static tile: re-scanning it next frame would
+    // find the same static tile forever. A coin that LANDS here later arrives by a
+    // column entry or a removal, both of which rewrite the planes.
+    return kScanEmpty;
 }
 
-// Thin wrappers selecting which player's persistent anchor to use -- see
-// CollectCoinsImpl's own comment for why the body lives there and not here.
-FIXED bool CollectCoins(const u16 px, const u16 py, const vec2<u8> dimensions) {
-    return CollectCoinsImpl(colPlayerAnchor, px, py, dimensions);
+// Thin wrappers owning each player's gate -- see CollectCoinsImpl for why the body
+// lives there. The gate store lives out here rather than in the impl so the impl
+// touches no per-player state at all.
+//
+// NI: these are thin enough that LTO inlines them into Player::Update, and then
+// the gate store and outcome decode land in the ACTORS bank TWICE, once per
+// player branch -- measured at +588 bytes there before this attribute went on.
+// The gate TEST is what the caller needs inline (CoinGateSkips, which is AI);
+// the store only runs on frames the call was already made, so it belongs out
+// here next to the impl it pairs with.
+NI FIXED bool CollectCoins(const u16 px, const u16 py, const vec2<u8> dimensions) {
+    const u8 r = CollectCoinsImpl(px, py, dimensions);
+    coinGate1 = { px, py, r == kScanEmpty };
+    return r == kScanTook;
 }
 
-FIXED bool CollectCoins2(const u16 px, const u16 py, const vec2<u8> dimensions) {
-    return CollectCoinsImpl(colPlayer2Anchor, px, py, dimensions);
+NI FIXED bool CollectCoins2(const u16 px, const u16 py, const vec2<u8> dimensions) {
+    const u8 r = CollectCoinsImpl(px, py, dimensions);
+    coinGate2 = { px, py, r == kScanEmpty };
+    return r == kScanTook;
 }
 
 }   // namespace level

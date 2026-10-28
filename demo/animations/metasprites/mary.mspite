@@ -1,0 +1,14 @@
+# pnes animator metasprite -- see the .anim beside this folder
+
+[metasprite]
+name   = "mary"
+width  = 2    # in tiles; a tile is 8x8 or 8x16 by the project's tile_mode
+height = 1
+
+[[frame]]
+name  = "standing"
+timer = 8
+sprites = [
+    { col = 0, row = 0, id = 0x04, entry = "normalSprites", include = "player_standing", tile = 0, flip_h = false, flip_v = false },
+    { col = 1, row = 0, id = 0x06, entry = "normalSprites", include = "player_standing", tile = 2, flip_h = false, flip_v = false },
+]

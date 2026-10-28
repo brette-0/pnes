@@ -141,4 +141,48 @@ extern CoinPick coinPick;
 bool CollectCoins(u16 px, u16 py, vec2<u8> dimensions);
 bool CollectCoins2(u16 px, u16 py, vec2<u8> dimensions);
 
+// ---------------------------------------------------------------------------
+// Collector gate
+//
+// The pixel position that produced the cell window the collector last scanned,
+// plus whether that scan found it empty.  One per player, mirroring the two
+// CollectorAnchors inside collision_map.cpp.
+//
+// This exists because CollectCoins' normal answer is "nothing here", and
+// reaching that answer used to cost its whole out-of-line entry: a ~165-cycle
+// soft-stack prologue plus the AABB bounds math and two inlined multiply-by-14
+// chains, before the in-body "same cells, already verified empty" guard could
+// fire.  The guard is now hoisted HERE, in a form the caller can inline, so the
+// no-op frame never makes the call at all.
+struct CoinGate { u16 px; u16 py; bool dry; };
+extern CoinGate coinGate1;
+extern CoinGate coinGate2;
+
+// Whether the AABB at (px, py) resolves to exactly the cell window the last call
+// already scanned empty -- in which case there is nothing for the collector to
+// find and the call can be skipped entirely.
+//
+// This is the in-body guard (`step == 0 && sameColR && sameRowB && dry`)
+// restated on pixels.  The two agree: for a fixed 16px AABB, colL = px >> 4 and
+// colR = colL + (px & 15 ? 1 : 0), so the column pair is unchanged exactly when
+// px stays in one 16px cell AND does not move onto or off the cell boundary;
+// likewise for rows, and clamping is a function of the unclamped pair so it
+// cannot separate two equal ones.  `step` is therefore 0 whenever this returns
+// true, which is what makes skipping the unconditional re-anchor Move safe --
+// that Move must not be gated on "a coin is present" (it was, once, and the
+// accumulated drift spiked) but gating on "the window did not move" is exactly
+// the case where it would have moved nothing.
+//
+// Written as xor + mask rather than four `>> 4`s: a u16 shift-by-4 is four
+// lsr/ror pairs, and the question is only whether two positions share a cell.
+// AI so the concrete global folds to absolute addressing at the call site --
+// same reason AdvancePairForward (collision_map.cpp) carries it.
+AI inline bool CoinGateSkips(const CoinGate& g, const u16 px, const u16 py) {
+    if (!g.dry) return false;
+    return ((px ^ g.px) & 0xFFF0u) == 0
+        && ((py ^ g.py) & 0xFFF0u) == 0
+        && ((px & 0xFu) == 0) == ((g.px & 0xFu) == 0)
+        && ((py & 0xFu) == 0) == ((g.py & 0xFu) == 0);
+}
+
 }   // namespace level

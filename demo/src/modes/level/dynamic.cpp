@@ -14,8 +14,8 @@ namespace level {
     // additive: it touches no existing engine state, only its own RAM/ROM handles.
     // ---------------------------------------------------------------------------
 
-    // RAM-resident run-data (BSS, ~128 bytes).  Zero-initialized => all air until a
-    // level loads a dynamic layer via LoadDynamicLayer.
+    // RAM-resident run-data (BSS, DynRunCapacity bytes).  Zero-initialized => all
+    // air until a level loads a dynamic layer via LoadDynamicLayer.
     u8 DynData[DynRunCapacity];
 
     // Null until a level ships a dynamic plane.  CollidesDynamic / DynamicCursor are
