@@ -47,6 +47,15 @@ struct Entry {
 /// One drawable unit: an 8x8 tile, or an 8x16 pair of them.
 struct Cell {
     int         id = 0;             ///< PPU tile id; the TOP tile's id when 8x16.
+
+    /// The byte OAM takes for this cell, which is NOT always ::id.
+    ///
+    /// In 8x16 mode the pattern byte's bit 0 selects the pattern table and bits
+    /// 7-1 select the pair, so the half the entry's VMA puts the art in has to
+    /// be folded into the id -- the manifest is the only thing that knows it,
+    /// and a consumer handed a bare id can only guess. An 8x8 cell's half comes
+    /// from PPUCTRL instead, so there it is ::id unchanged.
+    int         patternByte = 0;
     std::size_t entry = 0;          ///< Index into Table::entries.
     std::string include;            ///< Stem of the .chr file it came from.
     int         tileInInclude = 0;  ///< 0-based tile index within that include.

@@ -279,6 +279,12 @@ std::optional<Table> loadManifest(const std::filesystem::path& path, TileMode mo
                     entry.vma + include.offset + static_cast<std::uint32_t>(tile) * kTileBytes;
                 const int id = static_cast<int>((tileVma / kTileBytes) & 0xFF);
 
+                // Which pattern table that VMA lands in. The mask above drops
+                // it -- an id is an index WITHIN a table, which is what the
+                // sheet shows and what blobman's symbols are -- so it is kept
+                // here and folded into the pattern byte below.
+                const int half = static_cast<int>(tileVma / kPatternTableBytes) & 1;
+
                 // In 8x16 sprite mode the pattern byte's bit 0 selects the
                 // pattern table and bits 7-1 select the pair, so a pair is
                 // always an EVEN id followed by that id | 1. A pair can
@@ -297,6 +303,10 @@ std::optional<Table> loadManifest(const std::filesystem::path& path, TileMode mo
 
                 Cell cell;
                 cell.id             = id;
+                // 8x16: bits 7-1 are the pair (always even, per the pairable
+                // test) and bit 0 is the half, so the VMA survives into OAM.
+                // 8x8: PPUCTRL picks the half, so the id goes out as-is.
+                cell.patternByte    = height == 2 ? ((id & 0xFE) | half) : id;
                 cell.entry          = e;
                 cell.include        = include.name;
                 cell.tileInInclude  = tile;

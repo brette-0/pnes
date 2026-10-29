@@ -53,14 +53,40 @@ constexpr oam::oam_t ParkedSpriteY() {
 }
 
 /**
+ * @brief Whether this target's gameplay panel is a window onto the game's frame.
+ *
+ * The one place the target set is named. ::VerticalWindow and ::WindowedSpriteY
+ * only exist under it, and level.cpp gates its background half (ApplyHudSplit's
+ * scroll) and the ::rasterPlayerY latch that feeds both on the same macro, so
+ * there is no second list of targets to keep in step with this one.
+ */
+#if defined(TARGET_GBA) || defined(TARGET_NDS)
+#  define PNES_WINDOWED_PANEL
+#endif
+
+#ifdef PNES_WINDOWED_PANEL
+
+/**
+ * @brief Rows of frame the level's logic places things in.
+ *
+ * NOT ::video::viewport_py(): that is how tall this target's OUTPUT is, which on
+ * a windowed panel is the thing the window is smaller than. This is how tall the
+ * region the window slides over is -- the 240 rows the level draws and positions
+ * actors within, which does not vary by target. ::VerticalWindow clamps against
+ * it so the window never runs off the bottom of the level.
+ */
+constexpr i16 kFrameRows = 240;
+
+/**
  * @brief Vertical offset of the output window into the game's 240-row frame.
  *
- * Non-zero only where the game's internal resolution does not fit the output:
- * the GBA's panel is 160 rows and the DS's gameplay panel is 192, both short of
- * the 240 this game draws into, so the panel shows a WINDOW onto that frame and
- * a follow camera chooses which rows -- the player is centred in the panel,
- * clamped so the window never leaves the frame. Every other target's output is
- * at least the whole frame, so the window is the frame and this is 0.
+ * Exists only under ::PNES_WINDOWED_PANEL, where the game's ::kFrameRows do not
+ * fit the output: the GBA's panel is 160 rows and the DS's gameplay panel is
+ * 192, both short of the 240 the game draws into, so the panel shows a WINDOW
+ * onto that frame and a follow camera chooses which rows -- the player is
+ * centred in the panel, clamped so the window never leaves the frame. Targets
+ * whose output already covers the frame need no conversion at all, so rather
+ * than calling this for a guaranteed 0 they do not see it.
  *
  * This is the ONE definition of that camera. ::ApplyHudSplit scrolls the
  * background by it (level.cpp) and ::WindowedSpriteY shifts sprites by it, which
@@ -70,16 +96,11 @@ constexpr oam::oam_t ParkedSpriteY() {
  * @param playerFrameY The camera subject's frame-space Y (P1's sprite row).
  */
 constexpr i16 VerticalWindow(const oam::oam_t playerFrameY) {
-#if defined(TARGET_GBA) || defined(TARGET_NDS)
     constexpr i16 panelH = static_cast<i16>(video::panel_rect(0).h);
     constexpr i16 mid    = static_cast<i16>(panelH >> 1);
-    constexpr i16 anchor = static_cast<i16>(240 - panelH);
+    constexpr i16 anchor = static_cast<i16>(kFrameRows - panelH);
     const i16 raw = static_cast<i16>(playerFrameY) - mid;
     return raw < 0 ? 0 : (raw > anchor ? anchor : raw);
-#else
-    (void)playerFrameY;
-    return 0;
-#endif
 }
 
 /**
@@ -94,6 +115,8 @@ constexpr oam::oam_t WindowedSpriteY(const oam::oam_t frameY, const oam::oam_t p
     const i16 y = static_cast<i16>(frameY) - VerticalWindow(playerFrameY);
     return y < 0 ? ParkedSpriteY() : static_cast<oam::oam_t>(y);
 }
+
+#endif   // PNES_WINDOWED_PANEL
 
 extern atomic eGameModes gameMode;
 

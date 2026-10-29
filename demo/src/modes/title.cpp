@@ -12,7 +12,7 @@
 #include "../graphics/colours.hpp"
 #include "../graphics/strings.hpp"
 #include "../../chr/chr.h"
-#include "../graphics/metasprites.hpp"
+#include "../../animations/gen/mary_standing.hpp"
 #include "level.hpp"
 #include "level/levels.hpp"
 #include "pnes/mappers/mmc3.hpp"
@@ -68,6 +68,8 @@ namespace title {
     }
 
     static oam::oam_t Clear(u16 _);
+    static oam::oam_t Zero(u16 _);
+    static oam::oam_t StandingTile(u16 i);
     static NI void DrawLevelPreview();
     static void UpdateMarySpriteYForPixels(u16 splitPixelRow);
     static void UpdateMarySpriteY(u8 splitRow);
@@ -764,6 +766,17 @@ namespace title {
         return ParkedSpriteY();
     }
 
+    static oam::oam_t Zero(const u16) {
+        return 0;
+    }
+
+    // One tile id per slot, packed -- indexed rather than handed to
+    // ::oam::PopulateFromBuffer, which walks its source by the sprite stride
+    // because it takes sprite_t records.
+    static oam::oam_t StandingTile(const u16 i) {
+        return gen::mary_standing::Get()[i];
+    }
+
     static NI void DrawLevelPreview() {
         using namespace level;
 
@@ -789,8 +802,15 @@ namespace title {
         });
 
         CallLevelGraphics([] {
-            oam::PopulateFromBuffer(OAMBuffer, 0, oam::tile,       msMary, kMarySprites);
-            oam::PopulateFromBuffer(OAMBuffer, 0, oam::attributes, msMary, kMarySprites);
+            // The still pose the designer exported: its ids already carry the
+            // pattern-table half their CHR entry is banked into (see the
+            // header's banner), so they are OAM-ready as they stand.
+            oam::PopulateFromProvider(OAMBuffer, 0, oam::tile,
+                                      StandingTile, gen::mary_standing::kSize);
+            // Sprite palette 0, unflipped, in front: the generated frames hold
+            // no palette or mirroring, so this is the one place it is decided.
+            oam::PopulateFromProvider(OAMBuffer, 0, oam::attributes,
+                                      Zero, gen::mary_standing::kSize);
             ppu::pal::WriteFromBuffer(ppu::SPRITE_0 + 1, SIZED_OBJ(maryColors));
             ppu::pal::WriteFromBuffer(0, BGColours, 4);
             ppu::pal::WriteFromBuffer(5, BGColours + 5, 3);

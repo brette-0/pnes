@@ -9,7 +9,6 @@
 #include "../graphics/colours.hpp"
 #include "../graphics/strings.hpp"
 #include "../../chr/chr.h"
-#include "../graphics/metasprites.hpp"
 #include "../graphics/metatiles.hpp"
 
 #include "level/levels.hpp"
@@ -17,6 +16,8 @@
 #include "level/dynamic.hpp"
 #include "pnes/extras/debug/emphasis.hpp"
 
+#include "../../animations/gen/mary_standing.hpp"
+#include "../../animations/gen/mary_walking.hpp"
 using namespace demo;
 using enum level::eLevelStreamCommands;
 
@@ -53,7 +54,7 @@ namespace level {
     // level really is blank rather than merely unwritten.
     constexpr u16 kLowerPanelRow = video::panel_rect(1).y;                  // 192
     constexpr u16 kBlankPlaneX   = video::viewport_px();                    // 256: right nametable
-    constexpr u16 kBlankPlaneY   = 240;                                     // first plane row below the level
+    constexpr u16 kBlankPlaneY   = kFrameRows;                              // first plane row below the level
     constexpr u16 kBlankRows     = video::viewport_py() - kBlankPlaneY;     // 144
 
     // 144 blank rows do not cover a 192-row panel, so when a band runs out of
@@ -127,8 +128,8 @@ namespace level {
     u16 cameraX;
 
     static atomic u16 rasterCameraX;
-#if defined(TARGET_NDS) || defined(TARGET_GBA)
-    // Same latch for the vertical follow on the handhelds: the bump is derived
+#ifdef PNES_WINDOWED_PANEL
+    // Same latch for the vertical follow on a windowed panel: the bump is derived
     // from P1's sprite Y, which has to be the Y the OAM DMA just shipped.
     static atomic oam::oam_t rasterPlayerY;
 #endif
@@ -136,12 +137,25 @@ namespace level {
     atomic tech::enum_flags<eLevelStreamCommands> levelStreamCommand;
     u8 TileBuffer[56];
 
+    // Hardware sprites the player takes: the generated metasprite's own slot
+    // count, so the OAM populates below cannot drift from the art the designer
+    // exported. Every animation of one actor has to agree about that -- the
+    // slots are allocated once, at fixed indices -- so the walk is checked
+    // against the stand rather than trusted.
+    constexpr u8 kPlayerSprites = static_cast<u8>(gen::mary_standing::kSize);
+    static_assert(gen::mary_walking::kSize == gen::mary_standing::kSize,
+                  "mary's animations disagree about how many sprites she is: one of "
+                  "them would run off the end of the slots reserved for her");
+
     static oam::oam_t Clear(u16 _);
+    static oam::oam_t Zero(u16 _);
     static oam::oam_t SpriteY(u16 i);
     static oam::oam_t SpriteX(u16 i);
+    static oam::oam_t SpriteTile(u16 i);
 #ifdef PLAYER2_SUPPORTED
     static oam::oam_t SpriteY2(u16 i);
     static oam::oam_t SpriteX2(u16 i);
+    static oam::oam_t SpriteTile2(u16 i);
 #endif
     static i16 ClampRow(u16 y);
     static COLD NI void EnterLevelSetup() {
@@ -179,28 +193,17 @@ namespace level {
 
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);
 
+        // Attributes are nobody's frame data: the generated animations carry no
+        // palette and no mirroring (see their banner), and the level draws every
+        // sprite out of sprite palette 0 unflipped -- which is a zero. Cleared
+        // across the whole buffer because the title screen had its own sprites
+        // in here and only the Y column above is reset for it.
+        oam::PopulateFromProvider(OAMBuffer, 0, oam::attributes, Zero, 64);
 
-        CallLevelGraphics([] {
-            oam::PopulateFromBuffer(OAMBuffer, 1, oam::tile,       msMary, kMarySprites);
-            oam::PopulateFromBuffer(OAMBuffer, 1, oam::attributes, msMary, kMarySprites);
-#ifdef PLAYER2_SUPPORTED
-            if (multiplayer) {
-                oam::PopulateFromBuffer(OAMBuffer, 1 + kMarySprites, oam::tile,       msMary2, kMarySprites);
-                oam::PopulateFromBuffer(OAMBuffer, 1 + kMarySprites, oam::attributes, msMary2, kMarySprites);
-            }
-#endif
-        });
-        oam::PopulateFromProvider(OAMBuffer, 1, oam::y, SpriteY,  kMarySprites);
-        oam::PopulateFromProvider(OAMBuffer, 1, oam::x, SpriteX,  kMarySprites);
-
-#ifdef PLAYER2_SUPPORTED
-        // player 2: horizontally flipped, OAM slots 5..8 -- left at the
-        // Clear() (y = ParkedSpriteY(), off-screen) fill above unless multiplayer is on.
-        if (multiplayer) {
-            oam::PopulateFromProvider(OAMBuffer, 1 + kMarySprites, oam::y, SpriteY2, kMarySprites);
-            oam::PopulateFromProvider(OAMBuffer, 1 + kMarySprites, oam::x, SpriteX2, kMarySprites);
-        }
-#endif
+        // Tiles and positions are NOT seeded here: ::FeedOAM owns them, and it
+        // is called below once the players have started and have an animation
+        // and a screen position to read. Seeding them here as well would be the
+        // same bytes written from two places, a frame apart.
 
         video::WaitForPresent();
         CallLevelGraphics([] {
@@ -242,6 +245,11 @@ namespace level {
             player2.Start();
 #endif
         });
+        // FeedOAM is ::LEVEL_CODE, same as LoadLevel and ColMapSeed above, so it
+        // needs its bank mapped in -- this is cold code.
+        mmc3::CallInBlock<level_code_tag>([] {
+            FeedOAM();
+        });
         oam::RefreshSprites(OAMBuffer);   /* seed the first frame's sprite snapshot */
 
         video::WaitForPresent();
@@ -264,8 +272,35 @@ namespace level {
             mmc3::Call<level::UpdateActors>();
             ColMapTrack(cameraX >> 4);
             mmc3::CallPairedBlock<audio_tag, audio_data_tag>([] { audio::Update(); });
+
+            FeedOAM();
+
             video::WaitForPresent();
         }
+    }
+
+    LEVEL_CODE void FeedOAM() {
+#ifdef PLAYER2_SUPPORTED
+        const u8 shuffleBegin = multiplayer ? 4 : 2;
+#else
+        const u8 shuffleBegin = 2;
+#endif
+
+        oam::PopulateFromProvider(OAMBuffer, 1, oam::y, SpriteY, kPlayerSprites);
+        oam::PopulateFromProvider(OAMBuffer, 1, oam::x, SpriteX, kPlayerSprites);
+
+        // TODO: add walking animation based on player velocity weakly
+        oam::PopulateFromProvider(OAMBuffer, 1, oam::tile, SpriteTile, kPlayerSprites);
+
+#ifdef PLAYER2_SUPPORTED
+        // Left at the Clear() park unless multiplayer is on -- same reason as the
+        // setup path's player 2 block.
+        if (multiplayer) {
+            oam::PopulateFromProvider(OAMBuffer, 1 + kPlayerSprites, oam::y, SpriteY2, kPlayerSprites);
+            oam::PopulateFromProvider(OAMBuffer, 1 + kPlayerSprites, oam::x, SpriteX2, kPlayerSprites);
+            oam::PopulateFromProvider(OAMBuffer, 1 + kPlayerSprites, oam::tile, SpriteTile2, kPlayerSprites);
+        }
+#endif
     }
 
     FIXED void nmi_handler() {
@@ -275,7 +310,7 @@ namespace level {
         // Latched here, with the sprite snapshot this DMA just shipped, and read
         // by ApplyHudSplit from the scanline IRQ -- see ::rasterCameraX.
         rasterCameraX = cameraX;
-#if defined(TARGET_NDS) || defined(TARGET_GBA)
+#ifdef PNES_WINDOWED_PANEL
         rasterPlayerY = player1.actor.screen.y;
 #endif
 
@@ -345,6 +380,10 @@ namespace level {
         return ParkedSpriteY();
     }
 
+    static oam::oam_t Zero(const u16) {
+        return 0;
+    }
+
     // Provider shims: oam::PopulateFromProvider hands the callback only the sprite
     // index, so bind the player Actor here and forward to the Actor-aware versions.
     //
@@ -352,11 +391,27 @@ namespace level {
     // ApplyHudSplit scrolls the background with. P1 is the camera subject for
     // BOTH players -- P2 rides P1's window, same as the background does, or the
     // two would disagree about which rows the panel is showing.
+#ifdef PNES_WINDOWED_PANEL
     static oam::oam_t SpriteY(const u16 i)  { return WindowedSpriteY(AdjustSpriteY(&player1.actor, i), player1.actor.screen.y); }
+#else
+    static oam::oam_t SpriteY(const u16 i)  { return AdjustSpriteY(&player1.actor, i); }
+#endif
     static oam::oam_t SpriteX(const u16 i)  { return AdjustSpriteX(&player1.actor, i); }
+    // The animation frame is one tile id per slot, packed -- NOT the sprite_t
+    // records ::oam::PopulateFromBuffer walks by the sprite stride, which would
+    // read every slot but the first from the wrong byte. Indexed here instead,
+    // where the layout is known. The ids are OAM-ready as they stand: the
+    // designer folds in the pattern-table half of the CHR entry the art was
+    // banked into (see the generated header's banner).
+    static oam::oam_t SpriteTile(const u16 i)  { return player1.actor.animationFrame[i]; }
 #ifdef PLAYER2_SUPPORTED
+#ifdef PNES_WINDOWED_PANEL
     static oam::oam_t SpriteY2(const u16 i) { return WindowedSpriteY(AdjustSpriteY(&player2.actor, i), player1.actor.screen.y); }
+#else
+    static oam::oam_t SpriteY2(const u16 i) { return AdjustSpriteY(&player2.actor, i); }
+#endif
     static oam::oam_t SpriteX2(const u16 i) { return AdjustSpriteX(&player2.actor, i); }
+    static oam::oam_t SpriteTile2(const u16 i) { return player2.actor.animationFrame[i]; }
 #endif
 
     static i16 ClampRow(const u16 y) {
@@ -367,7 +422,7 @@ namespace level {
     }
 
     static FIXED void ApplyHudSplit() {
-        #if defined(TARGET_NDS) || defined(TARGET_GBA)
+        #ifdef PNES_WINDOWED_PANEL
             // The background half of the follow camera: on a target whose panel
             // is shorter than the 240-row frame this game draws into (GBA 160,
             // the DS's gameplay panel 192), the panel is a window onto that frame

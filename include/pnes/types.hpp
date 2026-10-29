@@ -40,6 +40,13 @@ struct vec2 {
         return *this;
     }
 
+    // Spelled out because the volatile operator= below is still *the* copy
+    // assignment operator -- cv on the implicit object parameter does not change
+    // that -- so declaring it suppresses the implicit one, and a plain `vec2`
+    // assignment would otherwise bind to the volatile overload and leave GCC
+    // warning that the `volatile vec2&` it hands back is dereferenced by nothing.
+    constexpr vec2& operator=(const vec2& rhs) = default;
+
     // Volatile-qualified overloads so `atomic vec2<t>` (volatile on NES, see
     // the `atomic` macro) can still be assigned/mutated in place -- the
     // implicit copy assignment operator the compiler would otherwise

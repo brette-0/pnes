@@ -1,7 +1,6 @@
 #include "player.hpp"
 
 #include "../../technology.hpp"
-#include "../../graphics/metasprites.hpp"
 #include "../../graphics/metatiles.hpp"
 #include "collision_map.hpp"
 #include "levels.hpp"
@@ -43,20 +42,6 @@ pending_cold static u16            pendingColumnIndex;
 ACTORS static u8 PlayerPort(const Player* p)     { return p == &player1 ? port1     : port2;     }
 ACTORS static u8 PlayerLastPort(const Player* p) { return p == &player1 ? lastPort1 : lastPort2; }
 
-ACTORS static void PlayerRefreshY(const Player* p) {
-    oam::sprite_t* s = OAMBuffer + (p == &player1 ? 1 : 1 + kMarySprites);
-    // Frame space -> output space, same call and same camera subject as level.cpp's
-    // SpriteY provider: the backends place sprite Y literally, so the window offset
-    // is applied here or nowhere.
-    const oam::oam_t sy = WindowedSpriteY(p->actor.screen.y, player1.actor.screen.y);
-    s[0].y = sy;         s[1].y = sy;
-}
-ACTORS static void PlayerRefreshX(const Player* p) {
-    oam::sprite_t* s = OAMBuffer + (p == &player1 ? 1 : 1 + kMarySprites);
-    const oam::oam_t sx = p->actor.screen.x;
-    s[0].x = sx;         s[1].x = sx + 8u;
-}
-
 ACTORS static void PlayerFollowCamera(Player* p) {
     Actor*       self = &p->actor;
     const Actor* lead = &player1.actor;
@@ -71,10 +56,7 @@ ACTORS static void PlayerFollowCamera(Player* p) {
             + static_cast<u16>(static_cast<i16>(sx - static_cast<i16>(lead->screen.x)) << 3));
     }
 
-    if (static_cast<oam::oam_t>(sx) != self->screen.x) {
-        self->screen.x = static_cast<oam::oam_t>(sx);
-        PlayerRefreshX(p);
-    }
+    self->screen.x = static_cast<oam::oam_t>(sx);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +121,6 @@ ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u1
             if (!hit) {
                 self->worldSpace.y = static_cast<u16>(rawY) & 0x7ff;
                 self->screen.y     = static_cast<oam::oam_t>(self->worldSpace.y >> 3);
-                PlayerRefreshY(p);
             } else {
                 self->worldSpace.y &= ~0x7;   // bonk: rest on the pixel, drop sub-px carry
                 self->moveForce.y = 0;        // land or head-bonk both kill vertical speed
@@ -220,10 +201,7 @@ ACTORS static void ProcessMovement(Player* p, const vec2<i8> moveForce, const u1
 
         if (sx < 0) sx = 0;
         else if (sx > static_cast<i16>(playerMaxXPos)) sx = static_cast<i16>(playerMaxXPos);
-        if (static_cast<oam::oam_t>(sx) != self->screen.x) {
-            self->screen.x = static_cast<oam::oam_t>(sx);
-            PlayerRefreshX(p);
-        }
+        self->screen.x = static_cast<oam::oam_t>(sx);
         // Recompose canonical sub-pixel X from camera + clamped screen position.
         self->worldSpace.x = static_cast<u16>(((cameraX + self->screen.x) << 3) | (static_cast<u16>(rawX) & 7));
     } else {

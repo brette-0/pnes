@@ -81,12 +81,17 @@ std::string metaspriteToml(const Metasprite& metasprite) {
         // entry/include/tile is what identifies the ART: a tile id alone is
         // ambiguous, since two entries at the same offset into their VMAs share
         // ids (demo/chr/chr.h has several). The id is written anyway because it
-        // is what a consumer puts in OAM.
+        // is what the sheet shows, and `pattern` beside it because that -- id
+        // plus the pattern-table half its entry's VMA puts it in -- is what a
+        // consumer actually puts in OAM. Both are re-derived from the manifest
+        // on load, so they are a record of what was exported, not the source of
+        // truth for it.
         toml << "sprites = [\n";
         for (const Sprite& sprite : frame.sprites) {
             toml << "    { col = " << sprite.col
                  << ", row = " << sprite.row
                  << ", id = " << hex2(sprite.id)
+                 << ", pattern = " << hex2(sprite.patternByte)
                  << ", entry = " << quote(sprite.entry)
                  << ", include = " << quote(sprite.include)
                  << ", tile = " << sprite.tile
@@ -320,6 +325,12 @@ std::optional<Project> load(const std::filesystem::path& path, std::string& erro
                         sprite.col     = static_cast<int>((*spriteTable)["col"].value_or<std::int64_t>(0));
                         sprite.row     = static_cast<int>((*spriteTable)["row"].value_or<std::int64_t>(0));
                         sprite.id      = static_cast<int>((*spriteTable)["id"].value_or<std::int64_t>(0));
+                        // Absent in a project saved before `pattern` existed;
+                        // the id is the right fallback, since that is what the
+                        // export emitted then. Either way the cell this sprite
+                        // resolves to overwrites it.
+                        sprite.patternByte = static_cast<int>(
+                            (*spriteTable)["pattern"].value_or<std::int64_t>(sprite.id));
                         sprite.entry   = (*spriteTable)["entry"].value_or<std::string>("");
                         sprite.include = (*spriteTable)["include"].value_or<std::string>("");
                         sprite.tile    = static_cast<int>((*spriteTable)["tile"].value_or<std::int64_t>(0));

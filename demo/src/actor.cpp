@@ -4,6 +4,9 @@
 #include "modes/level/collision_map.hpp"
 #include "banks.hpp"   // ACTORS
 
+#include "../animations/gen/mary_standing.hpp"
+#include "../animations/gen/mary_walking.hpp"
+
 static void TranslateWorldSpace(vec2<u16>& worldSpace, vec2<i8> delta);
 
 // ACTORS: Actor is global-namespace, so without this it would fall into the
@@ -48,6 +51,7 @@ static void TranslateWorldSpace(vec2<u16>& worldSpace, const vec2<i8> delta) {
 ACTORS void Actor::Start() {
     switch (this->actorType) {
         case eActorType::Player:
+            this->animationFrame = gen::mary_standing::Get();
             break;
         case eActorType::Mushlet:
             break;

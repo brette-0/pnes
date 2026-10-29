@@ -6,7 +6,7 @@
 
 namespace level {
     extern bool paused;
-
+    extern bool multiplayer;
 
 
     enum class eLevelStreamCommands : u8 {
@@ -65,6 +65,8 @@ namespace level {
     // Runs the level-playing mode: bank setup, level load, and the gameplay
     // loop. Called from the top-level mode dispatch while gameMode == Level.
     void main();
+
+    void FeedOAM();
 
     // Called (as an ordinary C++ function, not a raw vector jump) from
     // main.cpp's nmiTrampoline/irqTrampoline whenever gameMode == Level.

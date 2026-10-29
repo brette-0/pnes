@@ -36,7 +36,8 @@ constexpr const char* kDefaultMetaspritesDir = "metasprites";
 struct Sprite {
     int         col = 0;     ///< Slot column.
     int         row = 0;     ///< Slot row; a slot is one tile tall, 8 or 16 pixels by mode.
-    int         id = 0;      ///< PPU tile id, as the hardware sees it.
+    int         id = 0;      ///< PPU tile id: an index within its pattern table.
+    int         patternByte = 0;  ///< What a consumer puts in OAM for it, half bit and all.
     std::string entry;       ///< blobman entry the art came from.
     std::string include;     ///< Include (filename stem) within that entry.
     int         tile = 0;    ///< Tile index within that include.

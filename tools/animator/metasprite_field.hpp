@@ -58,6 +58,7 @@ struct PlacedSprite {
     int     row = 0;          ///< Slot row; one slot is one tile TALL, which is
                               ///< 8 or 16 pixels depending on the tile mode.
     int     id = 0;           ///< PPU tile id; the even id of the pair when 8x16.
+    int     patternByte = 0;  ///< What OAM takes for it -- see chr::Cell::patternByte.
     int     heightTiles = 1;  ///< Height of the cell's art, in 8-pixel tiles.
     Mirror  mirror = Mirror::None;
 
@@ -170,6 +171,7 @@ private:
     /// reload and mode change, so holding a pointer into it would dangle.
     struct Brush {
         int     id = 0;
+        int     patternByte = 0;
         int     heightTiles = 1;
         QString entry;
         QString include;

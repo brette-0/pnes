@@ -25,11 +25,16 @@ const QColor kGridColour(0x30, 0x30, 0x30);
 /// Field border, a touch brighter than the grid so the extent is obvious.
 const QColor kBorderColour(0x60, 0x60, 0x60);
 
-QString formatId(int id, int heightTiles) {
-    // An 8x16 sprite occupies the even id and the next one, and the pattern
-    // byte that selects it is the even one -- so both are worth showing.
+QString formatId(int id, int patternByte, int heightTiles) {
+    // An 8x16 sprite occupies the even id and the next one, and the byte that
+    // selects the pair carries the pattern-table half on top of that -- all
+    // three are worth showing, since the id pair is the art and the OAM byte is
+    // what the export writes.
     return heightTiles == 2
-        ? QString("$%1-$%2").arg(id, 2, 16, QChar('0')).arg(id + 1, 2, 16, QChar('0'))
+        ? QString("$%1-$%2, OAM $%3")
+              .arg(id, 2, 16, QChar('0'))
+              .arg(id + 1, 2, 16, QChar('0'))
+              .arg(patternByte, 2, 16, QChar('0'))
         : QString("$%1").arg(id, 2, 16, QChar('0'));
 }
 
@@ -77,6 +82,7 @@ void MetaspriteField::setBrush(const chr::Cell* cell, const QString& entry) {
         return;
     }
     brush_ = Brush{cell->id,
+                   cell->patternByte,
                    cell->heightTiles,
                    entry,
                    QString::fromStdString(cell->include),
@@ -92,6 +98,7 @@ bool MetaspriteField::addSprite(const chr::Cell& cell, const QString& entry,
     sprite.col         = col;
     sprite.row         = row;
     sprite.id          = cell.id;
+    sprite.patternByte = cell.patternByte;
     sprite.heightTiles = cell.heightTiles;
     sprite.mirror      = mirror;
     sprite.entry       = entry;
@@ -285,7 +292,7 @@ void MetaspriteField::reportSlot(const std::optional<QPoint>& slot) {
         emit statusChanged(QString("%1  id %2  mirror %3  %4  -- right-click to cycle mirroring, "
                                    "middle-click to remove")
                                .arg(where,
-                                    formatId(sprite.id, sprite.heightTiles),
+                                    formatId(sprite.id, sprite.patternByte, sprite.heightTiles),
                                     mirrorName(sprite.mirror),
                                     sprite.source()));
         return;
@@ -296,7 +303,9 @@ void MetaspriteField::reportSlot(const std::optional<QPoint>& slot) {
         return;
     }
     emit statusChanged(QString("%1  empty -- click to stamp id %2 (%3)")
-                           .arg(where, formatId(brush_->id, brush_->heightTiles), brush_->source()));
+                           .arg(where,
+                                formatId(brush_->id, brush_->patternByte, brush_->heightTiles),
+                                brush_->source()));
 }
 
 void MetaspriteField::mousePressEvent(QMouseEvent* event) {
@@ -352,6 +361,7 @@ void MetaspriteField::mousePressEvent(QMouseEvent* event) {
     sprite.col         = slot->x();
     sprite.row         = slot->y();
     sprite.id          = brush_->id;
+    sprite.patternByte = brush_->patternByte;
     sprite.heightTiles = brush_->heightTiles;
     sprite.entry       = brush_->entry;
     sprite.include     = brush_->include;

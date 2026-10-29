@@ -14,6 +14,7 @@
 // table into sprite pairs.
 
 #include "chr_table.hpp"
+#include "codegen.hpp"
 #include "metasprite_page.hpp"
 #include "palette_store.hpp"
 #include "palette_window.hpp"
@@ -321,6 +322,15 @@ private:
         saveProjectAs->setShortcut(QKeySequence::SaveAs);
         connect(saveProjectAs, &QAction::triggered, this, [this] { saveProjectTo(QString()); });
         file->addSeparator();
+        // Exporting is not saving: it writes generated C++ beside nothing in
+        // particular and leaves the project exactly as dirty as it was.
+        exportOne_ = file->addAction("&Export Header...");
+        exportOne_->setShortcut(QKeySequence("Ctrl+E"));
+        connect(exportOne_, &QAction::triggered, this, &MainWindow::exportCurrent);
+        exportAll_ = file->addAction("Export All &Headers...");
+        exportAll_->setShortcut(QKeySequence("Ctrl+Shift+E"));
+        connect(exportAll_, &QAction::triggered, this, &MainWindow::exportAll);
+        file->addSeparator();
         QAction* open = file->addAction("&Open Manifest...");
         open->setShortcut(QKeySequence::Open);
         connect(open, &QAction::triggered, this, &MainWindow::chooseManifest);
@@ -516,6 +526,8 @@ private:
         MetaspritePage* page = currentPage();
         closeMeta_->setEnabled(page != nullptr);
         newFrame_->setEnabled(page != nullptr);
+        exportOne_->setEnabled(page != nullptr);
+        exportAll_->setEnabled(!pages_.empty());
         closeFrame_->setEnabled(page && page->currentFrame() != nullptr);
         clearFrame_->setEnabled(page && page->currentFrame() != nullptr);
         statusBar()->showMessage(page ? page->summary() : summary_);
@@ -587,10 +599,15 @@ private:
     }
 
     static QString formatCellId(const chr::Cell& cell) {
-        // An 8x16 cell occupies two consecutive ids, and the pattern byte that
-        // selects it is the even one -- so both are worth showing.
+        // An 8x16 cell occupies two consecutive ids, so both are worth showing
+        // -- and the byte that selects the pair is neither of them when the
+        // entry's VMA is the $1000 half, so that is shown beside them rather
+        // than left for someone to work out from the VMA in the same line.
         return cell.heightTiles == 2
-            ? QString("$%1-$%2").arg(cell.id, 2, 16, QChar('0')).arg(cell.id + 1, 2, 16, QChar('0'))
+            ? QString("$%1-$%2, OAM $%3")
+                  .arg(cell.id, 2, 16, QChar('0'))
+                  .arg(cell.id + 1, 2, 16, QChar('0'))
+                  .arg(cell.patternByte, 2, 16, QChar('0'))
             : QString("$%1").arg(cell.id, 2, 16, QChar('0'));
     }
 
@@ -636,40 +653,47 @@ public:
         project.palettes = paletteStore_->palettes();
 
         for (const MetaspritePage* page : pages_) {
-            proj::Metasprite metasprite;
-            metasprite.palette = page->paletteName().toStdString();
-            metasprite.name      = page->name().toStdString();
-            metasprite.savedStem = page->savedStem().toStdString();
-            metasprite.tilesX = page->tilesX();
-            metasprite.tilesY = page->tilesY();
-
-            for (const MetaspriteFrame* frame : page->frames()) {
-                proj::Frame out;
-                out.name  = frame->frameName().toStdString();
-                out.timer = frame->timerFrames();
-
-                for (const PlacedSprite& sprite : frame->field()->sprites()) {
-                    proj::Sprite saved;
-                    saved.col     = sprite.col;
-                    saved.row     = sprite.row;
-                    saved.id      = sprite.id;
-                    saved.entry   = sprite.entry.toStdString();
-                    saved.include = sprite.include.toStdString();
-                    saved.tile    = sprite.tile;
-                    saved.flipH   = static_cast<int>(sprite.mirror) &
-                                    static_cast<int>(Mirror::Horizontal);
-                    saved.flipV   = static_cast<int>(sprite.mirror) &
-                                    static_cast<int>(Mirror::Vertical);
-                    out.sprites.push_back(std::move(saved));
-                }
-
-                metasprite.frames.push_back(std::move(out));
-            }
-
-            project.metasprites.push_back(std::move(metasprite));
+            project.metasprites.push_back(buildMetasprite(page));
         }
 
         return project;
+    }
+
+    /// One metasprite as the window has it -- what a save writes and what an
+    /// export generates from, so the two cannot disagree about what a frame is.
+    [[nodiscard]] proj::Metasprite buildMetasprite(const MetaspritePage* page) const {
+        proj::Metasprite metasprite;
+        metasprite.palette = page->paletteName().toStdString();
+        metasprite.name      = page->name().toStdString();
+        metasprite.savedStem = page->savedStem().toStdString();
+        metasprite.tilesX = page->tilesX();
+        metasprite.tilesY = page->tilesY();
+
+        for (const MetaspriteFrame* frame : page->frames()) {
+            proj::Frame out;
+            out.name  = frame->frameName().toStdString();
+            out.timer = frame->timerFrames();
+
+            for (const PlacedSprite& sprite : frame->field()->sprites()) {
+                proj::Sprite saved;
+                saved.col     = sprite.col;
+                saved.row     = sprite.row;
+                saved.id      = sprite.id;
+                saved.patternByte = sprite.patternByte;
+                saved.entry   = sprite.entry.toStdString();
+                saved.include = sprite.include.toStdString();
+                saved.tile    = sprite.tile;
+                saved.flipH   = static_cast<int>(sprite.mirror) &
+                                static_cast<int>(Mirror::Horizontal);
+                saved.flipV   = static_cast<int>(sprite.mirror) &
+                                static_cast<int>(Mirror::Vertical);
+                out.sprites.push_back(std::move(saved));
+            }
+
+            metasprite.frames.push_back(std::move(out));
+        }
+
+        return metasprite;
     }
 
     /// Saves to @p path, asking for one when it is empty.
@@ -714,6 +738,105 @@ public:
                                      .arg(pages_.size())
                                      .arg(pages_.size() == 1 ? "" : "s")
                                      .arg(QString::fromStdString(metaspritesDir_)));
+    }
+
+    // ---- generated headers ----
+
+    /// Where an export starts looking: a `gen` folder beside the project when
+    /// there is one -- that is where generated code goes in this repo -- and
+    /// the project's own folder otherwise.
+    [[nodiscard]] QString exportDir() const {
+        const QString base = projectPath_.isEmpty() ? QDir::currentPath()
+                                                    : QFileInfo(projectPath_).absolutePath();
+        const QString gen = QDir(base).filePath("gen");
+        return QFileInfo(gen).isDir() ? gen : base;
+    }
+
+    /// Writes the metasprite being edited as one generated header.
+    void exportCurrent() {
+        MetaspritePage* page = currentPage();
+        if (!page) {
+            QMessageBox::warning(this, "Export Header", "There is no metasprite to export.");
+            return;
+        }
+        if (page->frameCount() == 0) {
+            QMessageBox::warning(this, "Export Header",
+                                 QString("'%1' has no frames -- there is no animation to export.")
+                                     .arg(page->name()));
+            return;
+        }
+
+        const proj::Metasprite metasprite = buildMetasprite(page);
+        // The file is named after the metasprite, as the class inside it is:
+        // the name is the identity here as much as it is in the .msprite.
+        const QString suggested = QDir(exportDir()).filePath(QString::fromStdString(
+            codegen::identifier(metasprite.name) + codegen::kHeaderExtension));
+
+        QString path = QFileDialog::getSaveFileName(
+            this, "Export Header", suggested,
+            QString("C++ headers (*%1);;All files (*)").arg(codegen::kHeaderExtension));
+        if (path.isEmpty()) return;
+        // Same as the project dialogs: a missing extension is added rather than
+        // refused, since the filter is a hint and not a rule.
+        if (!path.endsWith(codegen::kHeaderExtension)) path += codegen::kHeaderExtension;
+
+        std::string error;
+        // The banner names the project the metasprite came from, when it has
+        // been saved into one -- the .msprite is what a regeneration reads.
+        const std::string source =
+            projectPath_.isEmpty() ? std::string() : QFileInfo(projectPath_).fileName().toStdString();
+        if (!codegen::writeHeader(metasprite, path.toStdString(), source, error)) {
+            const QString message = QString("Cannot export %1: %2")
+                                        .arg(QFileInfo(path).fileName(), QString::fromStdString(error));
+            std::fprintf(stderr, "animator: %s\n", qPrintable(message));
+            QMessageBox::warning(this, "Export Header", message);
+            return;
+        }
+
+        // An export is not a save: the project is left exactly as dirty as it
+        // was, since none of this is in the .anim.
+        statusBar()->showMessage(QString("Exported %1 (%2 frame%3 of %4)")
+                                     .arg(QFileInfo(path).fileName())
+                                     .arg(page->frameCount())
+                                     .arg(page->frameCount() == 1 ? "" : "s")
+                                     .arg(page->name()));
+    }
+
+    /// Writes every metasprite into one folder, a header each, named after the
+    /// metasprite.
+    void exportAll() {
+        if (pages_.empty()) {
+            QMessageBox::warning(this, "Export All Headers", "There are no metasprites to export.");
+            return;
+        }
+
+        const QString dir = QFileDialog::getExistingDirectory(this, "Export All Headers", exportDir());
+        if (dir.isEmpty()) return;
+
+        const proj::Project project = buildProject(projectPath_);
+        std::vector<std::string> skipped;
+        std::string error;
+        if (!codegen::writeAll(project, dir.toStdString(), skipped, error)) {
+            const QString message = QString("Cannot export into %1: %2")
+                                        .arg(QDir(dir).dirName(), QString::fromStdString(error));
+            std::fprintf(stderr, "animator: %s\n", qPrintable(message));
+            QMessageBox::warning(this, "Export All Headers", message);
+            return;
+        }
+
+        for (const std::string& note : skipped) {
+            std::fprintf(stderr, "animator: warning: %s\n", note.c_str());
+        }
+
+        const std::size_t written = project.metasprites.size() - skipped.size();
+        QString message = QString("Exported %1 header%2 into %3/")
+                              .arg(written)
+                              .arg(written == 1 ? "" : "s")
+                              .arg(QDir(dir).dirName());
+        if (!skipped.empty()) {
+            message += QString(" (%1 skipped -- see stderr)").arg(skipped.size());
+        }
+        statusBar()->showMessage(message);
     }
 
     void chooseProject() {
@@ -849,6 +972,8 @@ private:
     QAction*                      newFrame_ = nullptr;
     QAction*                      closeFrame_ = nullptr;
     QAction*                      clearFrame_ = nullptr;
+    QAction*                      exportOne_ = nullptr;
+    QAction*                      exportAll_ = nullptr;
     QAction*                      tallTiles_ = nullptr;
     std::optional<chr::Table>     table_;
     std::vector<MetaspritePage*>  pages_;

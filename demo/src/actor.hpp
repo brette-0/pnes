@@ -36,7 +36,8 @@ class Actor {
     i8 gravity;                    // accumulated downward accel (subpx/frame); 0 when grounded
     eActorType actorType;
     eActorState actorState;
-    u8 animationFrame;
+    const u8* animationFrame;
+    u8  animationTimer;
 
     static constexpr vec2<u8> GetSize(const eActorType actorType) {
         return actorType < eActorType::End

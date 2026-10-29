@@ -52,6 +52,7 @@ add_executable(animator
         main.cpp
         animation_preview.cpp
         chr_table.cpp
+        codegen.cpp
         palette.cpp
         palette_store.cpp
         palette_window.cpp

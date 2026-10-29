@@ -54,6 +54,15 @@ namespace {
 // builds fine on NES (demo/link.ld KEEP()s .chr_rom) and on targets that do
 // not garbage collect sections, then fails at link everywhere that does, with
 // __start_chr_rom undefined.
+
+// gnu::retain is kept for the toolchains that honour it, and the ones that do
+// not (devkitARM, devkitPPC, clang-cl -- whose assembler has no SHF_GNU_RETAIN)
+// say so once per declaration. The note above is the answer to that warning, so
+// it is silenced here rather than restated by every devkitPro build: `inline`
+// plus gnu::used is what actually keeps these alive where retain is dropped.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+
 [[gnu::section(_CHR_SECTION), gnu::used, gnu::retain]]
 inline constexpr auto chr_rom_image = [] {
     std::array<u8, chrRomSize> image{};
@@ -68,3 +77,5 @@ inline constexpr auto chr_rom_image = [] {
 // bounds (see mmc3::GetTileLMA).
 [[gnu::used, gnu::retain]]
 inline constexpr unsigned ppu::chrRomBytes = chrRomSize;
+
+#pragma GCC diagnostic pop
