@@ -1,0 +1,31 @@
+# pnes animator metasprite -- see the .anim beside this folder
+
+[metasprite]
+name   = "mary_walking"
+palette = "player"    # a [[palette]] in the .anim; empty for the placeholder colours
+width  = 2    # in tiles; a tile is 8x8 or 8x16 by the project's tile_mode
+height = 1
+
+[[frame]]
+name  = "frame 1"
+timer = 8
+sprites = [
+    { col = 0, row = 0, id = 0x08, entry = "normalSprites", include = "player_walking1", tile = 0, flip_h = false, flip_v = false },
+    { col = 1, row = 0, id = 0x0a, entry = "normalSprites", include = "player_walking1", tile = 2, flip_h = false, flip_v = false },
+]
+
+[[frame]]
+name  = "frame 2"
+timer = 8
+sprites = [
+    { col = 0, row = 0, id = 0x0c, entry = "normalSprites", include = "player_walking2", tile = 0, flip_h = false, flip_v = false },
+    { col = 1, row = 0, id = 0x0e, entry = "normalSprites", include = "player_walking2", tile = 2, flip_h = false, flip_v = false },
+]
+
+[[frame]]
+name  = "frame 3"
+timer = 8
+sprites = [
+    { col = 0, row = 0, id = 0x10, entry = "normalSprites", include = "player_walking3", tile = 0, flip_h = false, flip_v = false },
+    { col = 1, row = 0, id = 0x12, entry = "normalSprites", include = "player_walking3", tile = 2, flip_h = false, flip_v = false },
+]

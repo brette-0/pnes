@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include "animation_preview.hpp"
 #include "chr_table.hpp"
 #include "metasprite_frame.hpp"
 #include "palette_store.hpp"
@@ -15,6 +16,7 @@
 
 class QComboBox;
 class QLabel;
+class QToolButton;
 class QLineEdit;
 class QSpinBox;
 class QTabWidget;
@@ -127,6 +129,9 @@ private:
     /// Refreshes the derived "pixels" readout from a frame's own geometry.
     void refreshDerived();
 
+    /// Re-composes the preview from the frames as they stand.
+    void refreshPreview();
+
     /// Sets the tab label of @p frame to its name.
     void retitle(MetaspriteFrame* frame);
 
@@ -147,5 +152,8 @@ private:
     QSpinBox*                     width_ = nullptr;
     QSpinBox*                     height_ = nullptr;
     QLabel*                       derived_ = nullptr;
+    AnimationPreview*             preview_ = nullptr;
+    QToolButton*                  play_ = nullptr;
+    QLabel*                       previewLabel_ = nullptr;
     std::vector<MetaspriteFrame*> frameList_;         ///< Every frame, tab order.
 };

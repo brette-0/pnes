@@ -24,6 +24,12 @@
  */
 #pragma once
 
+#ifdef TARGET_NES
+constexpr bool is_nes = true;
+#else
+constexpr bool is_nes = false;
+#endif
+
 #include <intsh>
 using namespace br0::intsh;
 #include <type_traits>

@@ -140,6 +140,15 @@ public:
     [[nodiscard]] const std::vector<PlacedSprite>& sprites() const { return sprites_; }
     [[nodiscard]] int spriteCount() const { return static_cast<int>(sprites_.size()); }
 
+    /**
+     * @brief The metasprite as the PPU would show it: one image the size of the
+     *        extent, sprites drawn with their mirroring, no grid, hover marks
+     *        or zoom.
+     *
+     * 1:1 in NES pixels, so whatever displays it chooses its own scale.
+     */
+    [[nodiscard]] QImage render() const;
+
     [[nodiscard]] QSize sizeHint() const override;
 
 signals:

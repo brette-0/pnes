@@ -1,8 +1,8 @@
 # pnes animator metasprite -- see the .anim beside this folder
 
 [metasprite]
-name   = "mary"
-palette = "test"    # a [[palette]] in the .anim; empty for the placeholder colours
+name   = "mary_standing"
+palette = "player"    # a [[palette]] in the .anim; empty for the placeholder colours
 width  = 2    # in tiles; a tile is 8x8 or 8x16 by the project's tile_mode
 height = 1
 

@@ -179,6 +179,25 @@ void MetaspriteField::clearSprites() {
     emit statusChanged("Metasprite cleared");
 }
 
+QImage MetaspriteField::render() const {
+    const int width = tilesX_ * chr::kTilePixels;
+    const int height = tilesY_ * slotHeightPx();
+
+    QImage image(width, height, QImage::Format_RGB32);
+    // Index 0 of the palette is the backdrop a sprite shows through, so that is
+    // what the gaps are.
+    image.fill(table_[0]);
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    for (const PlacedSprite& sprite : sprites_) {
+        painter.drawImage(QPoint(sprite.col * chr::kTilePixels, sprite.row * slotHeightPx()),
+                          mirrored(sprite));
+    }
+
+    return image;
+}
+
 QSize MetaspriteField::sizeHint() const {
     return {tilesX_ * chr::kTilePixels * zoom_, tilesY_ * slotHeightPx() * zoom_};
 }

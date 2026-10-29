@@ -81,6 +81,21 @@ always the unmirrored tile; the enum's values are the cycle order, not OAM's bit
 layout (there, bit 6 is the horizontal flip and bit 7 the vertical, so anything
 emitting OAM has to map rather than cast).
 
+**Preview** (`animation_preview.hpp`) sits beside the metasprite's attributes
+and plays the animation those frames describe: Play/Pause, Restart, and a label
+naming the frame on screen and its position. It is the only place the playback
+convention is actually executed -- frames in order, the last looping back to the
+first, a timer of 0 stopping on that frame -- so it is also the only way to see
+whether an animation reads right.
+
+The clock ticks once per NES frame (60.0988Hz, not a round 60) and counts holds
+down in frames rather than converting each to a duration. Frames are composed to
+images by the page whenever anything changes, so the preview re-renders nothing;
+playback keeps its position across an edit rather than restarting under your
+hands, and the box is a fixed size so editing the extent does not shuffle the
+layout. A metasprite too big for the box is fitted rather than drawn at integer
+zoom.
+
 A metasprite tab's label carries its frame count; the frame tabs carry their own
 names.
 

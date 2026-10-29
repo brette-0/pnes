@@ -38,7 +38,40 @@
             "text": "VIDEO"
         },
         {
-            "children": [],
+            "children": [
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [],
+                    "hideRegions": [],
+                    "hideTargets": [],
+                    "kind": "ctTextBox",
+                    "name": "[CT] reduceFlashesText",
+                    "posXExpr": "reduceFlashesButton.pos.x + 1",
+                    "posYExpr": "reduceFlashesButton.pos.y + 1",
+                    "provideErasing": false,
+                    "sizeHExpr": "2",
+                    "sizeWExpr": "7",
+                    "splitter": " ",
+                    "text": "REDUCE FLASHES"
+                },
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [],
+                    "hideRegions": [],
+                    "hideTargets": [],
+                    "kind": "ctTextBox",
+                    "name": "[CT] enableFlashesText",
+                    "posXExpr": "reduceFlashesButton.pos.x + 1",
+                    "posYExpr": "reduceFlashesButton.pos.y + 1",
+                    "provideErasing": false,
+                    "sizeHExpr": "2",
+                    "sizeWExpr": "7",
+                    "splitter": " ",
+                    "text": "ENABLE FLASHES"
+                }
+            ],
             "defaultEnabled": true,
             "hasBox": true,
             "hideRegions": [],
@@ -50,22 +83,6 @@
             "sizeHExpr": "4",
             "sizeWExpr": "9",
             "toggleable": false
-        },
-        {
-            "align": 0,
-            "charmapOverride": "",
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [],
-            "kind": "ctTextBox",
-            "name": "[CT] reduceFlashesText",
-            "posXExpr": "4",
-            "posYExpr": "8",
-            "provideErasing": false,
-            "sizeHExpr": "2",
-            "sizeWExpr": "7",
-            "splitter": " ",
-            "text": "REDUCE FLASHES"
         },
         {
             "align": 0,

@@ -8,6 +8,9 @@ size            = 0x0800    # 2KiB sprite hunk
 includes        = [
     "./assets/sprites/enemies/mushlet/mushlet_standing.chr",
     "./assets/sprites/player/player_standing.chr",
+    "./assets/sprites/player/player_walking1.chr",
+    "./assets/sprites/player/player_walking2.chr",
+    "./assets/sprites/player/player_walking3.chr",
     "./assets/sprites/berries.chr",
     "./assets/sprites/wand.chr"
 ]

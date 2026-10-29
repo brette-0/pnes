@@ -11,9 +11,10 @@ tile_mode   = "8x16"
 # The metasprites of this project, in order. Each names a file in
 # the folder above.
 files       = [
-    "mary.msprite",
+    "mary_standing.msprite",
+    "mary_walking.msprite",
 ]
 
 [[palette]]
-name    = "test"
-colours = [ 0x16, 0x27, 0x30 ]    # NES master-palette indices for colours 1-3
+name    = "player"
+colours = [ 0x07, 0x26, 0x03 ]    # NES master-palette indices for colours 1-3

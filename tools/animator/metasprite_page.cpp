@@ -10,6 +10,7 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabBar>
+#include <QToolButton>
 #include <QTabWidget>
 #include <QToolButton>
 
@@ -56,6 +57,46 @@ MetaspritePage::MetaspritePage(int zoom, PaletteStore* palettes, QWidget* parent
     connect(width_, &QSpinBox::valueChanged, this, &MetaspritePage::applySize);
     connect(height_, &QSpinBox::valueChanged, this, &MetaspritePage::applySize);
 
+    // The preview plays the animation these frames describe -- the playback
+    // rules (order, the last frame looping, a timer of 0 stopping) are recorded
+    // in the format and executed nowhere else, so this is the only way to see
+    // whether an animation reads right.
+    auto* previewBox = new QGroupBox("Preview", this);
+    preview_ = new AnimationPreview(zoom_, previewBox);
+
+    play_ = new QToolButton(previewBox);
+    play_->setText("Play");
+    play_->setCheckable(true);
+    connect(play_, &QToolButton::toggled, this, [this](bool on) { preview_->setPlaying(on); });
+    // Playback can also stop on its own, on a frame whose timer is 0.
+    connect(preview_, &AnimationPreview::playingChanged, this, [this](bool playing) {
+        const QSignalBlocker blocked(play_);
+        play_->setChecked(playing);
+        play_->setText(playing ? "Pause" : "Play");
+    });
+
+    auto* rewind = new QToolButton(previewBox);
+    rewind->setText("Restart");
+    connect(rewind, &QToolButton::clicked, this, [this] { preview_->restart(); });
+
+    previewLabel_ = new QLabel(previewBox);
+    connect(preview_, &AnimationPreview::frameChanged, this,
+            [this](const QString& name, int position, int count) {
+                previewLabel_->setText(count == 0
+                                           ? QString("no frames")
+                                           : QString("%1  (%2/%3)").arg(name).arg(position).arg(count));
+            });
+
+    auto* previewControls = new QHBoxLayout;
+    previewControls->addWidget(play_);
+    previewControls->addWidget(rewind);
+    previewControls->addStretch(1);
+
+    auto* previewRows = new QVBoxLayout(previewBox);
+    previewRows->addWidget(preview_, 0, Qt::AlignHCenter);
+    previewRows->addWidget(previewLabel_);
+    previewRows->addLayout(previewControls);
+
     frames_ = new QTabWidget(this);
     frames_->setTabsClosable(true);
     frames_->setDocumentMode(true);
@@ -79,14 +120,25 @@ MetaspritePage::MetaspritePage(int zoom, PaletteStore* palettes, QWidget* parent
         }
     });
 
+    // Attributes and preview share the top row: the attribute form does not
+    // need the full width, and the preview wants to be visible while frames are
+    // edited below it.
+    auto* top = new QHBoxLayout;
+    top->addWidget(attributes, 1);
+    top->addWidget(previewBox, 0);
+
     auto* rows = new QVBoxLayout(this);
-    rows->addWidget(attributes);
+    rows->addLayout(top);
     rows->addWidget(frames_, 1);
 
     if (palettes_) {
         connect(palettes_, &PaletteStore::changed, this, &MetaspritePage::refreshPalettes);
     }
     refreshPalettes();
+
+    // Any change a save would record is also a change the preview should show,
+    // so it follows the same signal the window's dirty flag does.
+    connect(this, &MetaspritePage::dirtied, this, &MetaspritePage::refreshPreview);
 
     // An animation with no frames is not useful to look at, so one is made up
     // front -- the same reasoning as the window opening with one metasprite.
@@ -295,6 +347,15 @@ void MetaspritePage::applySize() {
     refreshDerived();
     emit framesChanged();
     emit dirtied();
+}
+
+void MetaspritePage::refreshPreview() {
+    std::vector<PreviewCel> cels;
+    cels.reserve(frameList_.size());
+    for (const MetaspriteFrame* frame : frameList_) {
+        cels.push_back({frame->field()->render(), frame->timerFrames(), frame->frameName()});
+    }
+    preview_->setCels(std::move(cels));
 }
 
 void MetaspritePage::refreshDerived() {

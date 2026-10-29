@@ -16,8 +16,11 @@ namespace blob {
     namespace normalSprites {
         constexpr unsigned char mushlet_standing = 0x00;
         constexpr unsigned char player_standing  = 0x04;
-        constexpr unsigned char berries          = 0x08;
-        constexpr unsigned char wand             = 0x0c;
+        constexpr unsigned char player_walking1  = 0x08;
+        constexpr unsigned char player_walking2  = 0x0c;
+        constexpr unsigned char player_walking3  = 0x10;
+        constexpr unsigned char berries          = 0x14;
+        constexpr unsigned char wand             = 0x18;
         constexpr unsigned long __lma            = 0x0000; // used for BankOf()
         constexpr unsigned long __vma            = 0x1000; // where the ppu sees the entry
         constexpr unsigned long __size           = 0x0800; // bytes the entry occupies

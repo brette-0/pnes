@@ -50,6 +50,7 @@ endif()
 
 add_executable(animator
         main.cpp
+        animation_preview.cpp
         chr_table.cpp
         palette.cpp
         palette_store.cpp
