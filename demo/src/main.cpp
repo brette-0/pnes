@@ -22,11 +22,28 @@ SYSMEM oam::sprite_t OAMBuffer[64] __attribute__((aligned(256)));
 void (*pNMI)();
 void (*pIRQ)();
 
+// The ::mmc3::select_latch_scope in each body is NOT optional -- see its
+// declaration (pnes/mappers/mmc3.hpp). Both handlers bank CHR (the HUD/menu
+// raster split), the mainline banks PRG constantly (every farcall trampoline),
+// and MMC3 reaches all of it through one $8000/$8001 select/data port pair. An
+// interrupt taken between a writer's two stores re-latches $8000 under it, and
+// the writer's $8001 store then hits the wrong register: a PRG bank number
+// lands in a CHR register while the PRG window keeps its stale bank, so the
+// graphics go to garbage AND the farcall `jsr`s into whatever that stale bank
+// holds, executing data until the CPU jams.
+//
+// THESE ARE THE ONLY TWO VECTORS IN THE ROM -- every mode's handler is reached
+// through pNMI/pIRQ -- so guarding here covers level, title and world at once,
+// and any mode added later inherits it. That is why the guards belong at the
+// vector and not in the individual handlers.
+
 NMI(FIXED) {
+    const mmc3::select_latch_scope latch;
     pNMI();
 }
 
 IRQ(FIXED) {
+    const mmc3::select_latch_scope latch;
     pIRQ();
 }
 

@@ -481,39 +481,54 @@ namespace video {
     /** @brief Viewport height in pixels (tiles * 8). */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
 #elif defined(TARGET_CTR)
-    // The 3DS top screen is a fixed 400x240 panel: exactly the NES's 240px
-    // height (scale 1), but 144px (18 tiles) wider than the NES's 256px. Render
-    // 50 tiles (400px) of actual game world at native 1:1 scale instead of
-    // non-integer-stretching a fixed 256-wide image across 400px -- the same
-    // "render more world" model as the other non-hardware backends. Known at
-    // compile time because, unlike the GameCube/Wii TV, the 3DS panel
-    // resolution never varies.
-    /** @brief Viewport width in tiles (3DS: fixed 50, covers the 400px top screen). */
+    // The 3DS presents the viewport across BOTH panels, so the viewport is the
+    // bounding box of the two rather than the top screen alone: 400x240 (top)
+    // and 320x240 (bottom), stacked on their shared horizontal edge. Width is
+    // the WIDEST panel -- 400px/50 tiles, the top screen -- and height is the
+    // SUM of the two panel heights, 240+240 = 480px/60 tiles. The 80px the
+    // bottom panel lacks becomes a 40px (5-tile) inset on each side; that split
+    // lives in exactly one place, ::panel_rect() below, and nowhere else.
+    //
+    // The physical hinge gap is deliberately NOT modelled: viewport row 239
+    // (bottom of the top panel) and row 240 (top of the bottom panel) are
+    // adjacent in world space, so background crossing the seam is continuous
+    // and merely interrupted by the bezel. Both panels have the same ~132ppi
+    // pixel pitch, so 1:1 native scale is correct on both with no resampling.
+    //
+    // Both axes are the same "render more world" model every non-hardware
+    // backend already uses, now applied vertically as well as horizontally: 60
+    // rows of real game world drawn native 1:1, not a stretched 256x240 image.
+    /** @brief Viewport width in tiles (3DS: 50 = the 400px top panel, the wider of the two). */
     constexpr u16 viewport_tx() { return 50; }
-    /** @brief Viewport height in tiles (3DS: fixed 30, matching the NES). */
-    constexpr u16 viewport_ty() { return 30; }
+    /** @brief Viewport height in tiles (3DS: 60 = both 240px panels stacked, 480px). */
+    constexpr u16 viewport_ty() { return 60; }
     /** @brief Viewport width in pixels (tiles * 8 = 400). */
     constexpr u16 viewport_px() { return viewport_tx() << 3; }
-    /** @brief Viewport height in pixels (tiles * 8 = 240). */
+    /** @brief Viewport height in pixels (tiles * 8 = 480, both panels). */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
 #elif defined(TARGET_NDS)
-    // The Nintendo DS (and DSi) main engine is a fixed 256x192 panel -- the same
-    // 32-tile NES width, but 6 tiles (48px) SHORTER than the NES's 240px height.
-    // Per the project rule, the NES game is never compromised for another
-    // platform: the DS simply shows a 256x192 WINDOW onto the same 256x240 world
-    // the game renders. The backend (src/nds/video.cpp) maps the NES PPU onto the
-    // DS's native 2D hardware (BG tilemap + hardware OBJ + per-scanline HBlank
-    // scroll), so raster splits and sprite-0 still work; the bottom 48px of the
-    // NES frame fall below the panel. This is the first target whose viewport is
-    // shorter than the NES's 30 tiles, which is explicitly permitted: any code
-    // reading video::viewport_ty() must not assume 30.
-    /** @brief Viewport width in tiles (DS/DSi: fixed 32, full NES width). */
+    // The Nintendo DS (and DSi) presents the viewport across BOTH panels, so the
+    // viewport is the bounding box of the two. Both panels are 256x192 and are
+    // stacked on their shared horizontal edge, so width stays the NES-native
+    // 256px/32 tiles and height is the SUM of the two: 192+192 = 384px/48 tiles.
+    // The panels are identical here (unlike the 3DS's 400/320 split), so there
+    // is no horizontal inset -- but ::panel_rect() below still owns the split,
+    // so no backend re-derives it. The hinge gap is deliberately not modelled;
+    // see TARGET_CTR's own comment above for why.
+    //
+    // This makes the DS the first target TALLER than the NES's 30 rows rather
+    // than shorter. It used to show a 256x192 WINDOW that cropped the bottom
+    // 48px of the NES frame off the panel; it now shows 384px of real game world
+    // spread across the two panels, which is the same "render more world" model
+    // the wider-panel backends already use, applied vertically. Any code reading
+    // video::viewport_ty() must not assume 30 -- in EITHER direction.
+    /** @brief Viewport width in tiles (DS/DSi: 32, full NES width -- both panels are 256px). */
     constexpr u16 viewport_tx() { return 32; }
-    /** @brief Viewport height in tiles (DS/DSi: 24 = the 192px panel, < NES 30). */
-    constexpr u16 viewport_ty() { return 24; }
+    /** @brief Viewport height in tiles (DS/DSi: 48 = both 192px panels stacked, 384px). */
+    constexpr u16 viewport_ty() { return 48; }
     /** @brief Viewport width in pixels (tiles * 8 = 256). */
     constexpr u16 viewport_px() { return viewport_tx() << 3; }
-    /** @brief Viewport height in pixels (tiles * 8 = 192). */
+    /** @brief Viewport height in pixels (tiles * 8 = 384, both panels). */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
 #elif defined(TARGET_GBA)
     // The Game Boy Advance panel is 240x160 -- the first target NARROWER than the
@@ -656,6 +671,65 @@ namespace video {
     /** @brief Viewport height in pixels (tiles * 8) — runtime, follows ::video::viewport_ty. */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
 #endif
+
+    /**
+     * @brief One physical panel's rectangle inside the viewport, in pixels.
+     *
+     * ::viewport_px() x ::viewport_py() is the bounding box of every panel this
+     * target presents (see each target's own viewport_tx()/viewport_ty() doc
+     * comment above). On a single-screen target that box IS the panel. On the
+     * dual-screen handhelds it is the union of two panels, and this struct is
+     * the one place that says where each one sits inside it -- so no backend
+     * re-derives the split, exactly as ::emu::ComputeNtGeometry is the one place
+     * the nametable grid comes from.
+     */
+    struct PanelRect {
+        u16 x;   ///< Panel's left edge within the viewport, in pixels.
+        u16 y;   ///< Panel's top edge within the viewport, in pixels.
+        u16 w;   ///< Panel width in pixels.
+        u16 h;   ///< Panel height in pixels.
+    };
+
+#if defined(TARGET_NDS)
+    /** @brief Panels the viewport spans (DS/DSi: 2, stacked vertically). */
+    constexpr u8 panel_count() { return 2; }
+    /**
+     * @brief DS panel rects: two identical 256x192 screens on a shared
+     *        horizontal edge, so panel 1 is simply panel 0 shifted down one
+     *        panel height. No horizontal inset -- both are the full 256px.
+     */
+    constexpr PanelRect panel_rect(const u8 i) {
+        return i == 0 ? PanelRect{0, 0, 256, 192}
+                      : PanelRect{0, 192, 256, 192};
+    }
+#elif defined(TARGET_CTR)
+    /** @brief Panels the viewport spans (3DS: 2, stacked vertically). */
+    constexpr u8 panel_count() { return 2; }
+    /**
+     * @brief 3DS panel rects: a 400x240 top screen and a 320x240 bottom screen,
+     *        the bottom one centred under the top. The viewport is 400 wide (the
+     *        wider panel), so the bottom panel is inset (400-320)/2 == 40px --
+     *        exactly 5 tiles -- on each side. Viewport columns 0..39 and 360..399
+     *        therefore exist on the top panel only, and fall in the bezel beside
+     *        the bottom one.
+     */
+    constexpr PanelRect panel_rect(const u8 i) {
+        return i == 0 ? PanelRect{0, 0, 400, 240}
+                      : PanelRect{40, 240, 320, 240};
+    }
+#else
+    /** @brief Panels the viewport spans (single-screen targets: 1). */
+    constexpr u8 panel_count() { return 1; }
+    /** @brief The one panel, which is the whole viewport. */
+    constexpr PanelRect panel_rect(u8) {
+        return PanelRect{0, 0, viewport_px(), viewport_py()};
+    }
+#endif
+
+    /** @brief ::panel_rect width in tiles, for the tile-space layout maths. */
+    constexpr u16 panel_tx(const u8 i) { return static_cast<u16>(panel_rect(i).w >> 3); }
+    /** @brief ::panel_rect height in tiles, for the tile-space layout maths. */
+    constexpr u16 panel_ty(const u8 i) { return static_cast<u16>(panel_rect(i).h >> 3); }
 
 #ifndef TARGET_NES
     /**

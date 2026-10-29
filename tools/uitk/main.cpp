@@ -89,6 +89,17 @@ constexpr double kSidebarWidthPxAt1080p = 200.0;
 // of it (the sidebar included).
 constexpr int kWindowChromeMarginPx = 60;
 
+// Set by -n/--name on the CLI; empty in the GUI, which always follows the
+// open .uis file's own basename. It overrides the exported scene name, which
+// is BOTH the `gen::<scene>` namespace and the written .hpp/.cpp basename
+// (see exportOneTarget / generateCode). That lets a per-target variant file
+// -- demo/ui/<scene>_ds.uis, overlaid onto the dual-screen targets by the
+// uitk-export step in CMakeLists.txt -- export AS <scene>, so it lands at
+// demo/gen/<scene>/{ds,dsi,3ds}/<scene>.hpp alongside the other targets'
+// output and demo/src keeps its one unchanged
+// `#include STRCAT(../../gen/<scene>/GEN_TARGET_DIR/<scene>.hpp)`.
+QString g_sceneNameOverride;
+
 double tilePxForScreen(const QRect& screenGeometry) {
     return kTilePxAt1080p * (screenGeometry.height() / kReferenceHeight);
 }
@@ -281,8 +292,21 @@ const QStringList kRegionNames = {"NTSC", "PAL"};
 // video::viewport_tx()/viewport_ty() constants each backend actually compiles
 // against (include/pnes/video.hpp) -- picking a Target sets the
 // sidebar's Viewport X/Y to whatever that backend's panel really shows, so a
-// scene isn't authored against the wrong resolution by accident. Two targets
-// have no fixed panel size and are deliberately left out: GC/Wii
+// scene isn't authored against the wrong resolution by accident.
+//
+// On the dual-screen handhelds a target's viewport is the BOUNDING BOX of both
+// its panels, not one panel: the width of the widest and the summed height of
+// the two, since they are stacked on a shared horizontal edge (see video.hpp's
+// TARGET_NDS/TARGET_CTR branches). So DS/DSi author against 32x48 (two 256x192
+// panels = 256x384) and the 3DS against 50x60 (a 400x240 top over a 320x240
+// bottom = 400x480). Note the 3DS's bottom panel is 40px/5 tiles NARROWER on
+// each side than the viewport: scene columns 0-4 and 45-49 below row 30 land in
+// the bezel beside it, not on glass. The hinge gap between the panels is not
+// modelled, so scene row 23/24 (DS) and 29/30 (3DS) are adjacent here but are
+// physically separated by the bezel on hardware -- keep anything that must read
+// as one object off those seams.
+//
+// Two targets have no fixed panel size and are deliberately left out: GC/Wii
 // (video.hpp's TARGET_OGC branch) sizes to whatever TV VIDEO_GetPreferredMode
 // reports at runtime -- src/ogc/video.cpp's ogc_world_tx computation, fed a
 // standard 640x480 NTSC mode, resolves to 40, the closest thing to a
@@ -294,16 +318,43 @@ std::optional<std::pair<int, int>> viewportTilesForTarget(const QString& target)
         {"NES", {32, 30}},    // hardware PPU, fixed 256x240
         {"GBA", {30, 20}},    // 240x160 panel
         {"GCN", {40, 30}},    // runtime TV width; 40 = a standard 640x480 NTSC mode
-        {"DS", {32, 24}},     // 256x192 panel
-        {"DSI", {32, 24}},    // same main-engine panel as DS
+        {"DS", {32, 48}},     // both 256x192 panels stacked: 256x384
+        {"DSI", {32, 48}},    // same two panels as DS
         {"Wii", {40, 30}},    // same runtime-TV path as GCN
         {"Wii U", {52, 30}},  // widescreen, scaled to fill the panel
-        {"3DS", {50, 30}},    // 400x240 top screen
+        {"3DS", {50, 60}},    // 400x240 top over 320x240 bottom: 400x480
         {"Switch", {52, 30}}, // widescreen, scaled to fill the panel
         {"PSP", {60, 30}},    // 480x272 panel, letterboxed to 480x240
     };
     const auto it = kSizes.constFind(target);
     if (it == kSizes.constEnd()) return std::nullopt;
+    return *it;
+}
+
+// Panel 1 -- the LOWER panel -- as a rect in TILES, mirroring
+// video::panel_rect(1) (include/pnes/video.hpp) for the dual-screen targets.
+// This is what PANEL1_X/Y/TX/TY resolve to, and it is why one *_ds.uis can
+// serve both consoles: the 3DS's bottom panel is 40 tiles wide inset 5 tiles
+// from the viewport's left edge, NOT the viewport's own 50, so a layout
+// anchored to VIEWPORT_TX would overflow into the bezel there while looking
+// fine on the DS.
+//
+// Targets absent from this table are single-screen, where video::panel_rect()
+// ignores its index and hands back the whole viewport; PANEL1_* follows that
+// and falls back to the viewport, so a scene authored against PANEL1_* still
+// exports sensibly for them rather than failing to resolve.
+struct PanelTiles {
+    int x, y, tx, ty;
+};
+
+std::optional<PanelTiles> panel1TilesForTarget(const QString& target) {
+    static const QHash<QString, PanelTiles> kPanels{
+        {"DS", {0, 24, 32, 24}},    // 256x192 under a 256x192 top, in a 32x48 viewport
+        {"DSI", {0, 24, 32, 24}},   // same two panels as DS
+        {"3DS", {5, 30, 40, 30}},   // 320x240 centred under a 400x240 top, in a 50x60 viewport
+    };
+    const auto it = kPanels.constFind(target);
+    if (it == kPanels.constEnd()) return std::nullopt;
     return *it;
 }
 
@@ -655,8 +706,13 @@ private:
             if (parts.size() == 1) {
                 // VIEWPORT_T{X,Y} are the viewport's size in tiles;
                 // VIEWPORT_P{X,Y} are the same in pixels.
+                // PANEL1_* are the LOWER panel's rect in tiles on a
+                // dual-screen target (see panel1TilesForTarget) -- the anchor
+                // a *_ds.uis layout uses so it lands on the bottom screen of
+                // both the DS and the 3DS from one file.
                 static const QSet<QString> kViewportIdents{"VIEWPORT_TX", "VIEWPORT_TY", "VIEWPORT_PX",
-                                                             "VIEWPORT_PY"};
+                                                             "VIEWPORT_PY", "PANEL1_X",  "PANEL1_Y",
+                                                             "PANEL1_TX",   "PANEL1_TY"};
                 if (!kViewportIdents.contains(token)) {
                     ok = false;
                     return nullptr;
@@ -766,6 +822,12 @@ QString emitExprCpp(const ExprPtr& node, const std::function<long long(const QSt
                 if (node->identName == QLatin1String("VIEWPORT_TY")) return QStringLiteral("video::viewport_ty()");
                 if (node->identName == QLatin1String("VIEWPORT_PX")) return QStringLiteral("video::viewport_px()");
                 if (node->identName == QLatin1String("VIEWPORT_PY")) return QStringLiteral("video::viewport_py()");
+                if (node->identName == QLatin1String("PANEL1_X"))
+                    return QStringLiteral("static_cast<u16>(video::panel_rect(1).x >> 3)");
+                if (node->identName == QLatin1String("PANEL1_Y"))
+                    return QStringLiteral("static_cast<u16>(video::panel_rect(1).y >> 3)");
+                if (node->identName == QLatin1String("PANEL1_TX")) return QStringLiteral("video::panel_tx(1)");
+                if (node->identName == QLatin1String("PANEL1_TY")) return QStringLiteral("video::panel_ty(1)");
             }
             if (substituteIdent) {
                 if (const auto sub = substituteIdent(node->identName, node->identProp)) return *sub;
@@ -2428,6 +2490,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // always shows what the exported gen::<sceneName> namespace will
     // actually be called.
     auto sceneName = [currentPath] {
+        if (!g_sceneNameOverride.isEmpty()) return g_sceneNameOverride;
         return currentPath->isEmpty() ? QStringLiteral("scene") : QFileInfo(*currentPath).completeBaseName();
     };
 
@@ -2772,6 +2835,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     const QString exprHint = "A number, or a formula like Other.pos.x + 1.\n"
                               "Operators: + - * / << >> and parentheses.\n"
                               "VIEWPORT_TX/TY = viewport size in tiles, VIEWPORT_PX/PY = in pixels.\n"
+                              "PANEL1_X/Y/TX/TY = the lower panel's rect in tiles (dual-screen targets).\n"
                               "Other.textSize / this.textSize = that textbox's text length in tiles.\n"
                               "'this' refers to the node the formula is on, e.g. this.textSize.";
     posXEdit->setToolTip(exprHint);
@@ -3400,6 +3464,15 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                 if (name == QLatin1String("VIEWPORT_TY")) return viewportTilesY;
                 if (name == QLatin1String("VIEWPORT_PX")) return viewportPixelsX;
                 if (name == QLatin1String("VIEWPORT_PY")) return viewportPixelsY;
+                // PANEL1_* -- the lower panel on a dual-screen target, else
+                // the whole viewport (panel1TilesForTarget's own comment).
+                if (name.startsWith(QLatin1String("PANEL1_"))) {
+                    const auto panel = panel1TilesForTarget(targetCombo->currentText());
+                    if (name == QLatin1String("PANEL1_X")) return panel ? panel->x : 0;
+                    if (name == QLatin1String("PANEL1_Y")) return panel ? panel->y : 0;
+                    if (name == QLatin1String("PANEL1_TX")) return panel ? panel->tx : viewportTilesX;
+                    if (name == QLatin1String("PANEL1_TY")) return panel ? panel->ty : viewportTilesY;
+                }
                 return std::nullopt;
             }
             if (duplicateNames.contains(name)) {
@@ -4011,6 +4084,8 @@ int main(int argc, char** argv) {
     //   -i, --input        the .uis scene file to load
     //   -o, --output       output root; writes <output>/<target>/<name>.hpp|.cpp
     //   -t, --target       target to export (only with -e/--export)
+    //   -n, --name         scene name to export AS (default: the input file's
+    //                      basename) -- see g_sceneNameOverride
     bool cliExport = false;
     bool cliExportAll = false;
     QString cliInput;
@@ -4019,7 +4094,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromLocal8Bit(argv[i]);
         const bool wantsValue = (arg == "-i" || arg == "--input" || arg == "-o" || arg == "--output" ||
-                                  arg == "-t" || arg == "--target");
+                                  arg == "-t" || arg == "--target" || arg == "-n" || arg == "--name");
         if (wantsValue && i + 1 >= argc) {
             std::fprintf(stderr, "uitk: %s requires an argument\n", qPrintable(arg));
             return 1;
@@ -4034,6 +4109,8 @@ int main(int argc, char** argv) {
             cliOutput = QString::fromLocal8Bit(argv[++i]);
         } else if (arg == "-t" || arg == "--target") {
             cliTarget = QString::fromLocal8Bit(argv[++i]);
+        } else if (arg == "-n" || arg == "--name") {
+            g_sceneNameOverride = QString::fromLocal8Bit(argv[++i]);
         }
     }
 

@@ -447,11 +447,25 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
     if(NOT UITK_BUILD_RESULT EQUAL 0)
         message(FATAL_ERROR "uitk: failed to build (see output above).")
     endif()
+    # Targets whose viewport spans two stacked panels (video.hpp's TARGET_NDS /
+    # TARGET_CTR branches). A scene can supply demo/ui/<scene>_ds.uis to lay
+    # itself out differently on these -- the UI sits permanently on the bottom
+    # panel, so it needs none of the IRQ-split/fade machinery the single-screen
+    # layout uses -- and ONE such file covers all three, because its placement
+    # is written as VIEWPORT_*-relative expressions that resolve per target
+    # (DS/DSi 32x48, 3DS 50x60).
+    set(UITK_DUAL_SCREEN_TARGETS DS DSI 3DS)
     # One export per demo/ui/*.uis found above -- output dir is always that
     # file's own basename (demo/ui/foo.uis -> demo/gen/foo/<target>/foo.hpp|.cpp),
-    # so a new scene file needs no edit here to start exporting.
+    # so a new scene file needs no edit here to start exporting. The one
+    # exception is a *_ds.uis variant: it is not a scene of its own, it is an
+    # overlay on its base scene, so it is skipped here and re-exported below
+    # under the BASE scene's name.
     foreach(UITK_SCENE_FILE ${UITK_SCENE_FILES})
         get_filename_component(UITK_SCENE_NAME ${UITK_SCENE_FILE} NAME_WE)
+        if(UITK_SCENE_NAME MATCHES "_ds$")
+            continue()
+        endif()
         execute_process(
                 COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export-all
                         --input ${UITK_SCENE_FILE}
@@ -460,6 +474,34 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
                 RESULT_VARIABLE UITK_EXPORT_RESULT)
         if(NOT UITK_EXPORT_RESULT EQUAL 0)
             message(FATAL_ERROR "uitk: export failed for ${UITK_SCENE_FILE} (see output above).")
+        endif()
+
+        # Overlay: if this scene ships a dual-screen variant, re-export it for
+        # the dual-screen targets ONLY, overwriting the base layout's output for
+        # those three. --name makes it export AS the base scene, so it lands at
+        # demo/gen/<scene>/{ds,dsi,3ds}/<scene>.hpp with the same
+        # `gen::<scene>` namespace as every other target -- demo/src keeps its
+        # single unchanged computed include and needs no per-target #if.
+        # Deliberately after the base export, not instead of it: the base run is
+        # what creates the other 8 targets' output, and overwriting only these
+        # three keeps a scene without a variant working exactly as before.
+        set(UITK_SCENE_DS_FILE ${CMAKE_SOURCE_DIR}/demo/ui/${UITK_SCENE_NAME}_ds.uis)
+        if(EXISTS ${UITK_SCENE_DS_FILE})
+            foreach(UITK_DS_TARGET ${UITK_DUAL_SCREEN_TARGETS})
+                execute_process(
+                        COMMAND ${CMAKE_BINARY_DIR}/uitk-build/uitk --export
+                                --target ${UITK_DS_TARGET}
+                                --name ${UITK_SCENE_NAME}
+                                --input ${UITK_SCENE_DS_FILE}
+                                --output ${CMAKE_SOURCE_DIR}/demo/gen/${UITK_SCENE_NAME}
+                        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                        RESULT_VARIABLE UITK_DS_EXPORT_RESULT)
+                if(NOT UITK_DS_EXPORT_RESULT EQUAL 0)
+                    message(FATAL_ERROR
+                            "uitk: export failed for ${UITK_SCENE_DS_FILE} "
+                            "(target ${UITK_DS_TARGET}) (see output above).")
+                endif()
+            endforeach()
         endif()
     endforeach()
 

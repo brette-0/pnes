@@ -137,6 +137,35 @@ public:
     static constexpr chrMode kChrMode = chrMode::fineFirst;
 
 private:
+#ifdef TARGET_NES
+    /**
+     * @brief Shadow of the byte last written to $8000 -- the bank-select
+     *        latch, as hardware currently holds it.
+     *
+     * NOT a convenience mirror: this exists so ::select_latch_scope can put
+     * the latch back, and every bank write maintains it for that one reader.
+     *
+     * $8000/$8001 are a SELECT/DATA PORT PAIR, so a bank write is two stores
+     * with live state between them -- the whole meaning of the $8001 write is
+     * "whatever $8000 last named". An interrupt landing in that gap that does
+     * any banking of its own re-latches $8000, and the interrupted code's
+     * $8001 store then lands in the WRONG register. On this project that is
+     * fatal, not cosmetic: the victim is usually a ::CallInWindow trampoline
+     * mid-farcall, so a PRG bank number gets written into a CHR register
+     * (every background tile turns to garbage) while window 1 keeps the
+     * bank it already had -- and the `jsr` that follows runs whatever bytes
+     * that stale bank happens to hold, which is how it ends up executing
+     * data and jamming the CPU.
+     *
+     * `sei` IS NOT A FIX and must not be reached for here. It masks IRQ only;
+     * NMI is unmaskable on the 6502, and the per-frame NMI is exactly the
+     * handler doing the most banking. The gap cannot be closed from the
+     * writer's side at all, which is why the repair is on the handler's side:
+     * see ::select_latch_scope.
+     */
+    static atomic u8 selectLatch;
+#endif
+
 #ifndef TARGET_NES
     /**
      * @brief Emu-side shadow of MMC3's CHR A12-inversion bit (D7 of $8000).
@@ -252,7 +281,17 @@ public:
          */
         void poke_only(const u8 v, const chrMode mode = kChrMode) const {
 #ifdef TARGET_NES
-            tech::poke(0x8000, Detail::SelectByte(mode, Index));
+            const u8 sel = Detail::SelectByte(mode, Index);
+            // ::selectLatch is updated BEFORE the $8000 store, never after.
+            // An interrupt can land at any of the three points below, and
+            // recording the select byte first is what makes all three safe:
+            // before the shadow store it reads the PREVIOUS select byte and
+            // restores that, which this pair is about to overwrite anyway;
+            // after it -- including in the gap that actually bites, between
+            // the two pokes -- it reads `sel` and puts `sel` back, so the
+            // $8001 store below still lands in register Index.
+            selectLatch = sel;
+            tech::poke(0x8000, sel);
             tech::poke(0x8001, v);
 #else
             NotifyModeWrite(mode);
@@ -263,6 +302,56 @@ public:
         operator u8() const { return shadow_; }
         Register &operator=(const u8 v)          { set(v);         return *this; }
         Register &operator=(const Register &o)   { set(o.shadow_); return *this; } ///< restore path
+    };
+
+    /**
+     * @brief Leaves the $8000 bank-select latch exactly as it was found.
+     *        DECLARE ONE AT THE TOP OF EVERY NMI AND IRQ BODY ON THIS MAPPER.
+     *
+     * Not an optimisation and not defensive tidiness: without it, any handler
+     * that banks anything can corrupt a bank write it interrupted. See
+     * ::selectLatch for the mechanism and for why `sei` cannot substitute.
+     *
+     * The repair has to live on the handler's side because that is the only
+     * side that can act. A writer cannot make its own select/data pair atomic
+     * against an unmaskable NMI, but a handler CAN undo its interference: if
+     * $8000 holds, at the moment control returns, whatever it held when the
+     * handler was entered, then the interrupted pair completes as if the
+     * handler had never run -- whatever it banked in between.
+     *
+     * Costs a load at entry and a store pair at exit, once per interrupt,
+     * against ~68 bank-write sites that would each otherwise need guarding.
+     *
+     * Nests correctly: the saved byte is per-instance, so an IRQ taken inside
+     * an NMI (the 6502 does not mask IRQ on NMI entry, and this project
+     * enables IRQs for its raster splits) restores the NMI's latch, which
+     * then restores the mainline's.
+     *
+     * Non-copyable, like ::tech::shadow_scope: two guards over one latch
+     * would restore it twice, and the second restore would be stale.
+     *
+     * Off-NES this is an empty type -- there is no mapper and no port pair --
+     * so a handler can declare one unconditionally.
+     */
+    class select_latch_scope {
+#ifdef TARGET_NES
+        u8 saved_;
+#endif
+    public:
+#ifdef TARGET_NES
+        select_latch_scope() : saved_(selectLatch) {}
+        ~select_latch_scope() {
+            // Hardware first, then the shadow, mirroring ::poke_only's own
+            // ordering rule: the shadow must never claim a latch that is not
+            // in the port yet.
+            tech::poke(0x8000, saved_);
+            selectLatch = saved_;
+        }
+#else
+        select_latch_scope() = default;
+#endif
+        select_latch_scope(const select_latch_scope &) = delete;
+        select_latch_scope &operator=(const select_latch_scope &) = delete;
     };
 
     /**

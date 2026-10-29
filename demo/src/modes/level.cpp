@@ -317,8 +317,14 @@ namespace level {
 
     static FIXED void ApplyHudSplit() {
         #if defined(TARGET_NDS) || defined(TARGET_GBA)
-            const i16 mid    = static_cast<i16>(video::viewport_py() >> 1);
-            const i16 anchor = static_cast<i16>(240 - video::viewport_py());
+            // Primary panel height, NOT viewport_py(): the DS viewport is now
+            // both panels stacked (384px, see video.hpp's TARGET_NDS branch), but
+            // this follow camera centres the player in the panel the gameplay is
+            // anchored in and clamps against the 240-row NES frame, so it is the
+            // top panel's 192px (GBA's 160px) that both terms want.
+            const i16 panelH = static_cast<i16>(video::panel_rect(0).h);
+            const i16 mid    = static_cast<i16>(panelH >> 1);
+            const i16 anchor = static_cast<i16>(240 - panelH);
             const i16 raw    = static_cast<i16>(rasterPlayerY) - mid;
             const i16 bump   = raw < 0 ? 0 : (raw > anchor ? anchor : raw);
             ppu::SetScroll({rasterCameraX, static_cast<u16>(16 + bump)});

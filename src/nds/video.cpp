@@ -15,8 +15,9 @@
  *     sub-palettes), rebuilt each frame. Pixel value 0 is transparent on both BG
  *     and OBJ: BG colour-0 shows the backdrop (BG_PALETTE[0]); sprite colour-0 is
  *     a hole -- reproducing NES transparency for free.
- *   - The nametable + attribute tables become a 512x256 DS text BG tilemap
- *     (two horizontal NES nametables wide), rebuilt each frame from VideoRAM.
+ *   - The nametable + attribute tables become a 512x512 DS text BG tilemap
+ *     (two nametables wide, the BG's maximum height), rebuilt each frame from
+ *     VideoRAM and uploaded to BOTH engines.
  *   - The OAM shadow becomes hardware OBJ via oamSet; "behind background" sprites
  *     get a lower OBJ priority than BG0 so opaque BG pixels occlude them.
  *
@@ -27,12 +28,19 @@
  * DS reproduces the NES's mid-frame raster scroll and the sprite-0 split on
  * native hardware, with no CPU per-pixel work.
  *
- * The 256x192 panel is 6 tiles shorter than the NES's 240px frame; the backend
- * shows a window onto the unaltered 256x240 world (the NES game is never changed
- * for the DS). Because the DS BG wraps vertically at 256 while the NES wraps at
- * 240, this first pass assumes vertical scroll stays within one nametable (the
- * demo is a status-bar + horizontal-scroll title); pure-X raster splits -- the
- * common case -- are exact.
+ * BOTH panels are driven. The viewport is their bounding box, 256x384 (see
+ * video.hpp's TARGET_NDS branch), and each engine renders the viewport rows its
+ * own panel covers -- main 0..191, sub 192..383 -- out of the same plane, same
+ * map and same CHR, differing only in the scroll the HBlank ISR programs. The
+ * two LCDs scan in lockstep off one REG_VCOUNT, so both engines are programmed
+ * at the same line index from their own table (see sh_h/sh_v).
+ *
+ * A DS text BG is at most 512px tall, so of the grid's full 768px world only
+ * the first 512px can be resident at once (band_emit's `& 0x1FF`). With the
+ * demo's bottom-anchored title scroll of 48px the visible window is rows 6..53
+ * of a 48-row plane, so its last 6 rows fall past the plane into the grid's
+ * next nametable row -- blank on this board -- showing as an unused 48px band
+ * at the very bottom of the lower panel.
  *
  * Frame pacing is the real hardware VBlank (swiWaitForVBlank), and the VRAM
  * writes (palette/map/OAM) are committed during VBlank to avoid tearing.
@@ -73,17 +81,19 @@ static constexpr u32 nes_rgb[64] = {
 // DS layout constants. The viewport panel is 256x192; the BG covers the full
 // 512x256 world (two horizontal NES nametables) and is scrolled over the panel.
 // ---------------------------------------------------------------------------
-static constexpr int SCREEN_H   = 192;          // visible scanlines
+// Scanlines ONE panel has. The viewport is both panels stacked (384px -- see
+// video.hpp's TARGET_NDS branch), but a DS's two LCDs are scanned
+// SIMULTANEOUSLY off the one REG_VCOUNT, 0..191 for both at once; there is no
+// single 384-line raster. So every per-scanline table here is indexed by
+// [panel][panel row], and both engines are programmed at the same VCOUNT.
+static constexpr int SCREEN_H   = video::panel_rect(0).h;   // 192, visible scanlines per panel
+static constexpr int PANELS     = video::panel_count();    // 2 -- both LCDs are driven
 static constexpr int MAP_COLS   = 64;           // 512px / 8
-// g_map_shadow's own row capacity: sized for the WORST case (a four-screen
-// board's two stacked 240px nametable rows, ::ppu::nametableCount == 4) --
-// 512px / 8 x2. An ordinary (::ppu::nametableCount == 2) board only ever
-// fills/DMAs the first half (build_map's own activeRows, below); the
-// unused second half costs a fixed amount of RAM but keeps this file free
-// of any board-specific #if (see mmc3.hpp's own comment on
-// ALTERNATIVE_NAMETABLE for why this TU must not presume that).
-static constexpr int MAP_ROWS   = 64;           // 2 x (256px / 8)
-static constexpr int CHR_TILES  = 512;          // NES tiles in 8 KB CHR
+// g_map_shadow's row capacity, which is also the DS text BG's maximum height:
+// 512px / 8. A 48-row plane needs 48 of these, and the remaining 16 continue
+// into the grid's next nametable row (build_map), so the whole capacity is
+// live every frame.
+static constexpr int MAP_ROWS   = 64;           // 512px / 8, the BG's max height
 static constexpr int DS_TILE_SZ = 32;           // bytes per 4bpp 8x8 DS tile
 
 // OBJ priorities: front sprites above BG, BG above behind-sprites (and the
@@ -94,26 +104,115 @@ static constexpr int PRIO_SPR_BEHIND = 3;
 
 namespace {
 
-int  g_bg = 0;                                   // bgInit() handle for BG0
+int  g_bg     = 0;                               // bgInit() handle for main BG0
+int  g_bg_sub = 0;                               // bgInitSub() handle for sub BG0
 // BG tilemap shadow (built in RAM, DMA'd to VRAM during VBlank). 64x64
 // entries (MAP_ROWS's own comment), laid out as four 32x32 screenblocks in
 // the standard 2x2 text-BG arrangement (0/1 top row, 2/3 bottom row) -- an
 // ordinary single-row board only ever populates/uses the top row (0/1, the
 // BgSize_T_512x256 layout bgInit selects at init).
 alignas(4) u16 g_map_shadow[MAP_COLS * MAP_ROWS];
-// 4bpp CHR staged in RAM at init and whenever a mapper (e.g. MMC3) switches a
-// CHR bank, then uploaded to BG + OBJ tile VRAM.
-alignas(4) u8  g_chr4[CHR_TILES * DS_TILE_SZ];
-// Generation of ::ppu::chrGeneration the atlas above was last built from.
-// Sentinel (not 0, ::chrGeneration's own initial value) forces the first build.
-u32 g_chr_built_gen = ~0u;
+// ---------------------------------------------------------------------------
+// CHR bank switching: any kind, anywhere, any number of times per frame.
+//
+// A DS BG does not fetch CHR the way the NES does -- its tiles are a resident
+// VRAM resource -- so the obvious model is to mirror each BANK the frame uses.
+// That is what this used to do, and it is bounded: a 128 KB bank holds 7
+// atlases, so 7 distinct bank states per frame and no more.
+//
+// So mirror TILES, not banks. A map entry carries a 10-bit tile index, i.e.
+// 1024 resident tiles, keyed by CONTENT: the resolved CHR address each of a
+// tile's eight pixel rows is fetched from. Every cell of the tilemap is
+// resolved individually, under the bank state in effect on the scanlines that
+// actually display it. The number of bank switches then stops mattering --
+// switches only change the window bases between bands, and bands are free.
+//
+// Three consequences worth stating, because they are what make this exact
+// where the bank-mirroring model was not:
+//
+//   - A switch at ANY scanline is honoured, not just at a band boundary that
+//     happens to fall on a tile-row boundary. When a tile row's eight
+//     scanlines span more than one bank state, the cache synthesises a
+//     COMPOSITE tile, taking each pixel row from the state that displays it
+//     (see g_slot_key / expand_rows). That is the sub-tile case a tilemap is
+//     usually said to be incapable of.
+//   - Sprites get the same treatment, resolved under the state at their own
+//     scanline, so a mid-frame sprite-window re-bank works too.
+//   - It is cheaper than mirroring banks in steady state: a cache hit costs a
+//     hash probe, and only genuine misses expand a tile (32 bytes) rather
+//     than a whole 16 KB atlas.
+//
+// Tile VRAM holds TILE_SLOTS 4bpp tiles (32 KB) at tile base 0; the tilemap
+// moves to the 2 KB block after them. Both engines and both OBJ regions get
+// the same pool, so any scanline of either panel can reference any tile.
+static constexpr int TILE_SLOTS  = 1024;        // the map entry's 10-bit index
+static constexpr int CHR_WINDOWS = 8;           // 8 KiB of CHR space / 1 KiB
+static constexpr int TILE_BASE   = 0;           // 16 KB units: tiles at VRAM+0
+static constexpr int MAP_BASE    = 16;          // 2 KB units: map after the pool
+static constexpr int HASH_SIZE   = 2048;        // power of two, > TILE_SLOTS
+static constexpr u16 HASH_EMPTY  = 0;           // stored value is slot + 1
+static constexpr u16 HASH_TOMB   = 0xFFFF;
+
+// Bands recorded during the raster walk. One per scanline is the worst case
+// (an IRQ on every line), plus the implicit final band.
+static constexpr int MAX_BANDS = video::viewport_py() + 2;
+
+struct Band {
+    u16 xs, ys;                  // this band's scroll
+    u16 y0;                       // first viewport row it covers
+    u32 base[CHR_WINDOWS];        // resolved LMA of each 1 KiB CHR window
+};
+Band g_band[MAX_BANDS];
+int  g_bands;
+
+// Which band, and which world row, each viewport scanline came from. Filled by
+// band_emit; consumed by build_row_sources to work out what every tilemap row
+// must be resolved under.
+static constexpr int VPH = video::viewport_py();
+u16  s_band_of[VPH];
+u16  s_worldy[VPH];
+
+// Per tilemap row: the band behind each of its eight pixel rows, whether the
+// row is displayed at all (undisplayed rows are skipped entirely), and whether
+// all eight agree (the fast path -- one resolve per cell instead of eight).
+u16  g_rowband[MAP_ROWS][8];
+bool g_row_used[MAP_ROWS];
+bool g_row_uniform[MAP_ROWS];
+
+// The tile pool. g_slot_key[s][f] is the resolved CHR address of the tile whose
+// pixel row f this slot holds -- all eight equal for an ordinary tile, differing
+// for a composite. Keying on the resolved address (not the tile id) is what
+// makes a bank switch invisible to everything downstream; keying on the ROW
+// addresses is what makes a mid-tile-row switch expressible.
+//
+// The palette is NOT part of the key: it lives in separate map-entry bits, so
+// one tile drawn under four different attribute palettes is still one slot.
+alignas(4) u8 g_tiles[TILE_SLOTS * DS_TILE_SZ];
+u32  g_slot_key[TILE_SLOTS][8];
+bool g_slot_valid[TILE_SLOTS];
+bool g_slot_uniform[TILE_SLOTS];
+u32  g_slot_frame[TILE_SLOTS];   // frame it was last referenced on
+u16  g_slot_home[TILE_SLOTS];    // its hash index, so eviction can tombstone it
+u16  g_hash[HASH_SIZE];
+u32  g_frame;                     // frame counter for the eviction guard
+int  g_alloc_cursor;              // rolling allocation, keeps misses contiguous
+int  g_dirty_lo, g_dirty_hi;      // slot range rebuilt this frame (-1 = none)
+u32  g_overflow;                  // frames that wanted > TILE_SLOTS distinct tiles
+int  g_tombs;                     // tombstones in g_hash, see rehash()
 
 // Per-scanline scroll. The main thread builds into sh_*; the HBlank ISR reads
 // the live g_* copies. They are swapped during VBlank so the ISR never reads a
 // half-written table (no tearing of the raster split).
-u16          sh_h[SCREEN_H], sh_v[SCREEN_H];
+// Per-scanline scroll, ONE TABLE PER PANEL. The DS's two LCDs are scanned
+// SIMULTANEOUSLY off the single REG_VCOUNT (0..191 for both at once) -- there
+// is no 384-line raster -- so viewport row `v` on the top panel and viewport
+// row `192 + v` on the bottom panel are displayed at the SAME instant and both
+// have to be programmed at VCOUNT v. Hence [panel][line], not one 384-entry
+// table: band_emit routes each viewport row to the panel that shows it, and
+// hblank_scroll programs both engines from the same line index.
+u16          sh_h[PANELS][SCREEN_H], sh_v[PANELS][SCREEN_H];
 u16          s_sprite_voff;   // unwrapped scroll of the band holding the last line
-volatile u16 g_h[SCREEN_H],  g_v[SCREEN_H];
+volatile u16 g_h[PANELS][SCREEN_H],  g_v[PANELS][SCREEN_H];
 
 // 0xAARRGGBB -> DS BGR555 (X1BGR5; the unused top bit stays 0).
 inline u16 to_bgr555(const u32 argb) {
@@ -121,97 +220,247 @@ inline u16 to_bgr555(const u32 argb) {
     return static_cast<u16>(RGB15(r >> 3, g >> 3, b >> 3));
 }
 
-// Expand one NES 2bpp tile (16 bytes) into one DS 4bpp tile (32 bytes). DS 4bpp
-// packs two pixels per byte, low nibble = left pixel. NES pixel values 0-3 map
-// straight onto the DS sub-palette index (0 = transparent), so no remap.
-void expand_tile(const u8* nes, u8* out) {
+// Expand one NES tile into one DS 4bpp tile, taking each pixel row from the CHR
+// address that row is fetched from. DS 4bpp packs two pixels per byte, low
+// nibble = left pixel; NES pixel values 0-3 map straight onto the DS
+// sub-palette index (0 = transparent), so no remap.
+//
+// @p key is ::g_slot_key's eight per-row addresses. For an ordinary tile they
+// are all equal and this is the classic "read 16 bytes" expansion. When they
+// differ -- a bank switch partway down this tile row -- each row comes from its
+// own bank, which is exactly what the NES would have fetched.
+void expand_rows(const u32 key[8], u8* out) {
     for (int row = 0; row < 8; row++) {
-        const u8 p0 = nes[row];
-        const u8 p1 = nes[row + 8];
-        for (int c2 = 0; c2 < 4; c2++) {
-            const int cl = c2 * 2, cr = c2 * 2 + 1;
-            const u8 vl = ((p0 >> (7 - cl)) & 1) | (((p1 >> (7 - cl)) & 1) << 1);
-            const u8 vr = ((p0 >> (7 - cr)) & 1) | (((p1 >> (7 - cr)) & 1) << 1);
-            out[row * 4 + c2] = static_cast<u8>(vl | (vr << 4));
+        const u8* nes = CHR_ROM + key[row];
+        const u8  p0   = nes[row];
+        const u8  p1   = nes[row + 8];
+        for (int col = 0; col < 8; col += 2) {
+            const u8 hiA = static_cast<u8>(7 - col), hiB = static_cast<u8>(6 - col);
+            const u8 a = static_cast<u8>(((p0 >> hiA) & 1) | (((p1 >> hiA) & 1) << 1));
+            const u8 b = static_cast<u8>(((p0 >> hiB) & 1) | (((p1 >> hiB) & 1) << 1));
+            out[row * 4 + (col >> 1)] = static_cast<u8>(a | (b << 4));
         }
     }
 }
 
-// Rebuild the 4bpp CHR atlas from CHR_ROM, resolving each of the 512 PPU tile
-// slots through ::ppu::ResolveTile. An unbanked board's default is the
-// identity function, so this is byte-for-byte what the old one-shot init
-// loop did; a bank-switching mapper (MMC3) instead pulls each tile from
-// whatever physical CHR bank is presently switched into that PPU address, the
-// same resolution the per-pixel software rasterizer does on every fetch. Only
-// touches g_chr4 (RAM) -- safe to run any time; the VRAM upload is a separate
-// step (see WaitForPresent) deferred to VBlank like this backend's other
-// VRAM commits. Called only when ::ppu::chrGeneration has moved since the
-// last build.
-void build_chr_atlas() {
-    for (int t = 0; t < CHR_TILES; t++) {
-        const u32 lma = ppu::ResolveTile(static_cast<u16>(t * 16));
-        expand_tile(CHR_ROM + lma, g_chr4 + t * DS_TILE_SZ);
+// Resolved LMA of CHR address @p vma under @p b's window bases. Equivalent to
+// ::ppu::ResolveTile, but with the per-window resolution (and its modulo)
+// hoisted out to once per band: a window is 1 KiB and a tile 16 bytes, so the
+// offset never leaves the window, and one conditional subtract is exactly the
+// wrap ResolveTile's `% chrRomBytes` performs.
+inline u32 lma_of(const Band& b, const unsigned vma) {
+    u32 lma = b.base[(vma >> 10) & (CHR_WINDOWS - 1)] + (vma & 0x3FF);
+    if (lma >= ppu::chrRomBytes) lma -= ppu::chrRomBytes;
+    return lma;
+}
+
+inline u32 hash_mix(const u32 a, const u32 b, const u32 c) {
+    u32 h = a * 2654435761u;
+    h ^= b * 2246822519u;
+    h ^= c * 3266489917u;
+    return (h ^ (h >> 15)) & (HASH_SIZE - 1);
+}
+
+// Rebuild g_hash from the live slots, dropping every tombstone. Eviction has
+// to tombstone rather than clear (a cleared entry would cut a probe chain), so
+// without this they accumulate across frames until probes get long and, in the
+// limit, no HASH_EMPTY is left to terminate on. Called between frames only,
+// when they have actually built up: re-inserting is a hit for every slot, so
+// nothing is re-expanded.
+void rehash() {
+    for (u32 i = 0; i < HASH_SIZE; i++) g_hash[i] = HASH_EMPTY;
+    g_tombs = 0;
+    for (int s = 0; s < TILE_SLOTS; s++) {
+        if (!g_slot_valid[s]) continue;
+        const u32 h0 = g_slot_uniform[s]
+            ? hash_mix(g_slot_key[s][0], g_slot_key[s][0], 0u)
+            : hash_mix(g_slot_key[s][0], g_slot_key[s][3], g_slot_key[s][7]);
+        for (u32 i = 0; i < HASH_SIZE; i++) {
+            const u32 h = (h0 + i) & (HASH_SIZE - 1);
+            if (g_hash[h] == HASH_EMPTY) {
+                g_hash[h] = static_cast<u16>(s + 1);
+                g_slot_home[s] = static_cast<u16>(h);
+                break;
+            }
+        }
     }
 }
 
-// Rebuild the DS BG + sprite sub-palettes from paletteRAM. Sub-palette 0..3 hold
-// the 4 BG / 4 sprite palettes; entry 0 of each is transparent. The universal
-// backdrop is BG_PALETTE[0] (shown where every BG pixel is colour 0).
+// A slot not already spoken for by an EARLIER cell of this same frame. Evicting
+// one that is would silently change the tiles under whatever referenced it.
+int alloc_slot() {
+    for (int tries = 0; tries < TILE_SLOTS; tries++) {
+        const int s = g_alloc_cursor;
+        g_alloc_cursor = (g_alloc_cursor + 1 == TILE_SLOTS) ? 0 : g_alloc_cursor + 1;
+        if (!g_slot_valid[s] || g_slot_frame[s] != g_frame) {
+            if (g_slot_valid[s]) {
+                // Tombstone, not clear: linear probing needs the chain intact.
+                if (g_hash[g_slot_home[s]] == static_cast<u16>(s + 1)) {
+                    g_hash[g_slot_home[s]] = HASH_TOMB;
+                    g_tombs++;
+                }
+            }
+            return s;
+        }
+    }
+    return -1;   // every slot is live this frame -- see g_overflow
+}
+
+void commit_slot(const int s, const u32 key[8], const bool uniform, const u16 home) {
+    __builtin_memcpy(g_slot_key[s], key, 8 * sizeof(u32));
+    g_slot_valid[s]   = true;
+    g_slot_uniform[s] = uniform;
+    g_slot_frame[s]   = g_frame;
+    g_slot_home[s]    = home;
+    g_hash[home]      = static_cast<u16>(s + 1);
+    expand_rows(key, g_tiles + s * DS_TILE_SZ);
+    if (g_dirty_lo < 0 || s < g_dirty_lo) g_dirty_lo = s;
+    if (s > g_dirty_hi) g_dirty_hi = s;
+}
+
+// Slot holding a tile whose eight rows all come from @p lma -- the ordinary
+// case, and the one every cell of an unsplit tile row takes.
+int intern_uniform(const u32 lma) {
+    const u32 h0 = hash_mix(lma, lma, 0u);
+    int tomb = -1;
+    for (u32 i = 0; i < HASH_SIZE; i++) {
+        const u32 h = (h0 + i) & (HASH_SIZE - 1);
+        const u16 e = g_hash[h];
+        if (e == HASH_EMPTY) {
+            const u32 home = (tomb >= 0) ? static_cast<u32>(tomb) : h;
+            const int s = alloc_slot();
+            if (s < 0) { g_overflow++; return 0; }
+            u32 key[8];
+            for (int f = 0; f < 8; f++) key[f] = lma;
+            commit_slot(s, key, true, static_cast<u16>(home));
+            return s;
+        }
+        if (e == HASH_TOMB) { if (tomb < 0) tomb = static_cast<int>(h); continue; }
+        const int s = e - 1;
+        if (g_slot_valid[s] && g_slot_uniform[s] && g_slot_key[s][0] == lma) {
+            g_slot_frame[s] = g_frame;
+            return s;
+        }
+    }
+    g_overflow++;
+    return 0;
+}
+
+// Slot holding a tile whose rows come from differing addresses -- a bank switch
+// partway down this tile row.
+int intern_rows(const u32 key[8]) {
+    const u32 h0 = hash_mix(key[0], key[3], key[7]);
+    int tomb = -1;
+    for (u32 i = 0; i < HASH_SIZE; i++) {
+        const u32 h = (h0 + i) & (HASH_SIZE - 1);
+        const u16 e = g_hash[h];
+        if (e == HASH_EMPTY) {
+            const u32 home = (tomb >= 0) ? static_cast<u32>(tomb) : h;
+            const int s = alloc_slot();
+            if (s < 0) { g_overflow++; return 0; }
+            commit_slot(s, key, false, static_cast<u16>(home));
+            return s;
+        }
+        if (e == HASH_TOMB) { if (tomb < 0) tomb = static_cast<int>(h); continue; }
+        const int s = e - 1;
+        if (g_slot_valid[s] && !g_slot_uniform[s] &&
+            __builtin_memcmp(g_slot_key[s], key, 8 * sizeof(u32)) == 0) {
+            g_slot_frame[s] = g_frame;
+            return s;
+        }
+    }
+    g_overflow++;
+    return 0;
+}
+
+// Work out, for every tilemap row, which bank state each of its eight pixel
+// rows must be resolved under. One pass over the scanlines the frame actually
+// displayed; a row no scanline reached is left unused and skipped by build_map.
+void build_row_sources() {
+    for (int r = 0; r < MAP_ROWS; r++) { g_row_used[r] = false; g_row_uniform[r] = true; }
+
+    for (int sy = 0; sy < VPH; sy++) {
+        const u16 b = s_band_of[sy];
+        if (b == 0xFFFF) continue;
+        const u32 w    = s_worldy[sy];
+        const int row  = static_cast<int>((w >> 3) & (MAP_ROWS - 1));
+        const int fine = static_cast<int>(w & 7);
+        if (!g_row_used[row]) {
+            g_row_used[row] = true;
+            // Seed every pixel row, so one no scanline covered still resolves
+            // to something coherent rather than a stale band index.
+            for (int f = 0; f < 8; f++) g_rowband[row][f] = b;
+        }
+        g_rowband[row][fine] = b;
+    }
+
+    for (int r = 0; r < MAP_ROWS; r++) {
+        if (!g_row_used[r]) continue;
+        const u16 b0 = g_rowband[r][0];
+        for (int f = 1; f < 8; f++)
+            if (g_rowband[r][f] != b0) { g_row_uniform[r] = false; break; }
+    }
+}
+
 void build_palettes() {
     for (int p = 0; p < 4; p++) {
         for (int c = 1; c < 4; c++) {
-            BG_PALETTE[p * 16 + c]     = to_bgr555(nes_rgb[paletteRAM[p * 4 + c]        & 0x3F]);
-            SPRITE_PALETTE[p * 16 + c] = to_bgr555(nes_rgb[paletteRAM[0x10 + p * 4 + c] & 0x3F]);
+            const u16 bg  = to_bgr555(nes_rgb[paletteRAM[p * 4 + c]        & 0x3F]);
+            const u16 spr = to_bgr555(nes_rgb[paletteRAM[0x10 + p * 4 + c] & 0x3F]);
+            BG_PALETTE[p * 16 + c]         = bg;
+            SPRITE_PALETTE[p * 16 + c]     = spr;
+            // The sub engine has its own palette RAM; without these the bottom
+            // panel renders the right tiles in an all-black palette.
+            BG_PALETTE_SUB[p * 16 + c]     = bg;
+            SPRITE_PALETTE_SUB[p * 16 + c] = spr;
         }
     }
-    BG_PALETTE[0] = to_bgr555(nes_rgb[paletteRAM[0] & 0x3F]);
+    BG_PALETTE[0]     = to_bgr555(nes_rgb[paletteRAM[0] & 0x3F]);
+    BG_PALETTE_SUB[0] = BG_PALETTE[0];
 }
 
 // Rebuild the BG tilemap shadow from the linked board's nametables in
 // VideoRAM/cart VRAM (::ppu::ReadNametable). Mirrors the tile/attribute
-// decode the software PPU and GX backend use; NES vertical wrap within one
-// 240px row (30 tile-rows) is reproduced with `local_row % 30`, applied
-// independently within each 32-row screenblock-half -- see build_map's own
-// comment for why it can't be one combined period across both halves.
+// decode the software PPU and GX backend use.
 //
-// activeRows -- not the fixed MAP_ROWS capacity -- bounds the loop: an
-// ordinary 2-nametable board (::emu::NtGeometry::gridH == 1) only ever fills
-// the first 32 DS tile-rows (one screenblock-row), the same footprint and
-// cost this loop always had before four-screen support existed, and never
-// calls ::ppu::ReadNametable with an offset past what that board's VideoRAM
-// actually covers. geo.tileW/tileH are always exactly the NES-native 32/30 --
-// never the DS's own 32x24 viewport (see TARGET_NDS's own viewport_tx()/
-// viewport_ty() doc comments, video.hpp) -- so this stays exactly the
-// screenblock-shaped walk it always was; ::emu::ComputeNtGeometry (emu.hpp)
-// is just the one shared place that shape (and ::ppu::nametableCount's grid)
-// now comes from, instead of this file's own copy of the formula.
+// The whole 64-row map capacity is filled every frame: a plane is 48 tile-rows
+// on this target (video.hpp's TARGET_NDS branch) and the two panels together
+// show 48 of them, so there is no longer a "first half only" case to skip.
+// geo.tileW/tileH come from ::emu::ComputeNtGeometry (emu.hpp), the one shared
+// place the plane shape and ::ppu::nametableCount's grid are derived, so this
+// read side stays byte-for-byte consistent with the write side.
 void build_map() {
-    const int atlas0 = (ppu::PPUCTRL & ppu::ctrl::BG_ADDR) ? 256 : 0;
+    // Which pattern table the background fetches from, as a CHR-space address
+    // (not a tile-index offset): tile ids are resolved through the bank state
+    // now, so what is needed is the VMA the tile's bytes sit at.
+    const unsigned chr_space = (ppu::PPUCTRL & ppu::ctrl::BG_ADDR) ? 0x1000u : 0x0000u;
     const emu::NtGeometry geo = emu::ComputeNtGeometry();
-    const int activeRows = 32 * geo.gridH;
 
-    for (int row = 0; row < activeRows; row++) {
-        // Each 32-row screenblock-half is an independent tileH-periodic
-        // content stream -- NOT one continuous period spanning both halves.
-        // Physical screenblock placement is fixed at 32-row boundaries
-        // (hardware fact); NES nametable content repeats every tileH (30)
-        // rows (hardware fact too); those two periods don't divide evenly
-        // into each other, so deriving nt_row from a combined modulus across
-        // the full 64-row span (e.g. `row % 60`) desyncs partway through the
-        // second half -- confirmed as a real, reproduced bug (screenblock 2/3
-        // content landing 2 rows short of where it belongs, "mirroring" the
-        // tail of screenblock 0/1's own row-30/31 wraparound into it
-        // instead). row >> 5 alone gives which screenblock-half (and
-        // therefore which nt_row) a physical row belongs to, always exactly
-        // at the 32-row boundary; local_row's own `% tileH` wrap then
-        // reproduces, within THAT half alone, the same 2-row scroll-
-        // lookahead duplication an ordinary single-row board already relies
-        // on (rows 30/31 restating rows 0/1) -- this is also, by
-        // construction, byte-for-byte the original single-row formula
-        // whenever geo.gridH == 1 (activeRows == 32, so nt_row is always 0).
-        const int nt_row    = row >> 5;
-        const int row_in_sb = row & 31;
-        const int local_row = row_in_sb % geo.tileH;
+    // DS BG row R maps to PLANE row R, straight through. That is the whole
+    // change from the old scheme, which derived the nametable row from
+    // `row >> 5` -- treating each 32-row screenblock-half as a separate
+    // nametable. That was exactly right while a plane was the NES's 30 rows
+    // (one plane per screenblock-half, near enough), and is wrong now a plane
+    // is 48 rows (video.hpp's TARGET_NDS branch): plane rows 32..47 -- which
+    // is where a *_ds.uis UI lives -- had NO representation in the map at all,
+    // because local_row never exceeded 31. Physical screenblock placement is
+    // still fixed at 32-row boundaries (hardware), but that is now purely an
+    // ADDRESSING detail handled by `sb`/`idx` below, not a content decision.
+    const int planeRows = geo.tileH;
+
+    for (int row = 0; row < MAP_ROWS; row++) {
+        // A row no scanline displayed needs no resolve at all: its map entries
+        // are never fetched, and skipping it is what keeps this to roughly the
+        // visible cell count rather than the full 64x64 map.
+        if (!g_row_used[row]) continue;
+
+        // Which plane row, and which nametable row that plane row belongs to.
+        // Rows past the first plane (48..63 for a 48-row plane) continue into
+        // the grid's NEXT nametable row, and `% gridH` wraps them back onto
+        // the first plane for a board that has only one row of nametables --
+        // reproducing the vertical wrap such a board already relies on.
+        const int nt_row    = (row / planeRows) % geo.gridH;
+        const int local_row = row % planeRows;
         const int row32     = local_row * geo.tileW;
         const int at_roff   = (local_row >> 2) * geo.atW;
         const int at_rbits  = ((local_row >> 1) & 1) * 4;
@@ -225,11 +474,29 @@ void build_map() {
             const u8  attr    = ppu::ReadNametable(static_cast<u16>(nt_off + geo.ntBytes + at_roff + (local_col >> 2)));
             const int pal     = (attr >> (((local_col >> 1) & 1) * 2 + at_rbits)) & 3;
 
-            const u16 entry = static_cast<u16>((atlas0 + tile_id) | (pal << 12));
-            // Four screenblocks in the standard 2x2 text-BG arrangement: 0/1
-            // top row (nt_row 0), 2/3 bottom row (nt_row 1).
-            const int sb  = (col >> 5) + nt_row * 2;
-            const int idx = sb * 1024 + row_in_sb * 32 + local_col;
+            // The CHR address this tile's 16 bytes live at, then the slot
+            // holding it under the bank state(s) that display THIS row. The
+            // fast path is one resolve for the whole tile; the slow path, taken
+            // only by a tile row a bank switch lands inside, resolves each
+            // pixel row separately and the cache synthesises the composite.
+            const unsigned vma = static_cast<unsigned>(chr_space + tile_id * 16);
+            int slot;
+            if (g_row_uniform[row]) {
+                slot = intern_uniform(lma_of(g_band[g_rowband[row][0]], vma));
+            } else {
+                u32 key[8];
+                for (int f = 0; f < 8; f++)
+                    key[f] = lma_of(g_band[g_rowband[row][f]], vma);
+                slot = intern_rows(key);
+            }
+
+            const u16 entry = static_cast<u16>(slot | (pal << 12));
+            // Four screenblocks in the standard 2x2 text-BG arrangement:
+            // 0/1 the top 32 physical rows, 2/3 the bottom 32. Keyed off the
+            // PHYSICAL row (row >> 5), not the nametable row -- see the
+            // planeRows comment above.
+            const int sb  = (col >> 5) + ((row >> 5) * 2);
+            const int idx = sb * 1024 + (row & 31) * 32 + local_col;
             g_map_shadow[idx] = entry;
         }
     }
@@ -242,7 +509,9 @@ void build_sprites() {
     const oam::sprite_t* oam = emu::OamShadow();
     const bool tall   = ppu::PPUCTRL & ppu::ctrl::SPRITE_SIZE;
     const int  height = tall ? 16 : 8;
-    const int  atlas0 = (ppu::PPUCTRL & ppu::ctrl::SPRITE_ADDR) ? 256 : 0;
+    // CHR-space address of the sprite pattern table, for the same reason
+    // build_map uses one: tile ids are resolved through the bank state now.
+    const unsigned spr_space = (ppu::PPUCTRL & ppu::ctrl::SPRITE_ADDR) ? 0x1000u : 0x0000u;
 
     // Sprites carry raw NES screen-space Y -- physics always runs on the full
     // 240-line frame regardless of the shorter DS panel -- so every OBJ must be
@@ -262,10 +531,14 @@ void build_sprites() {
     for (int s = 0; s < OAM_SPRITES; s++) {
         const oam::sprite_t& o = oam[s];
         const int sx = static_cast<int>(o.x);
+        // Viewport-space Y: one coordinate space spanning both panels.
         const int sy = static_cast<int>(o.y) + 1 - voff;
 
-        if (sx <= -8 || sx >= 256 || sy <= -height || sy >= SCREEN_H) {
-            oamClearSprite(&oamMain, s);
+        if (sx <= -8 || sx >= 256) {
+            for (int half = 0; half < 2; half++) {
+                oamClearSprite(&oamMain, s * 2 + half);
+                oamClearSprite(&oamSub,  s * 2 + half);
+            }
             continue;
         }
 
@@ -273,16 +546,50 @@ void build_sprites() {
         const bool behind = (o.attributes & 0x20) != 0;
         const bool hflip  = (o.attributes & 0x40) != 0;
         const bool vflip  = (o.attributes & 0x80) != 0;
-        // 8x16: tile bit 0 selects the pattern table (overriding SPRITE_ADDR/atlas0);
-        // libnds reads tile N then N+1 for a 1D-mapped 8x16 OBJ, matching the NES's
-        // (tile & 0xFE)/(tile & 0xFE)+1 pair, so no extra per-row work is needed.
-        const int  ti     = tall ? ((o.tile & 1) * 256 + (o.tile & 0xFE)) : (atlas0 + o.tile);
+        // A tall sprite becomes TWO 8x8 OBJs rather than one 8x16. The pool is
+        // content-addressed, so the two halves are not adjacent slots and a
+        // 1D-mapped 8x16 OBJ -- which reads slot N then N+1 -- cannot express
+        // it. 64 NES sprites x 2 is exactly the 128 OBJ entries an engine has,
+        // and using indices s*2 / s*2+1 keeps NES OAM priority order intact.
+        const int halves = tall ? 2 : 1;
+        for (int half = 0; half < halves; half++) {
+            // The CHR address of this half's 16 bytes. 8x16 takes tile bit 0 as
+            // the pattern-table select (overriding SPRITE_ADDR) and pairs
+            // (tile & 0xFE) with its successor; a vertical flip swaps which
+            // half is on top.
+            const int vhalf = vflip ? (halves - 1 - half) : half;
+            const unsigned vma = tall
+                ? static_cast<unsigned>(((o.tile & 1) * 0x1000) + ((o.tile & 0xFE) + vhalf) * 16)
+                : static_cast<unsigned>(spr_space + o.tile * 16);
 
-        oamSet(&oamMain, s, sx, sy,
-               behind ? PRIO_SPR_BEHIND : PRIO_SPR_FRONT,
-               pal, tall ? SpriteSize_8x16 : SpriteSize_8x8, SpriteColorFormat_16Color,
-               oamGetGfxPtr(&oamMain, ti),
-               -1, false, false, hflip, vflip, false);
+            // Resolved under the bank state at the scanline this half is drawn
+            // on -- so a mid-frame re-bank of a SPRITE window is reproduced,
+            // which the old whole-frame atlas could not do.
+            const int ssy  = sy + half * 8;
+            const int line = (ssy >= 0 && ssy < VPH) ? ssy : (ssy < 0 ? 0 : VPH - 1);
+            const u16 bi   = s_band_of[line] == 0xFFFF ? 0 : s_band_of[line];
+            const int slot = intern_uniform(lma_of(g_band[bi], vma));
+
+            // Each engine has its OWN OAM, and a sprite is only visible to the
+            // engine whose panel it falls on -- so submit to both, each with
+            // the Y its panel uses. One straddling the boundary goes to both
+            // and is clipped by each engine independently, which is what makes
+            // it continuous across the seam (bezel aside).
+            OamState* const oams[PANELS] = {&oamMain, &oamSub};
+            const int oi = s * 2 + half;
+            for (int panel = 0; panel < PANELS; panel++) {
+                const int py = ssy - static_cast<int>(video::panel_rect(static_cast<u8>(panel)).y);
+                if (py <= -8 || py >= SCREEN_H) {
+                    oamClearSprite(oams[panel], oi);
+                    continue;
+                }
+                oamSet(oams[panel], oi, sx, py,
+                       behind ? PRIO_SPR_BEHIND : PRIO_SPR_FRONT,
+                       pal, SpriteSize_8x8, SpriteColorFormat_16Color,
+                       oamGetGfxPtr(oams[panel], slot),
+                       -1, false, false, hflip, vflip, false);
+            }
+        }
     }
 }
 
@@ -304,19 +611,55 @@ void build_sprites() {
 // s_sprite_voff keeps the UNWRAPPED band scroll: build_sprites' window offset
 // is the frame's scroll, not a per-line wrapped position.
 void band_emit(int y0, int y1, u16 xs, u16 ys) {
-    const int worldH = emu::ComputeNtGeometry().worldH;
+    const emu::NtGeometry geo = emu::ComputeNtGeometry();
+    const int worldH = geo.worldH;
+    const int vph    = video::viewport_py();
     const int a = y0 < 0 ? 0 : y0;
-    const int b = y1 > SCREEN_H ? SCREEN_H : y1;
+    const int b = y1 > vph ? vph : y1;
 
     if (a <= SCREEN_H - 1 && b > SCREEN_H - 1)
         s_sprite_voff = static_cast<u16>(static_cast<int>(ys) - y0);
 
+    // The bank state is live right now, at this band's own position in the
+    // raster timeline (GenerateBands has already run every handler up to y0),
+    // so this is where a mid-frame CHR switch is captured -- at whatever
+    // scanline the game put it. Record the window bases rather than resolving
+    // tiles here: the tilemap is not built until the whole timeline has been
+    // walked, so every band's state is available when each row is resolved.
+    const int bi = g_bands < MAX_BANDS ? g_bands++ : MAX_BANDS - 1;
+    Band& band = g_band[bi];
+    band.xs = xs;
+    band.ys = ys;
+    band.y0 = static_cast<u16>(y0);
+    for (int w = 0; w < CHR_WINDOWS; w++)
+        band.base[w] = ppu::ResolveTile(static_cast<u16>(w * 0x400));
+
     for (int sy = a; sy < b; sy++) {
-        const int w    = (static_cast<int>(ys) + (sy - y0)) % worldH;
-        // Each 240-row nametable row starts on a 256-row screenblock boundary.
-        const int phys = (w / 240) * 256 + (w % 240);
-        sh_h[sy] = xs;
-        sh_v[sy] = static_cast<u16>((phys - sy) & 0x1FF);
+        // Which panel shows this viewport row, and that row's line WITHIN it.
+        // Both panels scan line `line` at the same VCOUNT (see sh_h/sh_v's own
+        // comment), so this is an index into that panel's own table, not a
+        // position in one long raster.
+        const int panel = sy / SCREEN_H;
+        const int line  = sy % SCREEN_H;
+        if (panel >= PANELS) continue;
+
+        const int w = (static_cast<int>(ys) + (sy - y0)) % worldH;
+        // BG row == world row: build_map lays plane row R at BG row R, so no
+        // screenblock translation is needed here any more. The old
+        // `(w / 240) * 256 + (w % 240)` hardcoded a 240px plane and a 256px
+        // screenblock stride, which pushed every world row at or past 240 --
+        // the whole lower-panel UI band -- to a BG row past the map's end.
+        //
+        // A DS text BG is at most 512px tall, so of the grid's full worldH
+        // (768px for a 2x2 grid of 48-row planes) only the first 512px can be
+        // resident at once; `& 0x1FF` is that limit, and it is also exactly
+        // the 512px wrap the hardware applies to BG0VOFS.
+        const int phys = w & 0x1FF;
+        sh_h[panel][line] = xs;
+        sh_v[panel][line] = static_cast<u16>((phys - line) & 0x1FF);
+        // Provenance for build_row_sources: which band, and which world row.
+        s_band_of[sy] = static_cast<u16>(bi);
+        s_worldy[sy]  = static_cast<u16>(w);
     }
 }
 
@@ -327,8 +670,16 @@ void band_noop(int, int, u16, u16) {}
 void hblank_scroll() {
     const unsigned next = REG_VCOUNT + 1u;
     if (next < static_cast<unsigned>(SCREEN_H)) {
-        REG_BG0HOFS = g_h[next];
-        REG_BG0VOFS = g_v[next];
+        // One VCOUNT, both panels -- they are scanned in lockstep, so the sub
+        // engine's registers are programmed from the same line index out of
+        // its own table (sh_h/sh_v's comment).
+        // Scroll only. The tile base is fixed now: a bank switch changes which
+        // POOL SLOTS the map entries name, not which VRAM region the BG reads,
+        // so there is nothing per-scanline left to program here.
+        REG_BG0HOFS     = g_h[0][next];
+        REG_BG0VOFS     = g_v[0][next];
+        REG_BG0HOFS_SUB = g_h[1][next];
+        REG_BG0VOFS_SUB = g_v[1][next];
     }
 }
 
@@ -345,51 +696,93 @@ void WaitForPresent() {
     // to the VBlank window below, alongside every other VRAM commit this
     // backend makes). Gated on the generation counter so an unbanked (NROM)
     // game never pays this cost past the one build already done in init().
-    const bool chr_dirty = g_chr_built_gen != ppu::chrGeneration;
-    if (chr_dirty) build_chr_atlas();
+    // Per-frame reset. The tile pool itself persists -- that is what makes a
+    // stable screen cost nothing -- but the frame counter (the eviction guard),
+    // the band list and the dirty range are per-frame.
+    g_frame++;
+    // Between frames is the only safe point to drop tombstones (see rehash).
+    if (g_tombs > HASH_SIZE / 4) rehash();
+    g_bands = 0;
+    g_dirty_lo = -1;
+    g_dirty_hi = -1;
+    for (int i = 0; i < VPH; i++) s_band_of[i] = 0xFFFF;
 
-    // Default the scroll table so disabled / empty scanlines are well-defined.
-    for (int i = 0; i < SCREEN_H; i++) { sh_h[i] = 0; sh_v[i] = 0; }
+    // Default the scroll tables so disabled / empty scanlines are well-defined.
+    for (int p = 0; p < PANELS; p++)
+        for (int i = 0; i < SCREEN_H; i++) { sh_h[p][i] = 0; sh_v[p][i] = 0; }
     s_sprite_voff = 0;
 
-    if (bg) build_map();
-
-    // Walk the IRQ timeline (fires the game's scanline logic, incl. the sprite-0
-    // split) and record each band's scroll. Done even when BG is off so the
-    // handlers still run -- exactly like the GX/3DS backends.
+    // Walk the IRQ timeline (fires the game's scanline logic, incl. the
+    // sprite-0 split) and record each band's scroll AND its CHR window bases.
+    // Done even when BG is off so the handlers still run -- exactly like the
+    // GX/3DS backends.
     emu::GenerateBands(bg ? band_emit : band_noop, true);
 
+    // The tilemap is built AFTER the walk, not before: resolving a cell needs
+    // the bank state of the scanlines that display it, and those are only all
+    // known once every handler has run. build_row_sources turns the
+    // per-scanline provenance band_emit recorded into a per-row answer.
+    if (bg) {
+        build_row_sources();
+        build_map();
+    }
+
+    // Sprites: OBJ has no per-scanline tile base, so one slot has to serve the
+    // whole frame's sprites. The frame's first band is used -- the state the
+    // game set up before rendering began. A mid-frame re-bank of a SPRITE
+    // window is therefore not reproduced (a re-bank of BG windows is, which is
+    // the case that matters and the one games actually use); see the OBJ upload
+    // in the VBlank block below.
     if (spr) build_sprites();
-    else for (int s = 0; s < OAM_SPRITES; s++) oamClearSprite(&oamMain, s);
+    else for (int s = 0; s < OAM_SPRITES * 2; s++) {
+        oamClearSprite(&oamMain, s);
+        oamClearSprite(&oamSub, s);
+    }
 
     // Pace to the hardware frame, then commit all VRAM writes during VBlank.
     swiWaitForVBlank();
 
-    if (chr_dirty) {
-        DC_FlushRange(g_chr4, sizeof g_chr4);
-        dmaCopy(g_chr4, bgGetGfxPtr(g_bg),         sizeof g_chr4);
-        dmaCopy(g_chr4, oamGetGfxPtr(&oamMain, 0), sizeof g_chr4);
-        g_chr_built_gen = ppu::chrGeneration;
+    // Only the slot range rebuilt this frame is uploaded. The rolling
+    // allocation cursor keeps misses contiguous, so a scrolling screen moves a
+    // few hundred bytes rather than a whole atlas; a stable screen moves
+    // nothing. Both engines and both OBJ regions get the same pool, so any
+    // scanline of either panel can reference any tile.
+    if (g_dirty_lo >= 0) {
+        const int off = g_dirty_lo * DS_TILE_SZ;
+        const int len = (g_dirty_hi - g_dirty_lo + 1) * DS_TILE_SZ;
+        DC_FlushRange(g_tiles + off, len);
+        dmaCopy(g_tiles + off, (u8*)bgGetGfxPtr(g_bg)         + off, len);
+        dmaCopy(g_tiles + off, (u8*)bgGetGfxPtr(g_bg_sub)     + off, len);
+        dmaCopy(g_tiles + off, (u8*)oamGetGfxPtr(&oamMain, 0) + off, len);
+        dmaCopy(g_tiles + off, (u8*)oamGetGfxPtr(&oamSub, 0)  + off, len);
     }
 
     build_palettes();
 
     if (bg) {
         DC_FlushRange(g_map_shadow, sizeof g_map_shadow);
-        dmaCopy(g_map_shadow, bgGetMapPtr(g_bg), sizeof g_map_shadow);
+        // Same map to both engines -- both look at the same plane; only the
+        // scroll differs, so there is nothing panel-specific to build twice.
+        dmaCopy(g_map_shadow, bgGetMapPtr(g_bg),     sizeof g_map_shadow);
+        dmaCopy(g_map_shadow, bgGetMapPtr(g_bg_sub), sizeof g_map_shadow);
         bgShow(g_bg);
+        bgShow(g_bg_sub);
     } else {
         bgHide(g_bg);
+        bgHide(g_bg_sub);
     }
 
     // Publish the freshly built scroll table to the ISR, then seed line 0 (the
     // HBlank ISR only fills lines 1..191).
-    memcpy(const_cast<u16*>(g_h), sh_h, sizeof sh_h);
-    memcpy(const_cast<u16*>(g_v), sh_v, sizeof sh_v);
-    REG_BG0HOFS = g_h[0];
-    REG_BG0VOFS = g_v[0];
+    memcpy(const_cast<u16*>(&g_h[0][0]), sh_h, sizeof sh_h);
+    memcpy(const_cast<u16*>(&g_v[0][0]), sh_v, sizeof sh_v);
+    REG_BG0HOFS     = g_h[0][0];
+    REG_BG0VOFS     = g_v[0][0];
+    REG_BG0HOFS_SUB = g_h[1][0];
+    REG_BG0VOFS_SUB = g_v[1][0];
 
     oamUpdate(&oamMain);
+    oamUpdate(&oamSub);
 
     // No IRQs permitted post-frame; discard anything still queued from this
     // frame's render before NMI enqueues for the next one (matches OGC/3DS).
@@ -409,35 +802,54 @@ void irq::init() {
     vramSetBankB(VRAM_B_MAIN_SPRITE);   // 128 KB: OBJ tiles
 
     // Text BG so the NES nametable(s) fit and X scroll wraps at the 512px
-    // world width; map at base 0, tiles at base 1 (16 KB). Size follows the
-    // linked board's own ::ppu::nametableCount (video.hpp): 512x256 (two
-    // horizontal NES nametables, one row) for an ordinary (2-nametable)
-    // board, 512x512 (four screenblocks, a four-screen board's second
-    // stacked row) otherwise -- see build_map's own comment for how
-    // activeRows keeps an ordinary board's per-frame cost identical to
-    // before this was possible at all.
-    g_bg = bgInit(0, BgType_Text4bpp,
-        ppu::nametableCount > 2 ? BgSize_T_512x512 : BgSize_T_512x256, 0, 1);
+    // world width; map at base 0 (8 KB, four screenblocks), tiles at base 1
+    // (16 KB), so the two don't overlap.
+    // Always 512x512 (all four screenblocks) now: a plane is 48 tile-rows
+    // (384px), which does NOT fit the 256px of a 512x256 layout, so the old
+    // nametableCount-dependent choice would have left plane rows 32..47 -- the
+    // lower-panel UI band -- with nowhere to live. 512x512 is also the DS text
+    // BG's maximum, which is why only the first 512px of the grid's 768px
+    // world can be resident (see band_emit).
+    g_bg = bgInit(0, BgType_Text4bpp, BgSize_T_512x512, MAP_BASE, TILE_BASE);
     bgSetPriority(g_bg, PRIO_BG);
 
     oamInit(&oamMain, SpriteMapping_1D_32, false);
 
+    // Sub engine == the bottom panel. The viewport spans both panels
+    // (video.hpp's TARGET_NDS branch), so this is no longer optional: without
+    // it the lower half of the viewport is simply never displayed. It mirrors
+    // the main engine exactly -- same BG layout, same map, same CHR, its own
+    // palette RAM and its own OAM -- and differs only in the scroll the HBlank
+    // ISR programs into it, which is what makes it show the viewport rows
+    // below the top panel's.
+    videoSetModeSub(MODE_0_2D | DISPLAY_BG0_ACTIVE | DISPLAY_SPR_ACTIVE | DISPLAY_SPR_1D);
+    vramSetBankC(VRAM_C_SUB_BG);        // 128 KB: sub BG map + tiles
+    vramSetBankD(VRAM_D_SUB_SPRITE);    // 128 KB: sub OBJ tiles
+    g_bg_sub = bgInitSub(0, BgType_Text4bpp, BgSize_T_512x512, MAP_BASE, TILE_BASE);
+    bgSetPriority(g_bg_sub, PRIO_BG);
+    oamInit(&oamSub, SpriteMapping_1D_32, false);
+
     // Expand the CHR ROM to 4bpp and upload it to both BG and OBJ tile VRAM.
     // With 1D_32 OBJ mapping an 8x8 16-colour tile is exactly one 32-byte
     // slot, so the BG tile layout and the OBJ tile layout are identical and
-    // one staged buffer feeds both. build_chr_atlas resolves through the
-    // mapper's tile translator, so this also picks up NROM's default
-    // (unbanked) CHR. The display isn't running yet, so (unlike the
-    // per-frame path) the VRAM upload can happen immediately.
-    build_chr_atlas();
-    DC_FlushRange(g_chr4, sizeof g_chr4);
-    dmaCopy(g_chr4, bgGetGfxPtr(g_bg),            sizeof g_chr4);
-    dmaCopy(g_chr4, oamGetGfxPtr(&oamMain, 0),    sizeof g_chr4);
-    g_chr_built_gen = ppu::chrGeneration;
+    // one pool feeds both. Tiles are resolved through the mapper's translator
+    // per cell at build time (build_map), so this also picks up NROM's default
+    // (unbanked) CHR. The display isn't running yet, so (unlike the per-frame
+    // path) the VRAM clear can happen immediately.
+    // Nothing to preload: the tile pool is populated on demand, per cell, from
+    // the first frame on. Clear it so a slot the game never references reads as
+    // transparent rather than as stale VRAM.
+    for (u32 i = 0; i < HASH_SIZE; i++) g_hash[i] = HASH_EMPTY;
+    __builtin_memset(g_tiles, 0, sizeof g_tiles);
+    DC_FlushRange(g_tiles, sizeof g_tiles);
+    dmaCopy(g_tiles, bgGetGfxPtr(g_bg),         sizeof g_tiles);
+    dmaCopy(g_tiles, bgGetGfxPtr(g_bg_sub),     sizeof g_tiles);
+    dmaCopy(g_tiles, oamGetGfxPtr(&oamMain, 0), sizeof g_tiles);
+    dmaCopy(g_tiles, oamGetGfxPtr(&oamSub, 0),  sizeof g_tiles);
 
-    // video::vram_bytes() (video.hpp): the DS's 32x24 viewport is at or under
-    // the NES's native 32x30, so this resolves to the NES-hardware minimum
-    // (2 pages/0x800 bytes), like the NES hardware itself.
+    // video::vram_bytes() (video.hpp): the DS's viewport is 32x48 -- both panels
+    // stacked -- so a plane is 1632 bytes, above the NES's own 0x400, and this
+    // resolves to gridW*gridH of those rather than the NES-hardware minimum.
     emu::InitMemory(video::vram_bytes());
 
     // The per-scanline raster mechanism: an HBlank ISR programs the scroll for

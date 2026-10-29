@@ -1,6 +1,10 @@
 #include <pnes/mappers/mmc3.hpp>
 #include <pnes/video.hpp>
 
+// Every Register<Index>::poke_only writes this; mmc3::select_latch_scope is
+// the only reader. See its declaration in mmc3.hpp for what it is for.
+atomic u8 mmc3::selectLatch;
+
 mmc3::Register<6> mmc3::window1Control;
 mmc3::Register<7> mmc3::window2Control;
 

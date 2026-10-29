@@ -167,6 +167,7 @@ namespace level {
                 for (auto & j : AttributeBuffer)
                     j &= mask;
                 AttributeBuffer[0] |= 0x0F;   // HUD rows 0-1 share attr_idx 0's top quadrant with level rows 2-3; pin it to palette 3
+                AttributeBuffer[7] |= 0xF0;   // mirror of the above at the other end: the 8-byte attribute write spans tile rows 0-31, but the level is only rows 0-29, so attr_idx 7's BOTTOM quadrant (rows 30-31) is UI band -- pin it to palette 3 too
             }
             m = GetNextMetaTile();
             MetatileBuffer[step >> 1] = m;
@@ -196,6 +197,7 @@ namespace level {
                 for (auto & j : AttributeBuffer)
                     j &= mask;
                 AttributeBuffer[0] |= 0x0F;   // HUD rows 0-1 share attr_idx 0's top quadrant with level rows 2-3; pin it to palette 3
+                AttributeBuffer[7] |= 0xF0;   // mirror of the above at the other end: the 8-byte attribute write spans tile rows 0-31, but the level is only rows 0-29, so attr_idx 7's BOTTOM quadrant (rows 30-31) is UI band -- pin it to palette 3 too
             }
             m = GetPrevMetaTile();
             MetatileBuffer[step >> 1] = m;
@@ -240,6 +242,7 @@ namespace level {
         const u8 mask = attr_column & 1 ? 0x33 : 0x00;
         for (auto & j : AttributeBuffer) j &= mask;
         AttributeBuffer[0] |= 0x0F;   // HUD rows 0-1 share attr_idx 0's top quadrant with level rows 2-3; pin it to palette 3
+        AttributeBuffer[7] |= 0xF0;   // mirror of the above at the other end: the 8-byte attribute write spans tile rows 0-31, but the level is only rows 0-29, so attr_idx 7's BOTTOM quadrant (rows 30-31) is UI band -- pin it to palette 3 too
 
         const u8* col = ColMapColumn(worldCol);
         if (!col) return;                            // out of window (never in steady scroll)
@@ -284,6 +287,7 @@ namespace level {
         const u8 mask = ap ? 0xCC : 0x00;
         for (auto & j : AttributeBuffer) j &= mask;
         AttributeBuffer[0] |= 0x0F;   // HUD rows 0-1 share attr_idx 0's top quadrant with level rows 2-3; pin it to palette 3
+        AttributeBuffer[7] |= 0xF0;   // mirror of the above at the other end: the 8-byte attribute write spans tile rows 0-31, but the level is only rows 0-29, so attr_idx 7's BOTTOM quadrant (rows 30-31) is UI band -- pin it to palette 3 too
 
         const u8* col = ColMapColumn(worldCol);
         if (!col) return;                            // out of window (never in steady scroll)

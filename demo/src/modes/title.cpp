@@ -124,16 +124,99 @@ namespace title {
     // rows 1-4) is sized for.
     constexpr u8 kMenuBandRows = 6;
 
+    // True on a target whose viewport spans two stacked panels (DS/DSi/3DS --
+    // video::panel_count(), video.hpp). There the whole UI is authored straight
+    // into nametable 0's lower-panel rows by demo/ui/<scene>_ds.uis, so it is
+    // permanently on the bottom screen. That removes the two mechanisms the
+    // single-screen layout needs and nothing else:
+    //
+    //   - the raster split. On one screen the menu lives in a DIFFERENT
+    //     nametable and the preview is scrolled so the split line swaps to it
+    //     mid-frame (::ApplySplit). With the UI already on its own panel in
+    //     nametable 0 there is nothing to swap to: scroll stays {0,0} and the
+    //     top panel shows the preview while the bottom shows the UI.
+    //   - the palette fade. It exists to cover that same single-screen
+    //     transition -- the preview going dark as the options menu takes the
+    //     screen. The UI never takes the screen here, so there is nothing to
+    //     fade out from under.
+    //
+    // Everything else (the selector, the menu swap, the lock state machine)
+    // is shared verbatim, so this stays a bypass of two mechanisms rather than
+    // a second copy of the title screen.
+    constexpr bool kUiOnOwnPanel = video::panel_count() > 1;
+
+    // ...but the split is not gone, only repurposed. The top panel draws the
+    // level preview's CHR bank and the bottom panel the UI's, and MMC3 maps
+    // both into the SAME 512-tile window -- so the bank still has to change
+    // between them, and the only place to do that is a scanline IRQ at the
+    // panel boundary. ::ApplySplit then switches the bank and nothing else:
+    // each panel's scroll already comes from its own band (the backend keeps a
+    // per-panel scroll table), so a mid-frame ppu::SetScroll would fight it.
+    //
+    // Gated to the DS for now rather than every dual-screen target: honouring a
+    // mid-frame bank change needs the backend to support it. src/nds/video.cpp
+    // does, without restriction -- it mirrors TILES rather than banks, keying a
+    // 1024-entry pool on each tile's resolved CHR address, so a switch of any
+    // kind at any scanline (including partway down a tile row, which it
+    // synthesises a composite tile for) is reproduced. The 3DS backend still
+    // bakes a single atlas set per frame and does not draw its bottom panel at
+    // all, so arming there would switch a bank its bake had already consumed --
+    // thrashing eight palette atlases every frame for nothing visible. It joins
+    // this when its panel-1 rendering lands.
+#if defined(TARGET_NDS)
+    constexpr bool kUiBankSplit = kUiOnOwnPanel;
+#else
+    constexpr bool kUiBankSplit = false;
+#endif
+
     static u8 SplitRow() {
         // A cropping target's panel (DS/DSi 24 rows, GBA 20) is shorter than
         // the NES's 30, but the menu still needs the same 6 rows -- scaling
         // the split with the panel height instead gave the DS an 8-row band,
         // i.e. ~4 empty rows under the UI.
-        if (video::viewport_ty() < 30) return static_cast<u8>(video::viewport_ty() - kMenuBandRows);
+        //
+        // This asks ::video::panel_ty(0) -- the PRIMARY PANEL's height -- not
+        // viewport_ty(). On the dual-screen handhelds the viewport is now the
+        // union of both panels (DS 48 rows, 3DS 60; see their viewport_ty() doc
+        // comments, video.hpp), and this menu is a single-screen UI: it has to
+        // land on the top panel, so it is the top panel's 24/30 rows that decide
+        // the split, exactly as the DS's old 24-row viewport used to.
+        if (video::panel_ty(0) < 30) return static_cast<u8>(video::panel_ty(0) - kMenuBandRows);
         return (((viewport_my() + 1) >> 1) - 2) << 2;
     }
 
     static u16 PreviewScrollYForPixels(const u16 splitPixelRow) {
+        // Bottom-anchor the level plane against the TOP panel. The preview is
+        // the NES-native 30 rows/240px (2 HUD rows + PopulateNameTableColumns'
+        // 28 from row 2, levels.cpp), which is TALLER than the DS's 192px top
+        // panel -- so the top of it is deliberately cropped and the scroll is
+        // whatever puts the plane's last row on the panel's last row:
+        //
+        //     scroll = 240 - panel 0 height    (DS 48px/6 rows, 3DS 0)
+        //
+        // NOT 0. Scrolling to 0 tried to fit the whole 240px plane on a 192px
+        // panel and dropped the bottom 48px of the level off the screen, which
+        // is the wrong half to lose. 3DS's top panel is already 240px, so it
+        // lands on 0 by arithmetic rather than by special case.
+        //
+        // The scroll is why a *_ds.uis UI anchors its rows at plane row 30 and
+        // not at panel 1's own first row: with the plane bottom-anchored, row
+        // 30 -- the first row below the level data -- is the first row the
+        // LOWER panel shows, on both consoles.
+        if constexpr (kUiOnOwnPanel) {
+            (void)splitPixelRow;
+            return static_cast<u16>(240 - video::panel_rect(0).h);
+        }
+        // NOT a panel height: this is the NAMETABLE PLANE height, the modulus
+        // the preview's Y scroll wraps against. It must stay byte-identical to
+        // ::emu::ComputeNtGeometry's own tileH floor (`viewport_ty() < 30 ? 30
+        // : viewport_ty()`, src/emu/emu.hpp) and to the quadrant offset uitk
+        // bakes into the generated scene code (emitExprCpp, tools/uitk/main.cpp)
+        // -- the menu lives in nametable quadrant 1, so if this disagrees with
+        // where that quadrant actually starts, the scroll lands the preview on
+        // the wrong rows. `viewport_py() < 240 ? 240 : viewport_py()` IS that
+        // floor expressed in pixels, since viewport_py() == viewport_ty() << 3,
+        // so it tracks the dual-screen heights (DS 384, 3DS 480) for free.
         const u16 ntHeight = video::viewport_py() < 240 ? 240 : video::viewport_py();
         return ntHeight - splitPixelRow;
     }
@@ -155,9 +238,21 @@ namespace title {
     // ::nmi_handler_lockAnim can re-arm against its own shrinking split row
     // instead of the title menu's fixed ::SplitRow().
     static void ArmSplitIRQForPixels(const u16 splitPixelRow) {
-        const u8 splitReload = splitPixelRow > kSplitLatency
-            ? static_cast<u8>(splitPixelRow - kSplitLatency) : 0;
-        mmc3::ScheduleScanlineIRQ(splitReload, {0, splitPixelRow});
+        // Where the split goes depends on what it is FOR:
+        //  - ::kUiBankSplit: the panel boundary, always. Its only job is the
+        //    CHR bank change between the two panels, so the caller's own
+        //    menu-band geometry is irrelevant.
+        //  - ::kUiOnOwnPanel without it: nothing to do, so never armed.
+        //  - otherwise: the caller's row, the original single-screen split.
+        if constexpr (kUiOnOwnPanel && !kUiBankSplit) {
+            (void)splitPixelRow;
+            return;
+        }
+        const u16 row = kUiBankSplit ? static_cast<u16>(video::panel_rect(0).h)
+                                     : splitPixelRow;
+        const u8 splitReload = row > kSplitLatency
+            ? static_cast<u8>(row - kSplitLatency) : 0;
+        mmc3::ScheduleScanlineIRQ(splitReload, {0, row});
     }
 
     static void ArmSplitIRQFor(const u8 splitRow) {
@@ -167,13 +262,46 @@ namespace title {
     // Same row->absolute-Y math ::ApplySplit uses, parametrized for the same
     // reason as ::ArmSplitIRQFor above.
     static u16 SplitYForPixels(const u16 splitPixelRow) {
-        return video::viewport_ty() < 30
+        return video::panel_ty(0) < 30
             ? static_cast<u16>(PreviewScrollYForPixels(splitPixelRow) + splitPixelRow)
             : splitPixelRow;
     }
 
     static u16 SplitYFor(const u8 splitRow) {
         return SplitYForPixels(static_cast<u16>(splitRow) << 3);
+    }
+
+    // Draws the options panel's own content. Called once at startup and, on a
+    // dual-screen target, again on every entry into options mode: there the
+    // panel and the title menu are ALTERNATIVE content for the same
+    // bottom-panel rows (options_ds.uis and title_ds.uis both anchor at plane
+    // row 30), exactly as the title and gameOptions menus already are. On one
+    // screen the panel lived in its own nametable and the title menu could
+    // never overwrite it, so drawing it once was enough.
+    static void DrawOptionsPanel() {
+        gen::options::Draw_optionsTitle();
+        gen::options::Draw_videoOptions();
+        gen::options::Draw_reduceFlashesText();
+        gen::options::Draw_superMarySistersText();
+        gen::options::Draw_reduceFlashesButton();
+    }
+
+    // Blanks the WHOLE bottom-panel UI band -- plane row 30 (where every
+    // *_ds.uis scene anchors) to the end of the plane. Dual-screen only.
+    //
+    // The band holds exactly one page at a time: the title UI, or the options
+    // page, never both. Whichever is coming in clears the band and draws
+    // itself, so neither has to know what the other occupied. That is also why
+    // the options page is not drawn at startup on these targets at all -- it
+    // stays unloaded until OPTIONS is actually picked. It is the only workable
+    // arrangement here: the pages overlap (options_ds spans rows 31-47, the
+    // title UI 31-34) and the generated options scene has no Erase_
+    // counterparts, since none of its nodes set provideErasing.
+    static constexpr u16 kUiBandRow0 = 30;
+    static void ClearUiBand() {
+        for (u16 r = kUiBandRow0; r < video::viewport_ty(); r++)
+            ppu::WriteRepeatedToNameTable({0, r}, blob::ui::hud_whitespace,
+                                          static_cast<u8>(kMenuNT), 0);
     }
 
     static void BankPreviewTiles() {
@@ -219,17 +347,16 @@ namespace title {
 
         BuildPaletteFadePhases();
 
-        gen::options::Draw_optionsTitle();
-        gen::options::Draw_videoOptions();
-        gen::options::Draw_reduceFlashesText();
-        gen::options::Draw_superMarySistersText();
 #if TARGET_VARIADIC_DISPLAY
         // Make_ resolves this button's anchor against the viewport THIS run
         // has -- on NES/GBA/PSP the position is a `constexpr` instead (see
-        // ::TARGET_VARIADIC_DISPLAY), so there's no Make_ to call there.
+        // ::TARGET_VARIADIC_DISPLAY), so there's no Make_ to call there. It
+        // stays here, not in ::DrawOptionsPanel: it resolves anchors and zeroes
+        // running state, which must happen once, not on every mode entry.
         gen::options::Make_reduceFlashesButton();
 #endif
-        gen::options::Draw_reduceFlashesButton();
+        // Dual-screen: left unloaded until OPTIONS is picked (::ClearUiBand).
+        if constexpr (!kUiOnOwnPanel) DrawOptionsPanel();
 #if TARGET_GC
         // TARGET_GC is always inside the OGC (variadic) family, so Make_ is
         // unconditional here -- no fixed-panel build ever sets TARGET_GC.
@@ -422,10 +549,15 @@ namespace title {
         oam::RefreshSprites(OAMBuffer);
         mmc3::AcknowledgeScanlineIRQ();
 
-        bool stillFading = true;
-        if (++fadeFrameCounter >= kFadeStepFrames) {
-            fadeFrameCounter = 0;
-            stillFading = StepPaletteFade();
+        // ::kUiOnOwnPanel: no fade, and the palette is left untouched -- the
+        // state machine advances on this very frame instead.
+        bool stillFading = false;
+        if constexpr (!kUiOnOwnPanel) {
+            stillFading = true;
+            if (++fadeFrameCounter >= kFadeStepFrames) {
+                fadeFrameCounter = 0;
+                stillFading = StepPaletteFade();
+            }
         }
 
         ppu::SetScroll({0, PreviewScrollY()});
@@ -452,6 +584,14 @@ namespace title {
         mmc3::AcknowledgeScanlineIRQ();
         oam::RefreshSprites(OAMBuffer);
 
+        // Swap the band over to the options page: clear whatever the title UI
+        // left, then draw the page -- which has not been in the nametable at
+        // all until now. See ::ClearUiBand.
+        if constexpr (kUiOnOwnPanel) {
+            ClearUiBand();
+            DrawOptionsPanel();
+        }
+
         lockAnimScanline = static_cast<u16>(SplitRow()) << 3;
         ppu::SetScroll({0, PreviewScrollY()});
         BankPreviewTiles();
@@ -463,6 +603,18 @@ namespace title {
         // are done keeps the band below the split on ui tiles for this frame
         // without exposing them.
         ArmSplitIRQ();
+
+        // ::kUiOnOwnPanel: there is no lock ANIMATION to run. It slides the
+        // single-screen split band, and here the UI has its own panel, so
+        // ::PreviewScrollYForPixels is a constant and nothing would move --
+        // every frame of it is a dead frame, which is the delay entering and
+        // leaving options. Skip to the locked state; the scroll/bank/arm this
+        // handler just did is exactly what that state wants.
+        if constexpr (kUiOnOwnPanel) {
+            lockAnimScanline = 0;
+            pNMI = nmi_handler_locked;
+            return;
+        }
 
         pNMI = nmi_handler_lockAnim;
     }
@@ -491,6 +643,22 @@ namespace title {
 
     static void nmi_handler_locked() {
         oam::RefreshSprites(OAMBuffer);
+
+        // ::kUiOnOwnPanel: the options panel is NOT the whole frame here. It
+        // sits on the bottom panel (options_ds.uis anchors it at plane row 30),
+        // and the level preview is still fully visible on the top one -- there
+        // is no fade on this path to black it out. So the raster is still
+        // required: preview bank for the top panel, and the split at the panel
+        // boundary switches to ui for the bottom. Banking ui for the whole
+        // frame -- correct on one screen, where the preview really is black --
+        // is what drew the level area out of the UI bank.
+        if constexpr (kUiOnOwnPanel) {
+            ppu::SetScroll({0, PreviewScrollY()});
+            BankPreviewTiles();
+            ArmSplitIRQ();
+            return;
+        }
+
         ppu::SetScroll({0, PreviewScrollYForPixels(0)});
 
         // The options panel is the entire visible frame here, top to bottom,
@@ -505,8 +673,19 @@ namespace title {
         const u16 target = static_cast<u16>(SplitRow()) << 3;
         const u16 next = static_cast<u16>(lockAnimScanline + kScanlinesPerFrame);
         lockAnimScanline = next < target ? next : target;
+        // ::kUiOnOwnPanel: nothing to unwind, for ::nmi_handler_lockOptions'
+        // reason -- take the completion branch below on the first frame so
+        // leaving options is immediate.
+        if constexpr (kUiOnOwnPanel) lockAnimScanline = target;
 
         if (lockAnimScanline >= target) {
+            // Swap the band back: the options page goes away entirely and the
+            // title UI is redrawn, title text included -- ::ClearUiBand takes
+            // that with it, since it sits inside the band at rows 31-32.
+            if constexpr (kUiOnOwnPanel) {
+                ClearUiBand();
+                gen::title::Draw_GameTitle();
+            }
             gen::title::Draw_TitleOptions();
             QueueSelectorDraw(TitleArrowAddr());
             SelectorUpdate();
@@ -532,10 +711,15 @@ namespace title {
         oam::RefreshSprites(OAMBuffer);
         SelectorUpdate();
 
-        bool stillFading = true;
-        if (++fadeFrameCounter >= kFadeStepFrames) {
-            fadeFrameCounter = 0;
-            stillFading = StepPaletteFadeIn();
+        // ::kUiOnOwnPanel: no fade, and the palette is left untouched -- the
+        // state machine advances on this very frame instead.
+        bool stillFading = false;
+        if constexpr (!kUiOnOwnPanel) {
+            stillFading = true;
+            if (++fadeFrameCounter >= kFadeStepFrames) {
+                fadeFrameCounter = 0;
+                stillFading = StepPaletteFadeIn();
+            }
         }
 
         ppu::SetScroll({0, PreviewScrollY()});
@@ -555,6 +739,13 @@ namespace title {
     }
 
     static void ApplySplit() {
+        if constexpr (kUiBankSplit) {
+            // Bank only -- see ::kUiBankSplit. No scroll write: the backend's
+            // per-panel scroll table already has each panel's own value, and
+            // clobbering it here would move the preview as well.
+            BankMenuTiles();
+            return;
+        }
         ppu::SetScroll({static_cast<u16>(kMenuNT << 3), SplitYFor(SplitRow())});
 
         // After the scroll write, not before: that one is the raster-critical
@@ -611,7 +802,14 @@ namespace title {
     }
 
     static void UpdateMarySpriteYForPixels(const u16 splitPixelRow) {
-        const u16 spriteScroll = video::viewport_ty() < 30 ? 0 : PreviewScrollYForPixels(splitPixelRow);
+        // On a dual-screen target the preview really is scrolled (the
+        // bottom-anchor above), so Mary's sprite has to be offset by it like
+        // any other target's -- pinning this to 0 would float her 48px off the
+        // ground on the DS. The 0 is only for a single-screen CROPPING panel
+        // (GBA), where the preview is not scrolled at all.
+        const u16 spriteScroll = (!kUiOnOwnPanel && video::panel_ty(0) < 30)
+            ? 0
+            : PreviewScrollYForPixels(splitPixelRow);
         const i16 rawFeetY    = static_cast<i16>(maryGroundNtRow) - 16 - static_cast<i16>(spriteScroll);
         const auto feetY      = rawFeetY < 0 ? static_cast<oam::oam_t>(0xf0) : static_cast<oam::oam_t>(rawFeetY);
         OAMBuffer[0].y = feetY; OAMBuffer[1].y = feetY;

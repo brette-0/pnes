@@ -115,7 +115,12 @@ static constexpr u32 nes_rgb[64] = {
 // clean -- no rotated-framebuffer scissor needed. sx/vy0 are the clipped NES
 // top-left, c0/r0 the first visible tile column/row, w/h the visible size.
 struct Cell { u16 tile; i16 sx; i16 vy0; u8 c0; u8 w; u8 r0; u8 h; };
-static constexpr int MAX_CELLS = (video::viewport_tx() + 1) * (video::viewport_ty() + 1);
+// Sized from the PRIMARY PANEL, not the whole viewport: the viewport is now
+// both screens stacked (60 rows/480px, see video.hpp's TARGET_CTR branch) but
+// this backend still presents only the top 400x240 target, and draw_bg_band
+// clips each band to it. Sizing this at the full 61 rows would trade ~90KB of
+// .bss for cells that are never emitted.
+static constexpr int MAX_CELLS = (video::panel_tx(0) + 1) * (video::panel_ty(0) + 1);
 static Cell  bg_bucket[4][MAX_CELLS];
 static int   bg_count[4];
 
@@ -245,7 +250,19 @@ static inline void draw_spr_tile(C3D_Tex *tex, const int tile, const int sx,
 // ::emu::band_emit_fn: draw the nametable for screen rows [y0,y1) at the given
 // scroll. Background colour-0 is transparent so behind-sprites / backdrop show.
 // Mirrors the OGC draw_bg_band tile walk; emits citro2d quads bucketed by palette.
-static void draw_bg_band(const int y0, const int y1, const u16 xs, const u16 ys) {
+static void draw_bg_band(const int y0raw, const int y1raw, const u16 xs, const u16 ys) {
+    // Clip the band to the primary panel. ::emu::GenerateBands now walks the
+    // full two-panel viewport height (60 rows/480px, video.hpp's TARGET_CTR
+    // branch) so the IRQ timeline covers both screens, but only the top target
+    // exists here yet -- bands past row 240 are skipped rather than drawn off
+    // the end of a 240-tall render target. ys is still the band's own world
+    // row, so nothing about the scroll maths shifts.
+    const int panelH = video::panel_rect(0).h;
+    if (y0raw >= panelH) return;
+    const int y0 = y0raw;
+    const int y1 = y1raw > panelH ? panelH : y1raw;
+    if (y1 <= y0) return;
+
     const int vpw      = video::viewport_px();
     // Shared with the SDL/desktop core (::emu::ComputeNtGeometry,
     // src/emu/emu.hpp) so this backend's read side stays byte-for-byte
