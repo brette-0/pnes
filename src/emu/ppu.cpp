@@ -14,6 +14,7 @@
 #include <pnes/video.hpp>
 #include <pnes/interrupts.hpp>
 
+#include <bit>
 #include <cstdlib>
 #include <cstring>
 
@@ -844,9 +845,18 @@ void OAMFromBuffer(sprite_t* oam, const u8 slot, const u16 off,
 void OAMFromProvider(sprite_t* oam, const u8 slot, const u16 off,
                      const u8 width, oam_t (*fn)(u16), const u16 count) {
     u8* base = reinterpret_cast<u8 *>(oam) + static_cast<size_t>(slot) * spriteStride + off;
+    /* The provider always returns a full oam_t, but the destination field may be
+     * narrower (tile/attributes are one byte while oam_t is two off-NES). The
+     * wanted bytes are the value's LOW ones, which sit at the FRONT of its
+     * native representation only on a little-endian machine -- on big-endian
+     * targets (Espresso/Cell) they sit at the back, so a blind memcpy from &v
+     * copies the always-zero high byte and every tile index becomes 0. */
+    const size_t skip = (width < sizeof(oam_t) && std::endian::native == std::endian::big)
+                        ? sizeof(oam_t) - width : 0;
     for (u16 i = 0; i < count; i++) {
         oam_t v = fn(i);
-        memcpy(base + static_cast<size_t>(i) * spriteStride, &v, width);  /* low `width` bytes (LE) */
+        memcpy(base + static_cast<size_t>(i) * spriteStride,
+               reinterpret_cast<const u8 *>(&v) + skip, width);
     }
 }
 
