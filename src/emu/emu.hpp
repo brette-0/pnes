@@ -157,6 +157,12 @@ void GenerateBands(band_emit_fn emit, bool honorHandlerY = false);
  * ::oam::RefreshSprites, the OAMDMA analogue). The GX backend reads it directly
  * to emit sprite quads. Always ::OAM_SPRITES entries.
  */
+/** @brief Set by ::ppu::SetScroll / ::ppu::DeltaScroll, consumed and cleared by
+ *         ::emu::GenerateBands around each IRQ handler call: whether the handler
+ *         wrote a scroll at all. See GenerateBands (src/emu/ppu.cpp) for why
+ *         that, and not a before/after value comparison, is the question. */
+extern bool scrollWritten;
+
 const oam::sprite_t* OamShadow();
 
 }   // namespace emu

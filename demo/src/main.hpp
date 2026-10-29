@@ -35,6 +35,66 @@ constexpr u8 viewport_mx() { return video::viewport_tx() >> 1; }
 /** @brief Viewport height in metatiles (tiles / 2). */
 constexpr u8 viewport_my() { return video::viewport_ty() >> 1; }
 
+/**
+ * @brief The sprite Y that parks a sprite off-screen on this target.
+ *
+ * Sprite Y is a literal output-space pixel row on every backend, so a row past
+ * ::video::viewport_py() is off every panel the target has and the backend's own
+ * clip drops it. On NES, OAM y is a byte and the frame is 240 lines, so 0xF0 is
+ * the hardware's own unfetchable row -- the idiom this is the portable spelling
+ * of.
+ */
+constexpr oam::oam_t ParkedSpriteY() {
+#ifdef TARGET_NES
+    return 0xf0;
+#else
+    return video::viewport_py();
+#endif
+}
+
+/**
+ * @brief Vertical offset of the output window into the game's 240-row frame.
+ *
+ * Non-zero only where the game's internal resolution does not fit the output:
+ * the GBA's panel is 160 rows and the DS's gameplay panel is 192, both short of
+ * the 240 this game draws into, so the panel shows a WINDOW onto that frame and
+ * a follow camera chooses which rows -- the player is centred in the panel,
+ * clamped so the window never leaves the frame. Every other target's output is
+ * at least the whole frame, so the window is the frame and this is 0.
+ *
+ * This is the ONE definition of that camera. ::ApplyHudSplit scrolls the
+ * background by it (level.cpp) and ::WindowedSpriteY shifts sprites by it, which
+ * is what keeps the two glued together: both derive it from the same player Y,
+ * so there is no frame of lag between them and no second copy of the clamp.
+ *
+ * @param playerFrameY The camera subject's frame-space Y (P1's sprite row).
+ */
+constexpr i16 VerticalWindow(const oam::oam_t playerFrameY) {
+#if defined(TARGET_GBA) || defined(TARGET_NDS)
+    constexpr i16 panelH = static_cast<i16>(video::panel_rect(0).h);
+    constexpr i16 mid    = static_cast<i16>(panelH >> 1);
+    constexpr i16 anchor = static_cast<i16>(240 - panelH);
+    const i16 raw = static_cast<i16>(playerFrameY) - mid;
+    return raw < 0 ? 0 : (raw > anchor ? anchor : raw);
+#else
+    (void)playerFrameY;
+    return 0;
+#endif
+}
+
+/**
+ * @brief A frame-space sprite Y converted to this target's output space.
+ *
+ * The backends place sprite Y literally -- the Y written is the pixel row drawn
+ * -- so on a target whose panel is a window onto the frame (::VerticalWindow)
+ * the game owns the conversion, exactly as the title screen already owns its
+ * preview's. A row above the window is off the panel, so it parks.
+ */
+constexpr oam::oam_t WindowedSpriteY(const oam::oam_t frameY, const oam::oam_t playerFrameY) {
+    const i16 y = static_cast<i16>(frameY) - VerticalWindow(playerFrameY);
+    return y < 0 ? ParkedSpriteY() : static_cast<oam::oam_t>(y);
+}
+
 extern atomic eGameModes gameMode;
 
 // Mode-dispatched NMI/IRQ entry points: main.cpp's nmiTrampoline/irqTrampoline

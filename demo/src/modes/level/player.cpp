@@ -45,7 +45,10 @@ ACTORS static u8 PlayerLastPort(const Player* p) { return p == &player1 ? lastPo
 
 ACTORS static void PlayerRefreshY(const Player* p) {
     oam::sprite_t* s = OAMBuffer + (p == &player1 ? 1 : 1 + kMarySprites);
-    const oam::oam_t sy = p->actor.screen.y;
+    // Frame space -> output space, same call and same camera subject as level.cpp's
+    // SpriteY provider: the backends place sprite Y literally, so the window offset
+    // is applied here or nowhere.
+    const oam::oam_t sy = WindowedSpriteY(p->actor.screen.y, player1.actor.screen.y);
     s[0].y = sy;         s[1].y = sy;
 }
 ACTORS static void PlayerRefreshX(const Player* p) {

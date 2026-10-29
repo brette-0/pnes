@@ -761,7 +761,7 @@ namespace title {
     }
 
     static oam::oam_t Clear(const u16) {
-        return 0xf0;
+        return ParkedSpriteY();
     }
 
     static NI void DrawLevelPreview() {
@@ -811,7 +811,7 @@ namespace title {
             ? 0
             : PreviewScrollYForPixels(splitPixelRow);
         const i16 rawFeetY    = static_cast<i16>(maryGroundNtRow) - 16 - static_cast<i16>(spriteScroll);
-        const auto feetY      = rawFeetY < 0 ? static_cast<oam::oam_t>(0xf0) : static_cast<oam::oam_t>(rawFeetY);
+        const auto feetY      = rawFeetY < 0 ? ParkedSpriteY() : static_cast<oam::oam_t>(rawFeetY);
         OAMBuffer[0].y = feetY; OAMBuffer[1].y = feetY;
     }
 

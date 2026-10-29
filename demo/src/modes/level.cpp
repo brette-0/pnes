@@ -35,6 +35,38 @@ namespace level {
     );
     constexpr u8 kHUDSplitDelay = REGION ? 90 : 0;
 
+#ifdef TARGET_NDS
+    // --- lower-panel blanking -----------------------------------------------
+    // The DS output is 384 rows but this game's frame is 240, and the follow
+    // camera windows those 240 into the TOP panel (::VerticalWindow, main.hpp).
+    // One scroll covers a whole band, so with nothing else said the lower panel
+    // simply carries on showing the plane below the window -- which is the
+    // level's own lower rows. They leak onto the bottom screen.
+    //
+    // So the lower panel gets raster bands of its own, scrolled to the one part
+    // of the plane the level never draws into: the bottom of the RIGHT
+    // nametable. Vertical mirroring (SetMirroring(false), EnterLevelSetup) grids
+    // the board's two nametables 2-wide, each the viewport's own 32x48 tiles
+    // here (emu::ComputeNtGeometry), so the plane is 512x384 while the level
+    // occupies only rows 0..29 of it -- and EnterLevelSetup's ppu::Flush has
+    // already filled every page with hud_whitespace, so what is left below the
+    // level really is blank rather than merely unwritten.
+    constexpr u16 kLowerPanelRow = video::panel_rect(1).y;                  // 192
+    constexpr u16 kBlankPlaneX   = video::viewport_px();                    // 256: right nametable
+    constexpr u16 kBlankPlaneY   = 240;                                     // first plane row below the level
+    constexpr u16 kBlankRows     = video::viewport_py() - kBlankPlaneY;     // 144
+
+    // 144 blank rows do not cover a 192-row panel, so when a band runs out of
+    // them it is re-pointed at the same plane row instead of being left to wrap
+    // onto plane row 0 -- the HUD, and below it the top of the level, i.e. the
+    // leak again at the very bottom of the screen. Repeating a uniform blank
+    // region is invisible, and re-pointing to the SAME row is exactly the write
+    // emu::scrollWritten exists to notice (src/emu/ppu.cpp).
+    static atomic u16 nextBlankRow;
+
+    static FIXED void ApplyLowerPanelBlank();
+#endif
+
     static FIXED void ApplyHudSplit();
 
 #ifdef TARGET_NES
@@ -163,7 +195,7 @@ namespace level {
 
 #ifdef PLAYER2_SUPPORTED
         // player 2: horizontally flipped, OAM slots 5..8 -- left at the
-        // Clear() (y=0xf0, off-screen) fill above unless multiplayer is on.
+        // Clear() (y = ParkedSpriteY(), off-screen) fill above unless multiplayer is on.
         if (multiplayer) {
             oam::PopulateFromProvider(OAMBuffer, 1 + kMarySprites, oam::y, SpriteY2, kMarySprites);
             oam::PopulateFromProvider(OAMBuffer, 1 + kMarySprites, oam::x, SpriteX2, kMarySprites);
@@ -284,6 +316,14 @@ namespace level {
         }
         mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
 
+#ifdef TARGET_NDS
+        // The split chain always starts at the HUD split, whatever last frame
+        // got through: a band whose IRQ was consumed stale (GenerateBands drops
+        // one it has already scrolled past without calling the handler) would
+        // otherwise leave this set and make the next frame's first split take
+        // the lower-panel branch instead of ApplyHudSplit.
+        nextBlankRow = 0;
+#endif
         mmc3::ScheduleScanlineIRQ(kHudSplitMMC3, {0, kHudSplitRow});
     }
 
@@ -292,19 +332,30 @@ namespace level {
     FIXED void irq_handler() {
         mmc3::AcknowledgeScanlineIRQ();
         tech::SpinWait(kHUDSplitDelay);
+#ifdef TARGET_NDS
+        // The frame's splits in raster order: the HUD split first (nextBlankRow
+        // is 0 at the top of every frame), then one or more lower-panel bands,
+        // each armed by the one before it.
+        if (nextBlankRow) { ApplyLowerPanelBlank(); return; }
+#endif
         ApplyHudSplit();
     }
 
     static oam::oam_t Clear(const u16) {
-        return 0xf0;
+        return ParkedSpriteY();
     }
 
     // Provider shims: oam::PopulateFromProvider hands the callback only the sprite
     // index, so bind the player Actor here and forward to the Actor-aware versions.
-    static oam::oam_t SpriteY(const u16 i)  { return AdjustSpriteY(&player1.actor, i); }
+    //
+    // Y goes through ::WindowedSpriteY, the sprite half of the follow camera
+    // ApplyHudSplit scrolls the background with. P1 is the camera subject for
+    // BOTH players -- P2 rides P1's window, same as the background does, or the
+    // two would disagree about which rows the panel is showing.
+    static oam::oam_t SpriteY(const u16 i)  { return WindowedSpriteY(AdjustSpriteY(&player1.actor, i), player1.actor.screen.y); }
     static oam::oam_t SpriteX(const u16 i)  { return AdjustSpriteX(&player1.actor, i); }
 #ifdef PLAYER2_SUPPORTED
-    static oam::oam_t SpriteY2(const u16 i) { return AdjustSpriteY(&player2.actor, i); }
+    static oam::oam_t SpriteY2(const u16 i) { return WindowedSpriteY(AdjustSpriteY(&player2.actor, i), player1.actor.screen.y); }
     static oam::oam_t SpriteX2(const u16 i) { return AdjustSpriteX(&player2.actor, i); }
 #endif
 
@@ -317,21 +368,44 @@ namespace level {
 
     static FIXED void ApplyHudSplit() {
         #if defined(TARGET_NDS) || defined(TARGET_GBA)
-            // Primary panel height, NOT viewport_py(): the DS viewport is now
-            // both panels stacked (384px, see video.hpp's TARGET_NDS branch), but
-            // this follow camera centres the player in the panel the gameplay is
-            // anchored in and clamps against the 240-row NES frame, so it is the
-            // top panel's 192px (GBA's 160px) that both terms want.
-            const i16 panelH = static_cast<i16>(video::panel_rect(0).h);
-            const i16 mid    = static_cast<i16>(panelH >> 1);
-            const i16 anchor = static_cast<i16>(240 - panelH);
-            const i16 raw    = static_cast<i16>(rasterPlayerY) - mid;
-            const i16 bump   = raw < 0 ? 0 : (raw > anchor ? anchor : raw);
-            ppu::SetScroll({rasterCameraX, static_cast<u16>(16 + bump)});
+            // The background half of the follow camera: on a target whose panel
+            // is shorter than the 240-row frame this game draws into (GBA 160,
+            // the DS's gameplay panel 192), the panel is a window onto that frame
+            // and this scroll is which rows it shows. ::VerticalWindow (main.hpp)
+            // owns the clamp; ::SpriteY shifts sprites by the same call, off the
+            // same latched player Y, which is what keeps them glued to this.
+            ppu::SetScroll({rasterCameraX,
+                            static_cast<u16>(kHudSplitRow + VerticalWindow(rasterPlayerY))});
         #else
             ppu::SetScroll({rasterCameraX, kHudSplitRow});
         #endif
 
         mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
+
+#ifdef TARGET_NDS
+        // Arm the first lower-panel band. Last in this handler, after the
+        // raster-critical scroll write, for the same reason title.cpp's
+        // ApplySplit banks after its own.
+        nextBlankRow = kLowerPanelRow;
+        mmc3::ScheduleScanlineIRQ(0, {0, kLowerPanelRow});
+#endif
     }
+
+#ifdef TARGET_NDS
+    // Point this band at the blank bottom of the right nametable, and arm the
+    // next one if the panel is not covered yet. The MMC3 scanline latch (the
+    // first argument) is NES-only and this is a DS-only split, so the position
+    // is the whole request here.
+    static FIXED void ApplyLowerPanelBlank() {
+        ppu::SetScroll({kBlankPlaneX, kBlankPlaneY});
+
+        const u16 next = static_cast<u16>(nextBlankRow + kBlankRows);
+        if (next < video::viewport_py()) {
+            nextBlankRow = next;
+            mmc3::ScheduleScanlineIRQ(0, {0, next});
+        } else {
+            nextBlankRow = 0;
+        }
+    }
+#endif
 }

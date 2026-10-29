@@ -317,28 +317,31 @@ IWRAM_CODE void build_map() {
 IWRAM_CODE void build_sprites() {
     const oam::sprite_t* oam = emu::OamShadow();
     const bool tall   = ppu::PPUCTRL & ppu::ctrl::SPRITE_SIZE;
-    const int  height = tall ? 16 : 8;
     const int  atlas0 = (ppu::PPUCTRL & ppu::ctrl::SPRITE_ADDR) ? 256 : 0;
 
-    // Sprites carry raw NES screen-space Y -- physics always runs on the full
-    // 240-line frame regardless of the shorter GBA panel -- so every OBJ must be
-    // shifted up by the gameplay BG's vertical scroll to stay glued to it. That
-    // scroll is not a fixed bottom-anchor constant: the game runs a vertical
-    // follow camera (see SetScroll in demo/src/main.cpp) that eases it between the
-    // full bottom-anchor and 0 as the player climbs, so the sprite offset must
-    // track it frame by frame. GenerateBands has already filled the per-line
-    // scroll table (sh_v) by the time we run, and the bottom row is always in the
-    // gameplay band, so it carries the live gameplay scroll -- read it directly.
-    // This is the sprite half of the window transform whose BG half is that scroll.
-    const int voff = static_cast<int>(sh_v[SCREEN_H - 1]);
+    // Sprite Y is a LITERAL panel pixel row -- the Y the game wrote, placed where
+    // it says. This panel IS the viewport (240x160), so that row is a viewport
+    // row like every other backend's.
+    //
+    // It used to be shifted up by the gameplay band's vertical scroll, this panel
+    // being a 160-row window onto the 240-row frame the game's physics runs in.
+    // The window is still there and sprites still have to ride it -- but the game
+    // owns that camera (::VerticalWindow, demo/src/main.hpp, whose background half
+    // is ApplyHudSplit's scroll), so the conversion happens before the Y is
+    // written, not silently here on top of it. Doing both shifted twice, and
+    // dragged sprites the game had parked back onto the panel.
 
     for (int s = 0; s < OAM_SPRITES; s++) {
         const oam::sprite_t& o = oam[s];
         const int sx = static_cast<int>(o.x);
-        const int sy = static_cast<int>(o.y) + 1 - voff;
+        const int sy = static_cast<int>(o.y) + 1;
 
         // Clip against the 240x160 panel (narrower AND shorter than the NES).
-        if (sx <= -8 || sx >= 240 || sy <= -height || sy >= SCREEN_H) {
+        // Both tests are the FAR edges only: OAM coordinates are unsigned on every
+        // target (::oam::oam_t), nothing shifts them negative here any more, and a
+        // sprite cannot overhang the left or top edge on real NES hardware either,
+        // so admitting one off-NES would be a parity break rather than a feature.
+        if (sx >= 240 || sy >= SCREEN_H) {
             g_oam_shadow[s].a0 = ATTR0_DISABLE;
             continue;
         }
@@ -356,8 +359,9 @@ IWRAM_CODE void build_sprites() {
         const int  ti     = tall ? ((o.tile & 1) * 256 + (o.tile & 0xFE)) : (atlas0 + o.tile);
         const int  prio   = behind ? PRIO_SPR_BEHIND : PRIO_SPR_FRONT;
 
-        // OAM x is 9-bit and y 8-bit; masking lets a sprite straddle the left/top
-        // edge via hardware wrap (the clip above already drops fully-off ones).
+        // Masking only fits the hardware fields (y 8-bit, x 9-bit): sy and sx are
+        // both already inside the panel by the clip above, so nothing relies on
+        // the wrap either field would give.
         g_oam_shadow[s].a0 = static_cast<u16>((sy & 0xFF) | (tall ? ATTR0_TALL : 0));
         g_oam_shadow[s].a1 = static_cast<u16>((sx & 0x1FF)
                                             | (hflip ? ATTR1_HFLIP : 0)

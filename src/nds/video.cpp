@@ -211,7 +211,6 @@ int  g_tombs;                     // tombstones in g_hash, see rehash()
 // table: band_emit routes each viewport row to the panel that shows it, and
 // hblank_scroll programs both engines from the same line index.
 u16          sh_h[PANELS][SCREEN_H], sh_v[PANELS][SCREEN_H];
-u16          s_sprite_voff;   // unwrapped scroll of the band holding the last line
 volatile u16 g_h[PANELS][SCREEN_H],  g_v[PANELS][SCREEN_H];
 
 // 0xAARRGGBB -> DS BGR555 (X1BGR5; the unused top bit stays 0).
@@ -513,28 +512,35 @@ void build_sprites() {
     // build_map uses one: tile ids are resolved through the bank state now.
     const unsigned spr_space = (ppu::PPUCTRL & ppu::ctrl::SPRITE_ADDR) ? 0x1000u : 0x0000u;
 
-    // Sprites carry raw NES screen-space Y -- physics always runs on the full
-    // 240-line frame regardless of the shorter DS panel -- so every OBJ must be
-    // shifted up by the gameplay BG's vertical scroll to stay glued to it. That
-    // scroll is no longer a fixed bottom-anchor constant: the game runs a vertical
-    // follow camera (see SetScroll in demo/src/main.cpp) that eases it between the
-    // full bottom-anchor and 0 as the player climbs, so the sprite offset must track
-    // it frame by frame. GenerateBands has already filled the per-line scroll table
-    // (sh_v) by the time we run, and the bottom row is always in the gameplay band,
-    // so it carries the live gameplay scroll -- read it directly. This is the sprite
-    // half of the window transform whose BG half is that scroll. HUD-region sprites
-    // (here only the software sprite-0 split marker) get pushed off the top and
-    // hidden, which is harmless: the DS split is band-driven, not real sprite-0
-    // hardware detection.
-    const int voff = static_cast<int>(s_sprite_voff);
+    // Sprite Y is a LITERAL viewport pixel row -- the Y the game wrote, placed
+    // where it says, in the one coordinate space that spans both panels (0..383,
+    // see video.hpp's TARGET_NDS viewport_ty). No window transform.
+    //
+    // It used to be shifted up by the gameplay band's vertical scroll, because
+    // the DS used to show a 256x192 WINDOW cropping the bottom 48px of a 240-row
+    // frame: on a cropping panel sprites have to ride the BG's window scroll or
+    // they detach from the background, which is still exactly what the GBA
+    // backend does (build_sprites, src/gba/video.cpp). The DS remodel replaced
+    // that window with a 384px two-panel viewport that crops nothing, so there
+    // is no window left to apply -- and applying one anyway is what put sprites
+    // the game had parked below the frame back onto the LOWER panel, since the
+    // shift drags any park row up by however far the camera has climbed.
+    //
+    // A game that wants a sprite on the lower panel now simply writes a y of 192
+    // or more, and parks one by writing a y past the whole 384-row viewport.
 
     for (int s = 0; s < OAM_SPRITES; s++) {
         const oam::sprite_t& o = oam[s];
         const int sx = static_cast<int>(o.x);
         // Viewport-space Y: one coordinate space spanning both panels.
-        const int sy = static_cast<int>(o.y) + 1 - voff;
+        const int sy = static_cast<int>(o.y) + 1;
 
-        if (sx <= -8 || sx >= 256) {
+        // There is no sx < 0 case: OAM coordinates are unsigned on every target
+        // (::oam::oam_t), and real NES hardware cannot overhang the left edge
+        // either. A y past the viewport needs no test of its own either -- the
+        // per-panel clip below drops it like any other off-panel row, which is
+        // what makes a parked sprite stay parked now that nothing shifts it.
+        if (sx >= 256) {
             for (int half = 0; half < 2; half++) {
                 oamClearSprite(&oamMain, s * 2 + half);
                 oamClearSprite(&oamSub,  s * 2 + half);
@@ -607,18 +613,13 @@ void build_sprites() {
 // those two duplicate rows instead of the top of the nametable. A band that
 // never reaches worldH (all of gameplay) takes the `phys == w` path, so its
 // table entries are byte-for-byte what they were before wrapping existed.
-//
-// s_sprite_voff keeps the UNWRAPPED band scroll: build_sprites' window offset
-// is the frame's scroll, not a per-line wrapped position.
+
 void band_emit(int y0, int y1, u16 xs, u16 ys) {
     const emu::NtGeometry geo = emu::ComputeNtGeometry();
     const int worldH = geo.worldH;
     const int vph    = video::viewport_py();
     const int a = y0 < 0 ? 0 : y0;
     const int b = y1 > vph ? vph : y1;
-
-    if (a <= SCREEN_H - 1 && b > SCREEN_H - 1)
-        s_sprite_voff = static_cast<u16>(static_cast<int>(ys) - y0);
 
     // The bank state is live right now, at this band's own position in the
     // raster timeline (GenerateBands has already run every handler up to y0),
@@ -710,7 +711,6 @@ void WaitForPresent() {
     // Default the scroll tables so disabled / empty scanlines are well-defined.
     for (int p = 0; p < PANELS; p++)
         for (int i = 0; i < SCREEN_H; i++) { sh_h[p][i] = 0; sh_v[p][i] = 0; }
-    s_sprite_voff = 0;
 
     // Walk the IRQ timeline (fires the game's scanline logic, incl. the
     // sprite-0 split) and record each band's scroll AND its CHR window bases.

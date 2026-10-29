@@ -311,7 +311,13 @@ static void draw_sprites(const bool behind) {
     const oam::sprite_t *oam = emu::OamShadow();
     const int  vpw    = video::viewport_px();
     const bool tall   = ppu::PPUCTRL & ppu::ctrl::SPRITE_SIZE;
-    const int  height = tall ? 16 : 8;
+    // Sprite clipping here is the two FAR edges only. OAM coordinates are
+    // unsigned on every target (::oam::oam_t) and real NES hardware cannot
+    // overhang the left or top edge either, so there is no negative case to
+    // test -- and unlike the GBA/DS backends this one applies no window
+    // transform to sprite Y, so nothing can push an on-screen sprite negative
+    // afterwards. That same absence is why the park band (::oam::parked) needs
+    // no test of its own: 0xF0..0xFF is past 240, so the vertical clip has it.
     const int  atlas0 = (ppu::PPUCTRL & ppu::ctrl::SPRITE_ADDR) ? 256 : 0;
     const int  quads_per_sprite = tall ? 2 : 1;
 
@@ -325,7 +331,7 @@ static void draw_sprites(const bool behind) {
             if (((o.attributes & 0x20) != 0) != behind) continue;
             const int sx = static_cast<int>(o.x);
             const int sy = static_cast<int>(o.y) + 1;
-            if (sx <= -8 || sx >= vpw || sy <= -height || sy >= 240) continue;
+            if (sx >= vpw || sy >= 240) continue;
             n++;
         }
         if (!n) continue;
@@ -340,7 +346,7 @@ static void draw_sprites(const bool behind) {
             if (((o.attributes & 0x20) != 0) != behind) continue;
             const int sx = static_cast<int>(o.x);
             const int sy = static_cast<int>(o.y) + 1;
-            if (sx <= -8 || sx >= vpw || sy <= -height || sy >= 240) continue;
+            if (sx >= vpw || sy >= 240) continue;
             const bool flipH = (o.attributes & 0x40) != 0;
             const bool flipV = (o.attributes & 0x80) != 0;
             if (!tall) {

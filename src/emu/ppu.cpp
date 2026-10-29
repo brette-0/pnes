@@ -122,6 +122,10 @@ __asm__(
  * only appear on the next frame -- exactly as on hardware. */
 static struct oam::sprite_t oamShadow[OAM_SPRITES];
 
+/* Set by ppu::SetScroll/DeltaScroll, consumed by GenerateBands -- see its use
+ * there for why a write flag and not a value comparison. */
+namespace emu { bool scrollWritten; }
+
 #pragma region PPU_EMU
 
 /* Per-pixel NES PPU emulator.
@@ -424,9 +428,16 @@ void GenerateBands(const band_emit_fn emit, const bool honorHandlerY) {
                 /* Clear before calling so a re-arm from inside the handler
                  * survives the call. */
                 irq::irqPendingValid = false;
-                const u16 ys_before = yScroll;
+                /* Cleared immediately before the call so only a write from
+                 * INSIDE the handler re-anchors. The test is "did the handler
+                 * write a scroll", not "is the value different from before":
+                 * re-pointing a later band at the SAME plane row is a real,
+                 * meaningful write -- it restarts the row counter from there --
+                 * and comparing values silently dropped it, leaving that band
+                 * to run on from the previous anchor and wrap. */
+                scrollWritten = false;
                 if (irq::irqHandler) irq::irqHandler();
-                if (honorHandlerY && yScroll != ys_before)
+                if (honorHandlerY && scrollWritten)
                     ys_base = static_cast<int>(yScroll) - py;
                 // X, unlike Y, reloads every scanline on real hardware --
                 // simply re-read fresh, no "did it change" bookkeeping needed.
@@ -631,11 +642,13 @@ void WriteSingleToNameTable(const u16 address, u8 value) {
 
 void SetScroll(const vec2<u16> pos) {
     xScroll = pos.x; yScroll = pos.y;
+    emu::scrollWritten = true;
 }
 
 void DeltaScroll(const vec2<i8> delta) {
     xScroll = static_cast<u16>(xScroll + delta.x);
     yScroll = static_cast<u16>(yScroll + delta.y);
+    emu::scrollWritten = true;
 }
 
 template <typename Idx>
