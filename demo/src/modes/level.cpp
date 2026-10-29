@@ -320,13 +320,19 @@ namespace level {
             if (levelStreamCommand & eLevelStreamCommands::STREAM_LEVEL_RIGHT) {
                 ppu::WriteFromBufferToNameTable({static_cast<u16>((lastXWorldSpace >> 3) + video::viewport_tx() + 0), 2}, TileBuffer, 28, 1);
                 ppu::WriteFromBufferToNameTable({static_cast<u16>((lastXWorldSpace >> 3) + video::viewport_tx() + 1), 2}, TileBuffer + 28, 28, 1);
-                if (!(levelStreamCommand & eLevelStreamCommands::STREAM_LEVEL_SWAP))
-                    ppu::WriteFromBufferToAttributeTable({static_cast<u16>(((lastXWorldSpace >> 3) + video::viewport_tx()) & ~3), 2}, AttributeBuffer, 8, 1);
+                // Unconditional, including on a direction reversal: the
+                // reversal's own half-byte problem is fixed where it is created,
+                // in DrainPendingColumn (player.cpp), which recomposes the
+                // partner half. Skipping the write here instead left the column
+                // just revealed wearing the palettes of whatever the plane held
+                // there before -- stale attributes, for the 16px until the next
+                // column completed the pair.
+                ppu::WriteFromBufferToAttributeTable({static_cast<u16>(((lastXWorldSpace >> 3) + video::viewport_tx()) & ~3), 2}, AttributeBuffer, 8, 1);
             } else {
                 ppu::WriteFromBufferToNameTable({static_cast<u16>((lastXWorldSpace >> 3) - 1), 2}, TileBuffer, 28, 1);
                 ppu::WriteFromBufferToNameTable({static_cast<u16>((lastXWorldSpace >> 3) - 2), 2}, TileBuffer + 28, 28, 1);
-                if (!(levelStreamCommand & eLevelStreamCommands::STREAM_LEVEL_SWAP))
-                    ppu::WriteFromBufferToAttributeTable({static_cast<u16>(((lastXWorldSpace >> 3) - 2) & ~3), 2}, AttributeBuffer, 8, 1);
+                // Unconditional, for the same reason as the rightward write.
+                ppu::WriteFromBufferToAttributeTable({static_cast<u16>(((lastXWorldSpace >> 3) - 2) & ~3), 2}, AttributeBuffer, 8, 1);
             }
         }
 

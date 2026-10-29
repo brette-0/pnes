@@ -321,10 +321,32 @@ ACTORS void Player::Start() {
 // ColMapSeed and LoadLevel carry their own NI for. One jsr into the actors
 // bank keeps the builders where they belong.
 NI ACTORS static void DrainPendingColumn() {
-    if (pendingColumnKind == ePendingColumn::NEXT)
+    // A column composes its own half of its attribute byte and preserves the
+    // other, which in steady scroll holds the partner column the previous build
+    // just composed. A REVERSAL (::STREAM_LEVEL_SWAP, set at detection) breaks
+    // that: the previous build was a column a whole screen away, so the half
+    // being preserved is unrelated to this byte. When that stale half is the one
+    // already ON SCREEN -- the partner towards the middle of the view, i.e. the
+    // column before this one going right / after it going left -- recompose it
+    // first, so the byte written this frame is whole and correct. (The other
+    // parity needs nothing: that build clears the byte and its partner half
+    // covers the column just beyond the fill, still off-screen.) TileBuffer is
+    // fully overwritten by the second call, so the throwaway build costs only
+    // its own 14 rows of attribute work, on reversal frames alone.
+    //
+    // This is what the NMI's unconditional attribute write rests on: before it,
+    // a reversal's write was skipped outright and the revealed column wore the
+    // previous content's palettes until the pair completed a column later.
+    const bool reversed = static_cast<bool>(levelStreamCommand & eLevelStreamCommands::STREAM_LEVEL_SWAP);
+    if (pendingColumnKind == ePendingColumn::NEXT) {
+        if (reversed && (pendingColumnIndex & 1))
+            BuildNextColumn(TileBuffer, static_cast<u16>(pendingColumnIndex - 1));
         BuildNextColumn(TileBuffer, pendingColumnIndex);
-    else
+    } else {
+        if (reversed && !(pendingColumnIndex & 1))
+            BuildPrevColumn(TileBuffer, static_cast<u16>(pendingColumnIndex + 1));
         BuildPrevColumn(TileBuffer, pendingColumnIndex);
+    }
     pendingColumnKind = ePendingColumn::NONE;
     // Publish last: the NMI reads TileBuffer/AttributeBuffer (and the
     // lastXWorldSpace that addresses them) only once DONE is set, so the

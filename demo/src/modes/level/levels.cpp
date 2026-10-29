@@ -21,7 +21,7 @@ namespace level {
 
     u8 MetatileBuffer[14];
     u8 AttributeBuffer[8];
-    u8 attr_column = 0xFF;
+    u8 attr_half;
 
     // pal is a 2-bit palette index (MetatilePaletteMask) and shift is always one
     // of {0,2,4,6} (an attribute-byte nibble position), so `pal << shift` only
@@ -50,32 +50,23 @@ namespace level {
     static constexpr u8 kNextAttrIdx[14] = {0,1,1,2,2,3,3,4,4,5,5,6,6,7};
     static constexpr u8 kPrevAttrIdx[14] = {7,6,6,5,5,4,4,3,3,2,2,1,1,0};
 
-    // --- Attribute-half parity correction for odd-width viewports -------------
-    // One NES attribute byte spans 32px = two metatile columns (a left/right
-    // nibble pair), so a column's half is its absolute metatile-column parity.
-    // The streaming composer tracks that parity with the monotonic `attr_column`
-    // counter, whose phase is fixed at init to (attr_column - cameraCol) ==
-    // viewport_mx() and is invariant under every build (forward: both +1;
-    // backward: +1/-1, i.e. +2). Forward (Next) composition is therefore always
-    // correct. The backward (Prev) composer writes the INVERTED half, which stays
-    // phase-correct across a direction reversal only when the viewport spans a
-    // whole number of attribute bytes -- an EVEN metatile-column count, i.e.
-    // viewport_tx() a multiple of 4. The GBA panel is 240px = 30 tiles = 15
-    // metatiles (odd), so a right->left reversal injects a one-column parity
-    // offset and the returned-over columns land in the wrong half (grey coins,
-    // visible only at palette boundaries near the level start). This constant
-    // re-flips the Prev parity by exactly that offset: it is 0 for every
-    // multiple-of-4 viewport (NES/DS 32, Switch/Wii U 52, SDL `&~3`) and 1 only
-    // for the GBA's 30. Next is left untouched -- it has no reversal offset.
+    // --- Which half of its attribute byte a column owns ----------------------
+    // One NES attribute byte spans 32px == two metatile columns, a left/right
+    // nibble pair, so a column's half is simply its ABSOLUTE metatile-column
+    // parity: even -> the left nibbles, odd -> the right ones. ::attr_half is
+    // that bit, set by whichever composer is about to run, and the shift tables
+    // below pick quadrants from it.
     //
-    // A constexpr *function*, not a constexpr variable: on the SDL/desktop
-    // (LANDSCAPE) targets viewport_tx() reads runtime globals (mode/scale), so it
-    // is never a constant expression -- a constexpr variable initialiser would not
-    // compile there. As a function it folds to a compile-time 0/1 on the
-    // fixed-viewport targets and is a cheap runtime call (always 0, since SDL's
-    // `& ~3u` keeps viewport_mx() even) on the runtime-sized ones, mirroring how
-    // viewport_tx() itself is constexpr-yet-runtime.
-    static constexpr u8 prev_parity_fix() { return (video::viewport_tx() >> 1) & 1u; }
+    // It used to be tracked instead by a monotonic `attr_column` counter whose
+    // phase was seeded once at init and relied on staying in lockstep with the
+    // camera (forward: both +1; backward: camera -1 and counter +1). That held
+    // the parity but nothing else: it made the half a function of HISTORY rather
+    // than of the column, so a viewport spanning a fractional attribute byte
+    // (the GBA's 30 tiles = 15 metatiles) needed a hardcoded re-flip after a
+    // direction reversal, a preview drawn with an odd column count would silently
+    // invert every palette the level later streamed, and nothing could compose a
+    // column out of scroll order. Parity taken from the column itself has no
+    // phase to keep, so all three go away with the counter.
 
     // LEVEL_DATA: static plane + DynLengths, read CONTINUOUSLY -- see
     // banks.hpp's ::LevelDataBank.
@@ -162,8 +153,9 @@ namespace level {
         u8 m;
         if (~step & 1) {
             if (step == 0) {
-                attr_column++;
-                const u8 mask = attr_column & 1 ? 0x33 : 0x00;
+                // Second of the pair (an odd column) keeps the partner's left
+                // nibbles; the first clears the whole byte.
+                const u8 mask = attr_half ? 0x33 : 0x00;
                 for (auto & j : AttributeBuffer)
                     j &= mask;
                 AttributeBuffer[0] |= 0x0F;   // HUD rows 0-1 share attr_idx 0's top quadrant with level rows 2-3; pin it to palette 3
@@ -179,7 +171,7 @@ namespace level {
             const u8 attr_idx  = tile_row >> 2;
             const u8 pal       = Metatiles_ATTR[m] & MetatilePaletteMask;
             const u8 is_bottom = tile_row >> 1 & 1;
-            const u8 shift     = attr_column & 1
+            const u8 shift     = attr_half
                                     ? (is_bottom ? 6 : 2)
                                     : is_bottom ? 4 : 0;
             AttributeBuffer[attr_idx] |= kPalShifted[pal][shift >> 1];
@@ -192,8 +184,9 @@ namespace level {
         u8 m;
         if (~step & 1) {
             if (step == 0) {
-                attr_column++;
-                const u8 mask = (attr_column + prev_parity_fix()) & 1 ? 0xCC : 0x00;
+                // Travelling left, the pair's RIGHT column is revealed first, so
+                // it is the even (left-half) column that keeps its partner.
+                const u8 mask = attr_half ? 0x00 : 0xCC;
                 for (auto & j : AttributeBuffer)
                     j &= mask;
                 AttributeBuffer[0] |= 0x0F;   // HUD rows 0-1 share attr_idx 0's top quadrant with level rows 2-3; pin it to palette 3
@@ -209,9 +202,9 @@ namespace level {
             const u8 attr_idx  = tile_row >> 2;
             const u8 pal       = Metatiles_ATTR[m] & MetatilePaletteMask;
             const u8 is_bottom = tile_row >> 1 & 1;
-            const u8 shift     = (attr_column + prev_parity_fix()) & 1
-                                    ? (is_bottom ? 4 : 0)
-                                    : is_bottom ? 6 : 2;
+            const u8 shift     = attr_half
+                                    ? (is_bottom ? 6 : 2)
+                                    : is_bottom ? 4 : 0;
             AttributeBuffer[attr_idx] |= kPalShifted[pal][shift >> 1];
         }
         return step & 1 ? Metatiles_UL[m] : Metatiles_UR[m];
@@ -238,18 +231,23 @@ namespace level {
     // fires on every scroll-column boundary crossing (lastXWorldSpace
     // hysteresis in player.cpp) with no window-2 switch at all.
     ACTORS void BuildNextColumn(u8* buf, const u16 worldCol) {
-        attr_column++;
-        const u8 mask = attr_column & 1 ? 0x33 : 0x00;
+        // Fetched BEFORE the attribute buffer is touched: a column the window
+        // cannot supply (never in steady scroll) must leave the buffer exactly
+        // as it was, not half-cleared. The NMI's attribute write is
+        // unconditional now, so a buffer cleared for a column that was then
+        // never composed would publish palette 0 over real content.
+        const u8* col = ColMapColumn(worldCol);
+        if (!col) return;
+
+        attr_half = worldCol & 1;
+        const u8 mask = attr_half ? 0x33 : 0x00;
         for (auto & j : AttributeBuffer) j &= mask;
         AttributeBuffer[0] |= 0x0F;   // HUD rows 0-1 share attr_idx 0's top quadrant with level rows 2-3; pin it to palette 3
         AttributeBuffer[7] |= 0xF0;   // mirror of the above at the other end: the 8-byte attribute write spans tile rows 0-31, but the level is only rows 0-29, so attr_idx 7's BOTTOM quadrant (rows 30-31) is UI band -- pin it to palette 3 too
 
-        const u8* col = ColMapColumn(worldCol);
-        if (!col) return;                            // out of window (never in steady scroll)
-
         // mt even -> is_bottom=1, mt odd -> is_bottom=0 (see kNextAttrIdx comment).
-        const u8 shiftIdxEven = attr_column & 1 ? 3 : 2;
-        const u8 shiftIdxOdd  = attr_column & 1 ? 1 : 0;
+        const u8 shiftIdxEven = attr_half ? 3 : 2;
+        const u8 shiftIdxOdd  = attr_half ? 1 : 0;
 
         for (u8 mt = 0; mt < 14; ++mt) {
             const u8 m   = col[mt];                  // top-to-bottom, slot s row mt
@@ -274,6 +272,13 @@ namespace level {
         dynEdgeR = { DynLengths, DynData, 0 };
 
         for (u16 i = 0; i < nCols; i += 2) {
+            // World column i >> 1, drawn from column 0 -- so its own parity is
+            // the half it owns (see attr_half). Setting it here rather than
+            // letting a counter run is what lets nCols be odd in metatile
+            // columns: a trailing half-byte then writes only the half it has,
+            // and the level's own streaming is unaffected by how wide the
+            // preview that ran before it happened to be.
+            attr_half = (i >> 1) & 1;
             ppu::WriteFromProviderToNameTable({i, 2}, GetNextWrite, 28, 1);
             ppu::WriteFromProviderToNameTable({static_cast<u16>(i + 1), 2}, GetCurrentNext, 28, 1);
             ppu::WriteFromBufferToAttributeTable({static_cast<u16>(i & ~3), 2}, AttributeBuffer, 8, 1);
@@ -282,15 +287,19 @@ namespace level {
 
     // ACTORS: see BuildNextColumn's comment.
     ACTORS void BuildPrevColumn(u8* buf, const u16 worldCol) {
-        attr_column++;
-        const u8 ap = (attr_column + prev_parity_fix()) & 1;   // odd-width parity fix
+        // Fetched first for the same reason as BuildNextColumn's.
+        const u8* col = ColMapColumn(worldCol);
+        if (!col) return;
+
+        attr_half = worldCol & 1;
+        // Travelling left the pair's RIGHT column lands first, so `ap` -- this
+        // column being the one that keeps its already-composed partner -- is the
+        // inverse of the half, where the forward composer's is the half itself.
+        const u8 ap = attr_half ^ 1;
         const u8 mask = ap ? 0xCC : 0x00;
         for (auto & j : AttributeBuffer) j &= mask;
         AttributeBuffer[0] |= 0x0F;   // HUD rows 0-1 share attr_idx 0's top quadrant with level rows 2-3; pin it to palette 3
         AttributeBuffer[7] |= 0xF0;   // mirror of the above at the other end: the 8-byte attribute write spans tile rows 0-31, but the level is only rows 0-29, so attr_idx 7's BOTTOM quadrant (rows 30-31) is UI band -- pin it to palette 3 too
-
-        const u8* col = ColMapColumn(worldCol);
-        if (!col) return;                            // out of window (never in steady scroll)
 
         // mt even -> is_bottom=0, mt odd -> is_bottom=1 (see kPrevAttrIdx comment).
         const u8 shiftIdxEven = ap ? 0 : 1;

@@ -155,17 +155,18 @@ namespace title {
     // each panel's scroll already comes from its own band (the backend keeps a
     // per-panel scroll table), so a mid-frame ppu::SetScroll would fight it.
     //
-    // Gated to the DS for now rather than every dual-screen target: honouring a
-    // mid-frame bank change needs the backend to support it. src/nds/video.cpp
-    // does, without restriction -- it mirrors TILES rather than banks, keying a
-    // 1024-entry pool on each tile's resolved CHR address, so a switch of any
-    // kind at any scanline (including partway down a tile row, which it
-    // synthesises a composite tile for) is reproduced. The 3DS backend still
-    // bakes a single atlas set per frame and does not draw its bottom panel at
-    // all, so arming there would switch a bank its bake had already consumed --
-    // thrashing eight palette atlases every frame for nothing visible. It joins
-    // this when its panel-1 rendering lands.
-#if defined(TARGET_NDS)
+    // Honouring a mid-frame bank change needs the backend to support it, which
+    // is why this names its targets rather than following ::kUiOnOwnPanel.
+    // src/nds/video.cpp does, without restriction -- it mirrors TILES rather
+    // than banks, keying a 1024-entry pool on each tile's resolved CHR address,
+    // so a switch of any kind at any scanline (including partway down a tile
+    // row, which it synthesises a composite tile for) is reproduced.
+    // src/3ds/video.cpp does it at band granularity: it plans the frame before
+    // drawing it, and each band records the CHR atlas set its own scanlines
+    // resolve to -- so a switch ON a scanline boundary, which is all this split
+    // is, lands. Both of those also draw panel 1, which is the other half of
+    // what this needs: the bank it switches to is for the bottom screen.
+#if defined(TARGET_NDS) || defined(TARGET_CTR)
     constexpr bool kUiBankSplit = kUiOnOwnPanel;
 #else
     constexpr bool kUiBankSplit = false;
@@ -793,10 +794,20 @@ namespace title {
         constexpr u8 coinUI[] = {blob::ui::hud_coin, blob::ui::font + 0, blob::ui::font + 0};
         ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(coinUI)), 1}, SIZED_OBJ(coinUI), 0);
 
-        const u16 colsWide  = nColumns < viewport_mx() ? nColumns : viewport_mx();
-        const u16 blockCols = colsWide & ~static_cast<u16>(1);
+        // Metatile columns needed to cover the panel, ROUNDED UP: a viewport
+        // whose tile width is not a multiple of 4 ends on half a metatile
+        // column (the 3DS's 50 tiles = 25 metatiles, the GBA's 30 = 15), and
+        // taking viewport_mx() alone -- then flooring it to an even count, as
+        // this did to keep the old attribute-phase counter in step -- left the
+        // preview up to two tile columns short of the screen's own edge: a 16px
+        // strip of the Flush'd empty tile down the right of the title screen.
+        // ::PopulateNameTableColumns now takes each column's attribute half
+        // from the column itself (see ::level::attr_half), so an odd count is
+        // fine here and carries no parity into the level's own fill later.
+        const u16 wantMt    = static_cast<u16>((video::viewport_tx() + 1) >> 1);
+        const u16 colsWide  = nColumns < wantMt ? nColumns : wantMt;
 
-        const u16 previewTileCols = static_cast<u16>(blockCols * 2);
+        const u16 previewTileCols = static_cast<u16>(colsWide * 2);
         mmc3::CallInBlock<level_code_tag>([previewTileCols] {
             PopulateNameTableColumns(previewTileCols);
         });

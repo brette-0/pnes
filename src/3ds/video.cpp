@@ -15,17 +15,41 @@
  * concrete palette, giving four background atlases (palettes 0..3) and four
  * sprite atlases. Colour index 0 bakes to alpha 0, so standard alpha blending
  * reproduces NES transparency -- background colour-0 shows the backdrop clear,
- * sprite colour-0 is a hole. The atlases are rebuilt only when paletteRAM
- * actually changes; in this demo the palette is effectively static (the sprite-0
- * split moves *scroll*, not palette), so the per-pixel bake almost never runs.
+ * sprite colour-0 is a hole.
+ *
+ * BOTH PANELS are presented: the viewport is the two screens stacked (50x60
+ * tiles / 400x480px, video.hpp's TARGET_CTR branch) and ::video::panel_rect
+ * says where each one sits inside it -- the 400x240 top screen at the origin and
+ * the 320x240 bottom screen inset 40px (5 tiles) on each side. Each band and
+ * each sprite is drawn once per panel it overlaps, clipped and translated into
+ * that panel's own render target, so a background crossing the seam is
+ * continuous and a sprite can straddle it. A sprite parks by taking a Y past
+ * the whole 480-row viewport (::ParkedSpriteY, demo/src/main.hpp) -- 240 is a
+ * real, visible row now: the first row of the bottom screen.
  *
  * The frame is driven by ::emu::GenerateBands so the scanline IRQ handlers (the
  * game's per-frame logic, incl. the sprite-zero scroll split) still fire in
  * raster order, with NO per-pixel work on the ARM11. Painter order reproduces
- * NES priority: behind-sprites, then the background (colour-0 transparent), then
- * front-sprites. citro2d clears + writes colour only with a GEQUAL depth test
- * (no depth write), so submission order is the paint order and blended alpha-0
- * texels never occlude.
+ * NES priority, per panel: behind-sprites, then the background (colour-0
+ * transparent), then front-sprites. citro2d clears + writes colour only with a
+ * GEQUAL depth test (no depth write), so submission order is the paint order and
+ * blended alpha-0 texels never occlude.
+ *
+ * MID-FRAME CHR BANKING is why the frame is walked in two passes. The game banks
+ * CHR from inside a scanline IRQ handler -- the demo hands the top panel the
+ * level preview's bank and the bottom panel the UI's, both mapped at the SAME
+ * PPU window -- so one atlas set per frame cannot serve a frame, and an atlas
+ * upload (a GX display transfer) may not be issued between C3D_FrameBegin and
+ * C3D_FrameEnd. So ::video::WaitForPresent first PLANS the frame outside it:
+ * GenerateBands runs the game logic once, each band records its scroll plus the
+ * CHR atlas set its scanlines resolve to, and every set the frame needs is baked
+ * and uploaded there. The second pass then just replays those band records into
+ * the two targets. Sets are cached by the resolved CHR image itself (the 512
+ * tile base addresses), NOT by ::ppu::chrGeneration -- the generation counter
+ * moves every frame in this demo, so keying on it re-baked all eight atlases
+ * every frame, which is a megabyte of ARM11 texel writes plus eight synchronous
+ * display transfers and exactly what held the game at 30fps. Keyed on content, a
+ * frame that alternates between two bank states bakes each one once, ever.
  *
  * The 3DS refreshes at 60Hz, so the GPU's VBlank present (C3D_FrameEnd with
  * C3D_FRAME_SYNCDRAW) paces the loop -- no software timer needed. With all
@@ -47,14 +71,13 @@
 // PPUCTRL/PPUMASK, the OAM snapshot, CHR_ROM, ...) is owned by src/emu; only the
 // genuine citro2d/citro3d objects live here.
 // ---------------------------------------------------------------------------
-static constexpr int NES_H = 240;
-
-// Top screen is a fixed 400x240 panel: exactly the NES's 240px height (scale
-// 1), so video::viewport_tx() (video.hpp) resolves to 50 tiles/400px instead of
-// the NES's native 32 -- the extra 18 tile columns are real game world, drawn
-// native 1:1 like every other tile, so no stretch and no side bars are needed.
-// Everything is still clipped to the viewport window first (see draw_bg_cell /
-// draw_spr_tile) so partial edge tiles cut clean at the panel edge.
+// The viewport is both panels stacked: 50x60 tiles / 400x480px (video.hpp's
+// TARGET_CTR branch), the top screen's 400x240 plus the 320x240 bottom one
+// inset 40px on each side (::video::panel_rect). Those extra 18 tile columns
+// and 30 tile rows over the NES's native 32x30 are real game world, drawn
+// native 1:1 like every other tile, so no stretch and no bars are needed.
+// Everything is clipped to the PANEL being drawn (see draw_bg_cell /
+// draw_spr_tile) so partial edge tiles cut clean at each screen's edge.
 
 // CHR atlas geometry: 512 tiles, 16 per row -> 128x256 RGBA8 texels, one NES
 // tile per 8x8 block. POT in both axes (PICA textures must be power-of-two).
@@ -62,18 +85,35 @@ static constexpr int ATLAS_TILES_X = 16;
 static constexpr int ATLAS_W       = ATLAS_TILES_X * 8;          // 128
 static constexpr int ATLAS_H       = (512 / ATLAS_TILES_X) * 8;  // 256
 
-static C3D_RenderTarget *top;
+// One render target per panel, indexed by ::video::panel_rect's own index:
+// 0 == GFX_TOP (400x240), 1 == GFX_BOTTOM (320x240).
+static C3D_RenderTarget *panel_target[2];
 
-// Four background + four sprite atlases, one per NES palette, palette baked in.
-// Rebuilt (and re-uploaded) only when paletteRAM changes -- see maybe_rebuild().
-static C3D_Tex   atlas_bg[4];
-static C3D_Tex   atlas_spr[4];
+// An atlas set: the eight palette-baked atlases (4 background + 4 sprite) for
+// ONE CHR bank state. `bases` is what identifies it -- the physical CHR address
+// every one of the 512 PPU tile slots resolved to when the set was claimed (see
+// snapshot_bases) -- so a set is reused whenever the banks resolve to the same
+// image again, however many times ::ppu::chrGeneration has moved in between.
+// Textures are allocated and baked lazily, per palette: a bank state used by
+// one palette costs one atlas, not eight.
+struct AtlasSet {
+    C3D_Tex tex[8];          // [0..3] background palettes, [4..7] sprite palettes
+    bool    inited[8];       // texture memory allocated
+    bool    baked[8];        // contents match `bases` + the live palette
+    u32     bases[512];      // ::ppu::ResolveTile(ti * 16) for every tile slot
+    bool    valid;           // `bases` holds a real state
+    u32     used;            // frame stamp of last use, for the LRU eviction
+};
+// Three sets: a frame needs one per distinct bank state it shows (the demo uses
+// two -- preview/HUD above the split, UI below it), and the third keeps a mode
+// change from evicting a state that is about to come straight back.
+static constexpr int CHR_SETS = 3;
+static AtlasSet  chr_set[CHR_SETS];
+static u32       frame_stamp;            // ++ per frame, the LRU clock
+static u32       cur_bases[512];         // scratch for snapshot_bases
 static u32      *atlas_scratch;          // linear ARGB->tex staging (ATLAS_W*ATLAS_H)
 static u8        palette_cache[32];      // last paletteRAM seen
 static bool      palette_valid = false;
-// Generation of ::ppu::chrGeneration the atlases were last baked from.
-// Sentinel (not 0, ::chrGeneration's own initial value) forces the first bake.
-static u32       chr_built_gen = ~0u;
 
 // The fixed NES master palette (ARGB8888, 0xAARRGGBB), shared verbatim with the
 // software PPU in src/emu/ppu.cpp; here it only seeds the baked atlases.
@@ -115,11 +155,12 @@ static constexpr u32 nes_rgb[64] = {
 // clean -- no rotated-framebuffer scissor needed. sx/vy0 are the clipped NES
 // top-left, c0/r0 the first visible tile column/row, w/h the visible size.
 struct Cell { u16 tile; i16 sx; i16 vy0; u8 c0; u8 w; u8 r0; u8 h; };
-// Sized from the PRIMARY PANEL, not the whole viewport: the viewport is now
-// both screens stacked (60 rows/480px, see video.hpp's TARGET_CTR branch) but
-// this backend still presents only the top 400x240 target, and draw_bg_band
-// clips each band to it. Sizing this at the full 61 rows would trade ~90KB of
-// .bss for cells that are never emitted.
+// Sized from the LARGEST PANEL, not the whole viewport: the viewport is both
+// screens stacked (60 rows/480px, see video.hpp's TARGET_CTR branch), but a
+// band is gathered and flushed once per PANEL it overlaps (draw_bg_band clips
+// it to one panel's rect), so no single pass can exceed the biggest panel --
+// the 400x240 top screen, 50x30 tiles. Sizing this at the full 61 rows would
+// trade ~90KB of .bss for cells that are never emitted.
 static constexpr int MAX_CELLS = (video::panel_tx(0) + 1) * (video::panel_ty(0) + 1);
 static Cell  bg_bucket[4][MAX_CELLS];
 static int   bg_count[4];
@@ -134,10 +175,15 @@ static inline u32 to_tex(const u32 argb) {
 // Bake all 512 tiles into the linear scratch under palette @p p. @p spr selects
 // the sprite palette block (paletteRAM[0x10+]) vs the background block. Colour
 // index 0 -> alpha 0 (transparent).
-static void bake_atlas(u32 *buf, const int p, const bool spr) {
+//
+// Tile data comes from @p bases -- the OWNING SET's recorded CHR addresses --
+// never from a live ::ppu::ResolveTile call: a set is baked when the frame plan
+// discovers it needs it, which is not necessarily while that set's banks are
+// still the ones switched in.
+static void bake_atlas(u32 *buf, const u32 *bases, const int p, const bool spr) {
     const int base = (spr ? 0x10 : 0) + p * 4;
     for (int ti = 0; ti < 512; ti++) {
-        const u8 *tile = CHR_ROM + ppu::ResolveTile(static_cast<u16>(ti * 16));
+        const u8 *tile = CHR_ROM + bases[ti];
         const int ax = (ti & 15) * 8;
         const int ay = (ti >> 4) * 8;
         for (int ry = 0; ry < 8; ry++) {
@@ -168,23 +214,88 @@ static void upload_atlas(u32 *buf, C3D_Tex *tex) {
         GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
 }
 
-// Rebuild every atlas iff paletteRAM or the mapper's CHR banks (MMC3 etc. --
-// see ::ppu::chrGeneration) changed since the last frame. The bake + eight
-// display transfers are the only per-pixel work in the backend, and they run
-// only on a genuine palette or CHR-bank change (near-never in this demo).
-// Must run outside C3D_FrameBegin/End.
-static void maybe_rebuild_atlases() {
-    const bool chr_dirty = chr_built_gen != ppu::chrGeneration;
-    if (!chr_dirty && palette_valid && std::memcmp(palette_cache, paletteRAM, 32) == 0) return;
-    for (int p = 0; p < 4; p++) {
-        bake_atlas(atlas_scratch, p, false);
-        upload_atlas(atlas_scratch, &atlas_bg[p]);
-        bake_atlas(atlas_scratch, p, true);
-        upload_atlas(atlas_scratch, &atlas_spr[p]);
+// Resolve the CHR address of all 512 PPU tile slots as the banks stand right
+// now. This, not ::ppu::chrGeneration, is a bank state's identity: the counter
+// moves on every register write (so it differs every frame once a game banks
+// per-frame, even when the resulting image is one it has shown a thousand times)
+// while this is exactly the input the bake consumes. Per-tile rather than per
+// bank window so no mapper's window granularity is assumed -- it is the same
+// question ::emu::GenerateFrame asks on every single pixel fetch.
+static void snapshot_bases(u32 *out) {
+    for (int ti = 0; ti < 512; ti++)
+        out[ti] = ppu::ResolveTile(static_cast<u16>(ti * 16));
+}
+
+// The atlas set for the banks as they stand right now, claiming (and if need be
+// evicting) one if this state is not cached. Baking is NOT done here -- see
+// ensure_atlas, which the frame plan calls for the palettes it actually needs.
+static int chr_set_now() {
+    snapshot_bases(cur_bases);
+
+    for (int i = 0; i < CHR_SETS; i++)
+        if (chr_set[i].valid && std::memcmp(chr_set[i].bases, cur_bases, sizeof cur_bases) == 0) {
+            chr_set[i].used = frame_stamp;
+            return i;
+        }
+
+    // Claim a free slot, else the least recently used one. `used` is a frame
+    // stamp, so an eviction takes a state an EARLIER frame used in preference to
+    // one this frame has already planned a band against. A frame showing more
+    // than CHR_SETS distinct bank states would run out and evict one of its own
+    // anyway: those bands then draw from the state that replaced theirs (wrong
+    // tiles, never garbage -- the replacement is baked before anything is
+    // drawn), and the sets thrash. Two is what the demo needs; the third is the
+    // margin, and the way to buy more is another slot, not another policy.
+    int victim = 0;
+    for (int i = 0; i < CHR_SETS; i++) {
+        if (!chr_set[i].valid) { victim = i; break; }
+        if (chr_set[i].used < chr_set[victim].used) victim = i;
     }
+
+    AtlasSet &set = chr_set[victim];
+    std::memcpy(set.bases, cur_bases, sizeof cur_bases);
+    set.valid = true;
+    set.used  = frame_stamp;
+    for (int k = 0; k < 8; k++) set.baked[k] = false;   // textures kept, contents stale
+    return victim;
+}
+
+// Make set @p si's atlas for palette @p p (@p spr: the sprite palette block)
+// ready to draw from, baking and uploading it if it is not already.
+// Must run outside C3D_FrameBegin/End (upload_atlas issues a display transfer).
+static C3D_Tex *ensure_atlas(const int si, const int p, const bool spr) {
+    AtlasSet &set = chr_set[si];
+    const int k = (spr ? 4 : 0) + p;
+    C3D_Tex *tex = &set.tex[k];
+
+    if (!set.inited[k]) {
+        // Nearest-neighbour so the NES pixels stay crisp, clamped so a
+        // partial-tile subtexture never samples its neighbour.
+        C3D_TexInit(tex, ATLAS_W, ATLAS_H, GPU_RGBA8);
+        C3D_TexSetFilter(tex, GPU_NEAREST, GPU_NEAREST);
+        C3D_TexSetWrap(tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+        set.inited[k] = true;
+    }
+    if (!set.baked[k]) {
+        bake_atlas(atlas_scratch, set.bases, p, spr);
+        upload_atlas(atlas_scratch, tex);
+        set.baked[k] = true;
+    }
+    return tex;
+}
+
+// A palette write invalidates every baked atlas (the palette is baked into the
+// texels) but not the sets themselves: their CHR identity is unchanged, so they
+// keep their `bases` and are simply re-baked on demand.
+// The palette is read once per frame, here: a mid-frame palette change is not
+// modelled on this backend (the demo's fades run in the NMI, and the raster
+// splits move scroll and banks, never colours).
+static void note_palette() {
+    if (palette_valid && std::memcmp(palette_cache, paletteRAM, 32) == 0) return;
     std::memcpy(palette_cache, paletteRAM, 32);
-    palette_valid  = true;
-    chr_built_gen  = ppu::chrGeneration;
+    palette_valid = true;
+    for (auto &set : chr_set)
+        for (int k = 0; k < 8; k++) set.baked[k] = false;
 }
 
 // citro2d UVs are bottom-up: v == 1.0 is texel row 0, so texel row R maps to
@@ -193,12 +304,13 @@ static inline float row_v(const int texel_row) {
     return 1.0f - (float)texel_row / ATLAS_H;
 }
 
-// Draw one background cell (already clipped to its band and the viewport
-// window; never flipped). c0/w select the visible texel columns, r0/h the
-// visible rows. Drawn at native 1:1 scale -- the viewport already spans the
-// full 400px panel width (see video::viewport_tx() in video.hpp), so no
+// Draw one background cell (already clipped to its band and to the panel it is
+// being drawn on; never flipped). c0/w select the visible texel columns, r0/h
+// the visible rows. sx/vy0 are VIEWPORT coordinates, so @p pr -- the panel's
+// rect inside the viewport -- is subtracted to reach the target's own space.
+// Drawn at native 1:1 scale; both panels have the same pixel pitch, so no
 // stretch or centring offset is needed.
-static inline void draw_bg_cell(C3D_Tex *tex, const Cell &c) {
+static inline void draw_bg_cell(C3D_Tex *tex, const Cell &c, const video::PanelRect &pr) {
     const int ax = (c.tile & 15) * 8 + c.c0;
     const int ay = (c.tile >> 4) * 8;
     const int top_row = ay + c.r0;
@@ -210,19 +322,26 @@ static inline void draw_bg_cell(C3D_Tex *tex, const Cell &c) {
     sub.top    = row_v(top_row);
     sub.bottom = row_v(top_row + c.h);
     C2D_Image img{ tex, &sub };
-    C2D_DrawImageAt(img, (float)c.sx, (float)c.vy0, 0.0f);
+    C2D_DrawImageAt(img, (float)(c.sx - pr.x), (float)(c.vy0 - pr.y), 0.0f);
 }
 
-// Draw one 8x8 sprite tile, clipped to the viewport window; flipH/flipV swap
-// the UVs. The visible screen sub-rectangle is mapped back to UVs by linear
-// interpolation so a partial edge sprite shows exactly its on-window columns/rows
-// (correct under flips too). Drawn at native 1:1 scale, like draw_bg_cell.
+// Draw one 8x8 sprite tile, clipped to panel @p pr; flipH/flipV swap the UVs.
+// The visible screen sub-rectangle is mapped back to UVs by linear interpolation
+// so a partial edge sprite shows exactly its on-panel columns/rows (correct
+// under flips too). Drawn at native 1:1 scale, like draw_bg_cell.
+//
+// The clip is the panel's own rect, not the viewport's: a sprite straddling the
+// screen seam is drawn once per panel, each time showing only its rows on that
+// one, and a sprite whose columns fall in the bezel beside the narrower bottom
+// panel is cut there exactly as it is at the viewport's outer edge.
 static inline void draw_spr_tile(C3D_Tex *tex, const int tile, const int sx,
-                                 const int sy, const bool flipH, const bool flipV) {
-    const int vx0 = sx < 0 ? 0 : sx;
-    const int vx1 = (sx + 8) > video::viewport_px() ? video::viewport_px() : (sx + 8);
-    const int vy0 = sy < 0 ? 0 : sy;
-    const int vy1 = (sy + 8) > NES_H ? NES_H : (sy + 8);
+                                 const int sy, const bool flipH, const bool flipV,
+                                 const video::PanelRect &pr) {
+    const int px1 = pr.x + pr.w, py1 = pr.y + pr.h;
+    const int vx0 = sx < pr.x ? pr.x : sx;
+    const int vx1 = (sx + 8) > px1 ? px1 : (sx + 8);
+    const int vy0 = sy < pr.y ? pr.y : sy;
+    const int vy1 = (sy + 8) > py1 ? py1 : (sy + 8);
     if (vx1 <= vx0 || vy1 <= vy0) return;
 
     const int ax = (tile & 15) * 8;
@@ -244,25 +363,54 @@ static inline void draw_spr_tile(C3D_Tex *tex, const int tile, const int sx,
     sub.top    = vt + (vb - vt) * fyl;
     sub.bottom = vt + (vb - vt) * fyr;
     C2D_Image img{ tex, &sub };
-    C2D_DrawImageAt(img, (float)vx0, (float)vy0, 0.0f);
+    C2D_DrawImageAt(img, (float)(vx0 - pr.x), (float)(vy0 - pr.y), 0.0f);
 }
 
-// ::emu::band_emit_fn: draw the nametable for screen rows [y0,y1) at the given
-// scroll. Background colour-0 is transparent so behind-sprites / backdrop show.
-// Mirrors the OGC draw_bg_band tile walk; emits citro2d quads bucketed by palette.
-static void draw_bg_band(const int y0raw, const int y1raw, const u16 xs, const u16 ys) {
-    // Clip the band to the primary panel. ::emu::GenerateBands now walks the
-    // full two-panel viewport height (60 rows/480px, video.hpp's TARGET_CTR
-    // branch) so the IRQ timeline covers both screens, but only the top target
-    // exists here yet -- bands past row 240 are skipped rather than drawn off
-    // the end of a 240-tall render target. ys is still the band's own world
-    // row, so nothing about the scroll maths shifts.
-    const int panelH = video::panel_rect(0).h;
-    if (y0raw >= panelH) return;
-    const int y0 = y0raw;
-    const int y1 = y1raw > panelH ? panelH : y1raw;
+// One band as the plan pass recorded it: the scanline span, the scroll in
+// effect across it, and the CHR atlas set its tiles resolve through.
+struct BandRec { i16 y0, y1; u16 xs, ys; u8 set; };
+// A band per scanline split, so one per IRQ the frame fires. The demo arms at
+// most a couple (the HUD/panel split); the cap only bounds the .bss.
+static constexpr int MAX_BANDS = 64;
+static BandRec band_rec[MAX_BANDS];
+static int     band_n;
+
+// ::emu::band_emit_fn for the PLAN pass -- see this file's header comment. Draws
+// nothing: it records the band and resolves the CHR state its scanlines are
+// sourced from, which is the state the IRQ handler that opened the band left
+// behind. Runs outside C3D_FrameBegin/End, so the bake ensure_atlas may do here
+// is legal.
+static void plan_band(const int y0, const int y1, const u16 xs, const u16 ys) {
+    const int si = chr_set_now();
+    for (int p = 0; p < 4; p++) ensure_atlas(si, p, false);
+
+    if (band_n == MAX_BANDS) {
+        // Out of records: extend the last band over these rows rather than drop
+        // them. They then draw with the previous band's scroll and bank, which
+        // is wrong but visible -- the alternative is a blank stripe. Unreachable
+        // with any sane split count.
+        band_rec[band_n - 1].y1 = static_cast<i16>(y1);
+        return;
+    }
+    band_rec[band_n++] = BandRec{ static_cast<i16>(y0), static_cast<i16>(y1), xs, ys,
+                                  static_cast<u8>(si) };
+}
+
+// Draw one recorded band's share of panel @p pr: the nametable for the rows the
+// band and the panel have in common, at the band's scroll, out of the band's own
+// atlas set. Background colour-0 is transparent so behind-sprites / backdrop
+// show. Mirrors the OGC draw_bg_band tile walk; emits citro2d quads bucketed by
+// palette.
+static void draw_bg_band(const BandRec &b, const video::PanelRect &pr) {
+    // The band's rows clipped to this panel. The tile walk still anchors on the
+    // band's OWN first row (b.y0, the row b.ys is the scroll for), so clipping
+    // moves which rows are emitted and nothing about the scroll maths.
+    const int anchor = b.y0;
+    const int y0     = b.y0 < pr.y ? pr.y : b.y0;
+    const int y1     = b.y1 > (pr.y + pr.h) ? (pr.y + pr.h) : b.y1;
     if (y1 <= y0) return;
 
+    const u16 xs = b.xs, ys = b.ys;
     const int vpw      = video::viewport_px();
     // Shared with the SDL/desktop core (::emu::ComputeNtGeometry,
     // src/emu/emu.hpp) so this backend's read side stays byte-for-byte
@@ -276,7 +424,7 @@ static void draw_bg_band(const int y0raw, const int y1raw, const u16 xs, const u
     bg_count[0] = bg_count[1] = bg_count[2] = bg_count[3] = 0;
 
     const int sx0 = -(static_cast<int>(xs) & 7);
-    const int sy0 = y0 - (static_cast<int>(ys) & 7);
+    const int sy0 = anchor - (static_cast<int>(ys) & 7);
 
     for (int syt = sy0; syt < y1; syt += 8) {
         // Clip this tile row to the band so partial top/bottom tiles cut clean.
@@ -286,7 +434,7 @@ static void draw_bg_band(const int y0raw, const int y1raw, const u16 xs, const u
         const int r0  = vy0 - syt;          // first visible tile row (0..7)
         const int h   = vy1 - vy0;          // visible height (1..8)
 
-        const int world_y   = static_cast<int>(ys) + (syt - y0);
+        const int world_y   = static_cast<int>(ys) + (syt - anchor);
         const int wym       = ((world_y % world_h) + world_h) % world_h;
         const int trow      = wym / 8;
         const int local_row = trow % geo.tileH;
@@ -296,10 +444,11 @@ static void draw_bg_band(const int y0raw, const int y1raw, const u16 xs, const u
         const int row32     = local_row * geo.tileW;
 
         for (int sxt = sx0; sxt < vpw; sxt += 8) {
-            // Clip this tile column to the NES window so a partial left/right tile
-            // (non-zero fine-X scroll) cuts clean instead of bleeding into a bar.
-            const int vx0 = sxt < 0 ? 0 : sxt;
-            const int vx1 = (sxt + 8) > vpw ? vpw : (sxt + 8);
+            // Clip this tile column to the PANEL so a partial left/right tile
+            // (non-zero fine-X scroll, or the bottom screen's 40px inset) cuts
+            // clean instead of bleeding into a bar or into the bezel.
+            const int vx0 = sxt < pr.x ? pr.x : sxt;
+            const int vx1 = (sxt + 8) > (pr.x + pr.w) ? (pr.x + pr.w) : (sxt + 8);
             if (vx1 <= vx0) continue;
             const int c0  = vx0 - sxt;          // first visible tile column (0..7)
             const int w   = vx1 - vx0;          // visible width (1..8)
@@ -326,47 +475,68 @@ static void draw_bg_band(const int y0raw, const int y1raw, const u16 xs, const u
         }
     }
 
-    for (int p = 0; p < 4; p++)
+    for (int p = 0; p < 4; p++) {
+        // Unbaked can only mean this band's set was evicted later in the plan
+        // (see chr_set_now) -- draw nothing rather than sample a texture whose
+        // texels belong to no state at all.
+        if (!chr_set[b.set].baked[p]) continue;
         for (int i = 0; i < bg_count[p]; i++)
-            draw_bg_cell(&atlas_bg[p], bg_bucket[p][i]);
+            draw_bg_cell(&chr_set[b.set].tex[p], bg_bucket[p][i], pr);
+    }
 }
 
-// Draw the visible sprites of the requested priority class, bucketed by palette.
-// NES sprite colour-0 is transparent (baked alpha 0). y is +1 vs OAM (matches
-// the PPU). Mirrors OGC draw_sprites.
-static void draw_sprites(const bool behind) {
+// Which sprite palettes the OAM shadow actually uses, as a bit per palette.
+// The plan pass bakes only these: a sprite atlas for a palette no sprite is in
+// is a megabyte of texel writes for nothing.
+static u8 sprite_palette_mask() {
     const oam::sprite_t *oam = emu::OamShadow();
+    u8 mask = 0;
+    for (int s = 0; s < OAM_SPRITES; s++) mask |= static_cast<u8>(1u << (oam[s].attributes & 3));
+    return mask;
+}
+
+// Draw the visible sprites of the requested priority class on panel @p pr, out
+// of atlas set @p si, bucketed by palette. NES sprite colour-0 is transparent
+// (baked alpha 0). y is +1 vs OAM (matches the PPU). Mirrors OGC draw_sprites.
+static void draw_sprites(const bool behind, const video::PanelRect &pr, const int si) {
+    const oam::sprite_t *oam = emu::OamShadow();
+    const int  vpy    = video::viewport_py();
     const int  vpw    = video::viewport_px();
     const bool tall   = ppu::PPUCTRL & ppu::ctrl::SPRITE_SIZE;
-    // Sprite clipping here is the two FAR edges only. OAM coordinates are
-    // unsigned on every target (::oam::oam_t) and real NES hardware cannot
-    // overhang the left or top edge either, so there is no negative case to
-    // test -- and unlike the GBA/DS backends this one applies no window
-    // transform to sprite Y, so nothing can push an on-screen sprite negative
-    // afterwards. That same absence is why the park band (::oam::parked) needs
-    // no test of its own: 0xF0..0xFF is past 240, so the vertical clip has it.
+    // The cheap reject here is the two FAR edges of the WHOLE VIEWPORT; the
+    // per-panel clip inside draw_spr_tile does the rest, including the seam and
+    // the bottom screen's bezel inset. OAM coordinates are unsigned on every
+    // target (::oam::oam_t) and real NES hardware cannot overhang the left or
+    // top edge either, so there is no negative case to test -- and unlike the
+    // GBA backend this one applies no window transform to sprite Y, so nothing
+    // can push an on-screen sprite negative afterwards. Nor does the park band
+    // need a test of its own: ::ParkedSpriteY (demo/src/main.hpp) is a row past
+    // viewport_py(), which is what this rejects. Note that 240 is NOT such a
+    // row here -- it is the first row of the bottom screen.
     const int  atlas0 = (ppu::PPUCTRL & ppu::ctrl::SPRITE_ADDR) ? 256 : 0;
 
     for (int p = 0; p < 4; p++) {
+        C3D_Tex *tex = &chr_set[si].tex[4 + p];
+        if (!chr_set[si].baked[4 + p]) continue;   // no sprite uses this palette
         for (int s = 0; s < OAM_SPRITES; s++) {
             const oam::sprite_t &o = oam[s];
             if ((o.attributes & 0x03) != p)            continue;
             if (((o.attributes & 0x20) != 0) != behind) continue;
             const int sx = static_cast<int>(o.x);
             const int sy = static_cast<int>(o.y) + 1;
-            if (sx >= vpw || sy >= 240) continue;
+            if (sx >= vpw || sy >= vpy) continue;
             const bool flipH = (o.attributes & 0x40) != 0;
             const bool flipV = (o.attributes & 0x80) != 0;
             if (!tall) {
-                draw_spr_tile(&atlas_spr[p], atlas0 + o.tile, sx, sy, flipH, flipV);
+                draw_spr_tile(tex, atlas0 + o.tile, sx, sy, flipH, flipV, pr);
                 continue;
             }
             // 8x16: tile bit 0 selects the pattern table (overriding SPRITE_ADDR),
             // tile & 0xFE is the top-half tile of the pair. A vertical flip swaps
             // which half draws on top as well as flipping each half's rows.
             const int pair = (o.tile & 1) * 256 + (o.tile & 0xFE);
-            draw_spr_tile(&atlas_spr[p], pair + (flipV ? 1 : 0), sx, sy,          flipH, flipV);
-            draw_spr_tile(&atlas_spr[p], pair + (flipV ? 0 : 1), sx, sy + 8,      flipH, flipV);
+            draw_spr_tile(tex, pair + (flipV ? 1 : 0), sx, sy,     flipH, flipV, pr);
+            draw_spr_tile(tex, pair + (flipV ? 0 : 1), sx, sy + 8, flipH, flipV, pr);
         }
     }
 }
@@ -384,8 +554,38 @@ void WaitForPresent() {
     const bool bg  = ppu::PPUMASK & ppu::mask::BG;
     const bool spr = ppu::PPUMASK & ppu::mask::SPRITE;
 
-    // Rebuild the baked atlases if the palette moved (outside FrameBegin/End).
-    if (bg || spr) maybe_rebuild_atlases();
+    frame_stamp++;
+
+    // ---- PASS 1: plan ----------------------------------------------------
+    // Everything that may touch the GPU outside a frame -- the palette check and
+    // every atlas bake/upload -- happens here, before C3D_FrameBegin, and this
+    // is also the pass that runs the game's own per-frame logic (GenerateBands
+    // fires the scanline IRQ handlers). See this file's header comment.
+    band_n = 0;
+    int spr_set_behind = 0, spr_set_front = 0;
+
+    if (bg || spr) {
+        note_palette();
+        // Sprites are drawn in two batches that bracket the bands, so they take
+        // the bank state at those two moments: whatever the NMI left for the
+        // behind batch, whatever the last handler left for the front one.
+        spr_set_behind = chr_set_now();
+        emu::GenerateBands(bg ? plan_band : band_noop);
+        spr_set_front  = chr_set_now();
+
+        if (spr) {
+            const u8 mask = sprite_palette_mask();
+            for (int p = 0; p < 4; p++) {
+                if (!(mask & (1u << p))) continue;
+                ensure_atlas(spr_set_behind, p, true);
+                ensure_atlas(spr_set_front,  p, true);
+            }
+        }
+    } else {
+        // Rendering off: still walk the timeline so the IRQ handlers (game
+        // logic) fire; the screens stay at the black clear.
+        emu::GenerateBands(band_noop);
+    }
 
     // Backdrop = universal background colour (paletteRAM[0]) when rendering, else
     // black. citro2d also clears depth here; the GEQUAL/no-depth-write state then
@@ -398,23 +598,22 @@ void WaitForPresent() {
         clear = C2D_Color32(0, 0, 0, 0xFF);
     }
 
+    // ---- PASS 2: draw ----------------------------------------------------
+    // One target per panel, each getting the share of every band and every
+    // sprite that lands on it. NES priority order within a panel: behind-sprites
+    // under the background, the background (colour-0 transparent) over them,
+    // front-sprites on top.
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-    C2D_TargetClear(top, clear);
-    C2D_SceneBegin(top);
+    for (u8 i = 0; i < video::panel_count(); i++) {
+        C2D_TargetClear(panel_target[i], clear);
+        C2D_SceneBegin(panel_target[i]);
+        if (!(bg || spr)) continue;
 
-    if (bg || spr) {
-        // NES priority order: behind-sprites under the background, the
-        // background (colour-0 transparent) over them, front-sprites on top.
-        // GenerateBands also walks the IRQ timeline (running game logic).
-        if (spr) draw_sprites(true);
-        emu::GenerateBands(bg ? draw_bg_band : band_noop);
-        if (spr) draw_sprites(false);
-    } else {
-        // Rendering off: still walk the timeline so the IRQ handlers (game
-        // logic) fire; the screen stays at the black clear.
-        emu::GenerateBands(band_noop);
+        const video::PanelRect pr = video::panel_rect(i);
+        if (spr) draw_sprites(true, pr, spr_set_behind);
+        if (bg)  for (int b = 0; b < band_n; b++) draw_bg_band(band_rec[b], pr);
+        if (spr) draw_sprites(false, pr, spr_set_front);
     }
-
     C3D_FrameEnd(0);
 
     /* No IRQs permitted post-frame; discard anything still queued from this
@@ -439,21 +638,20 @@ void irq::init() {
     osSetSpeedupEnable(true);
 
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
-    C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
+    // Both panels' worth of quads now go through citro2d in one frame: the top
+    // screen's 51x31 cells plus the bottom's 41x31, plus up to 128 sprite tiles
+    // per panel -- past the 4096-object default, and an object past the budget
+    // is dropped silently (a blank stripe wherever the frame ran out).
+    C2D_Init(8192);
     C2D_Prepare();
 
-    top = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
+    // One target per panel: the viewport spans both screens (video.hpp's
+    // TARGET_CTR branch), and ::video::panel_rect indexes them in this order.
+    panel_target[0] = C2D_CreateScreenTarget(GFX_TOP,    GFX_LEFT);
+    panel_target[1] = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
-    // Eight palette-baked CHR atlases (4 bg + 4 spr), 128x256 RGBA8, nearest-
-    // neighbour so the NES pixels stay crisp when citro2d scales the quads.
-    for (int p = 0; p < 4; p++) {
-        C3D_TexInit(&atlas_bg[p],  ATLAS_W, ATLAS_H, GPU_RGBA8);
-        C3D_TexInit(&atlas_spr[p], ATLAS_W, ATLAS_H, GPU_RGBA8);
-        C3D_TexSetFilter(&atlas_bg[p],  GPU_NEAREST, GPU_NEAREST);
-        C3D_TexSetFilter(&atlas_spr[p], GPU_NEAREST, GPU_NEAREST);
-        C3D_TexSetWrap(&atlas_bg[p],  GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
-        C3D_TexSetWrap(&atlas_spr[p], GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
-    }
+    // The atlases themselves are allocated and baked on demand, per CHR bank
+    // state and per palette (see ensure_atlas) -- nothing to do up front.
 
     atlas_scratch = (u32 *)linearAlloc(ATLAS_W * ATLAS_H * sizeof(u32));
 
@@ -465,10 +663,9 @@ void irq::init() {
 
 void irq::post() {
     linearFree(atlas_scratch);
-    for (int p = 0; p < 4; p++) {
-        C3D_TexDelete(&atlas_bg[p]);
-        C3D_TexDelete(&atlas_spr[p]);
-    }
+    for (auto &set : chr_set)
+        for (int k = 0; k < 8; k++)
+            if (set.inited[k]) C3D_TexDelete(&set.tex[k]);
     C2D_Fini();
     C3D_Fini();
     gfxExit();

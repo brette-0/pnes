@@ -761,12 +761,18 @@ namespace video {
     /**
      * @brief Bytes one physical nametable occupies: a tile plane (one byte
      *        per tile, ::viewport_tx() * ::viewport_ty() -- floored at the
-     *        NES-native 32x30 minimum, see ::emu::ComputeNtGeometry's own doc
-     *        comment, emu.hpp, for why) plus its attribute plane (one byte
+     *        NES-native 32x30 minimum, and the WIDTH rounded up to a whole
+     *        number of attribute bytes; see ::emu::ComputeNtGeometry's own doc
+     *        comment, emu.hpp, for both) plus its attribute plane (one byte
      *        per 4x4-tile block).
+     *
+     * Must stay byte-for-byte in step with ::emu::ComputeNtGeometry: that is
+     * the page layout every read and write actually uses, and this is what
+     * sizes the allocation it indexes into.
      */
     constexpr unsigned nametable_plane_bytes() {
-        const unsigned tx = viewport_tx() < 32 ? 32u : viewport_tx();
+        const unsigned txMin = viewport_tx() < 32 ? 32u : viewport_tx();
+        const unsigned tx = (txMin + 3u) & ~3u;
         const unsigned ty = viewport_ty() < 30 ? 30u : viewport_ty();
         const unsigned at_w = (tx + 3) / 4, at_h = (ty + 3) / 4;
         return tx * ty + at_w * at_h;

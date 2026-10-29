@@ -69,8 +69,28 @@ inline NtGeometry ComputeNtGeometry() {
     // the floor never fights a genuinely variable viewport, only ever
     // protects a target whose own viewport is permanently smaller than the
     // background it crops.
-    const int tw = static_cast<int>(video::viewport_tx()) < 32 ? 32 : static_cast<int>(video::viewport_tx());
-    const int th = static_cast<int>(video::viewport_ty()) < 30 ? 30 : static_cast<int>(video::viewport_ty());
+    const int twMin = static_cast<int>(video::viewport_tx()) < 32 ? 32 : static_cast<int>(video::viewport_tx());
+    const int th    = static_cast<int>(video::viewport_ty()) < 30 ? 30 : static_cast<int>(video::viewport_ty());
+
+    // WIDTH IS ROUNDED UP TO A WHOLE NUMBER OF ATTRIBUTE BYTES (4 tiles). An
+    // attribute byte spans a 4x4-tile block, so a page whose width is not a
+    // multiple of 4 puts its last byte half outside the page -- and, worse,
+    // makes the attribute grid of every page after the first start 4 - (tw % 4)
+    // tiles out of phase with the tile grid. Real NES pages are 32 wide, so
+    // nothing in the NES model (or in any caller that aligns an attribute write
+    // with `x & ~3`, or pairs tile columns into attribute halves by their
+    // parity) ever has to think about it. The 3DS's 50-tile viewport was the
+    // first page width to break it: world tile column 50 is page 1 column 0,
+    // which is an attribute-byte boundary the world-space `& ~3` does not land
+    // on, so every streamed column in an odd page wrote its palettes into the
+    // wrong half of the wrong byte -- the revealed column kept the palettes the
+    // plane held 50 columns ago while the column behind it took the new ones.
+    //
+    // Rounded UP, not down: down would make the plane narrower than the
+    // viewport, so the last columns on screen would alias to the next page.
+    // The surplus columns (two, on the 3DS) are simply never shown -- the
+    // viewport decides what is visible, this only decides what is addressable.
+    const int tw = (twMin + 3) & ~3;
 
     const int gridW = static_cast<int>(video::nametable_grid_w());
     const int gridH = static_cast<int>(video::nametable_grid_h());

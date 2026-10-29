@@ -25,7 +25,7 @@ namespace level {
     extern const u8 LevelDataAttributes[];
     extern Cursor edgeR;
     extern Cursor edgeL;   // seeded valid at reset, kept in lockstep with edgeR
-    extern u8 attr_column;
+    extern u8 attr_half;
     extern u8 AttributeBuffer[8];
     extern const Level Levels[];
     u8 GetPrevWrite(u8 step);
@@ -39,12 +39,18 @@ namespace level {
     bool LoadLevel(u16 n);
 
     // Resets edgeR/dynEdgeR to the level start (world column 0) and fills
-    // nCols nametable columns (i in [0, nCols), so nCols should be even)
-    // from there via GetNextWrite/GetCurrentNext -- the same streaming
+    // nCols nametable columns (i in [0, nCols), so nCols should be even -- it
+    // is two tile columns per metatile column) from there via
+    // GetNextWrite/GetCurrentNext -- the same streaming
     // fill EnterLevelSetup uses to seed the level view, and title.cpp's
     // level preview to render a shorter version of the same thing. Always
     // writes at nametable row 2 (just below the 2-row HUD) and 28 rows
     // tall (levelHeight metatiles) -- both GetNextWrite/GetCurrentNext's
     // own attribute math are hardwired to that placement.
+    //
+    // An ODD number of METATILE columns (nCols == 2 mod 4) is allowed: the last
+    // attribute byte then carries only its left half, whose right half covers
+    // the metatile column after the fill, and nothing downstream inherits a
+    // parity from the count (see ::attr_half, levels.cpp).
     void PopulateNameTableColumns(u16 nCols);
 }
