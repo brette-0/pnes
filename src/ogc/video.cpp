@@ -7,7 +7,10 @@
  * hands the NES's own primitives to GX:
  *
  *   - The CHR ROM becomes a GX_TF_CI4 (4bpp paletted) atlas: each 8x8 NES tile
- *     is one CI4 block, so all 512 tiles fit a 128x256 atlas (built once).
+ *     is one CI4 block, so all 512 tiles fit a 128x256 atlas. Each slot is baked
+ *     through the mapper's tile translator, so a CHR bank switch -- including
+ *     one a scanline IRQ handler makes part-way down the frame, as the demo's
+ *     HUD split does -- gets its own atlas and its own bands (see ATLAS_SLOTS).
  *   - paletteRAM becomes GX_TL_RGB5A3 TLUTs (4 background + 4 sprite), rebuilt
  *     each frame. Colour index 0 maps to RGB5A3 0x0000 (alpha 0); an alpha-test
  *     discard reproduces NES transparency -- background colour-0 shows the
@@ -103,11 +106,27 @@ static Mtx44       proj_screen;   // screen-pixel space, profiler overlay only
 static constexpr int ATLAS_TILES_X = 16;
 static constexpr int ATLAS_W       = ATLAS_TILES_X * 8;          // 128
 static constexpr int ATLAS_H       = (512 / ATLAS_TILES_X) * 8;  // 256
-static u8       *chr_atlas = nullptr;
-static GXTexObj  chrTexObj;
-// Generation of ::ppu::chrGeneration the atlas above was last built from.
-// Sentinel (not 0, ::chrGeneration's own initial value) forces the first build.
-static u32       chr_built_gen = ~0u;
+//
+// MID-FRAME CHR SWITCHING: one atlas is not enough. The game banks CHR inside a
+// scanline IRQ handler -- the demo's HUD split hands the top rows the `ui` entry
+// and the playfield the `staticLevelTiles` entry, and both are mapped at the
+// SAME PPU window ($0400), so the two states of that window must both be on
+// screen in one frame. Because ::emu::GenerateBands fires each handler between
+// the bands it affects, each band can be drawn from its own atlas -- but the GP
+// consumes the FIFO asynchronously, so re-baking one buffer in place mid-frame
+// would repaint quads that were already queued (and are possibly still being
+// rasterised) from the older bank. Hence a small ring of atlas buffers: a band
+// whose CHR generation differs from the bound one bakes into the NEXT buffer and
+// binds that, leaving earlier bands' texels untouched for the GP to finish with.
+static constexpr int ATLAS_SLOTS = 4;
+static u8       *chr_atlas[ATLAS_SLOTS] = {};
+static GXTexObj  chrTexObj[ATLAS_SLOTS];
+// ::ppu::chrGeneration each slot was last baked from. Sentinel (not 0,
+// ::chrGeneration's own initial value) marks a slot as holding nothing.
+static u32       atlas_gen[ATLAS_SLOTS]  = { ~0u, ~0u, ~0u, ~0u };
+static int       atlas_cur  = 0;   // slot currently bound / matching the banks
+static int       atlas_ring = 0;   // next slot the ring hands out
+static int       atlas_baked_this_frame = 0;   // bakes since the last GX_DrawDone
 
 // Per-palette TLUTs, rebuilt each frame from paletteRAM. CI4 needs 16 entries.
 // 32-byte aligned: GX_LoadTlut DMAs the source by physical address and requires
@@ -175,11 +194,12 @@ static inline u16 rgb5a3_opaque(const u32 argb) {
 // for a non-bank-switching game this is byte-for-byte the old init-only bake;
 // a bank-switching mapper (MMC3) instead needs this re-run whenever it
 // switches a CHR bank -- see render_gx's dirty check.
-static void build_chr_atlas() {
+static void build_chr_atlas(const int slot) {
     constexpr int blocks_per_row = ATLAS_W / 8;   // 16
+    u8 *const dst = chr_atlas[slot];
     for (int ti = 0; ti < 512; ti++) {
         const u8 *tile = CHR_ROM + ppu::ResolveTile(static_cast<u16>(ti * 16));
-        u8       *blk  = chr_atlas + (static_cast<size_t>((ti >> 4)) * blocks_per_row
+        u8       *blk  = dst + (static_cast<size_t>((ti >> 4)) * blocks_per_row
                                        + (ti & 15)) * 32;
         for (int row = 0; row < 8; row++) {
             const u8 p0 = tile[row];
@@ -192,7 +212,46 @@ static void build_chr_atlas() {
             }
         }
     }
-    DCFlushRange(chr_atlas, ATLAS_W * ATLAS_H / 2);
+    DCFlushRange(dst, ATLAS_W * ATLAS_H / 2);
+    atlas_gen[slot] = ppu::chrGeneration;
+}
+
+// Bind an atlas that matches the CHR banks as they stand RIGHT NOW, baking one
+// if no slot holds this generation. Called at the head of every band and sprite
+// batch, so a bank switch performed by a scanline IRQ handler takes effect from
+// the next band onward -- the GX analogue of the emu PPU routing each tile fetch
+// through ::ppu::ResolveTile. Cheap no-op (one compare) when nothing switched.
+static void sync_chr_atlas() {
+    if (atlas_gen[atlas_cur] == ppu::chrGeneration) return;
+
+    for (int i = 0; i < ATLAS_SLOTS; i++) {
+        if (atlas_gen[i] == ppu::chrGeneration) {   // already baked, contents valid
+            atlas_cur = i;
+            GX_InvalidateTexAll();
+            return;
+        }
+    }
+
+    // More distinct bank states in one frame than the ring has buffers: the only
+    // safe way to reuse a buffer this frame has already drawn from is to let the
+    // GP catch up first. A stall, not corruption -- and unreachable for any
+    // sane split count (the demo uses two states per frame).
+    if (atlas_baked_this_frame >= ATLAS_SLOTS) {
+        GX_DrawDone();
+        atlas_baked_this_frame = 0;
+    }
+
+    atlas_cur  = atlas_ring;
+    atlas_ring = (atlas_ring + 1) % ATLAS_SLOTS;
+    atlas_baked_this_frame++;
+    build_chr_atlas(atlas_cur);
+    GX_InvalidateTexAll();
+}
+
+// Bind the live atlas slot to TEXMAP0 with the TLUT the caller just loaded.
+static inline void load_chr_tex() {
+    GX_InitTexObjTlut(&chrTexObj[atlas_cur], GX_TLUT0);
+    GX_LoadTexObj(&chrTexObj[atlas_cur], GX_TEXMAP0);
 }
 
 // Rebuild the per-palette TLUTs from paletteRAM and set the backdrop clear.
@@ -241,6 +300,10 @@ static inline void quad(const int ax, const int ay, const int sx, const int sy,
 // ::emu::band_emit_fn: draw the nametable for screen rows [y0,y1) at the given
 // scroll. Background colour-0 is transparent so behind-sprites / backdrop show.
 static void draw_bg_band(const int y0, const int y1, const u16 xs, const u16 ys) {
+    // The handler that opened this band may have switched a CHR bank (the HUD
+    // split does exactly that), so re-resolve the atlas before drawing it.
+    sync_chr_atlas();
+
     const int vpw      = video::viewport_px();
     // Shared with the SDL/desktop core (::emu::ComputeNtGeometry,
     // src/emu/emu.hpp) so this backend's read side stays byte-for-byte
@@ -294,8 +357,7 @@ static void draw_bg_band(const int y0, const int y1, const u16 xs, const u16 ys)
     for (int p = 0; p < 4; p++) {
         if (!bg_count[p]) continue;
         GX_LoadTlut(&tlutBgObj[p], GX_TLUT0);
-        GX_InitTexObjTlut(&chrTexObj, GX_TLUT0);
-        GX_LoadTexObj(&chrTexObj, GX_TEXMAP0);
+        load_chr_tex();
         GX_Begin(GX_QUADS, GX_VTXFMT0, bg_count[p] * 4);
         for (int i = 0; i < bg_count[p]; i++) {
             const Cell &c = bg_bucket[p][i];
@@ -308,6 +370,8 @@ static void draw_bg_band(const int y0, const int y1, const u16 xs, const u16 ys)
 // Draw the visible sprites of the requested priority class. NES sprite colour-0
 // is transparent (alpha-test discarded). y is +1 vs OAM (matches the PPU).
 static void draw_sprites(const bool behind) {
+    sync_chr_atlas();
+
     const oam::sprite_t *oam = emu::OamShadow();
     const int  vpw    = video::viewport_px();
     const bool tall   = ppu::PPUCTRL & ppu::ctrl::SPRITE_SIZE;
@@ -337,8 +401,7 @@ static void draw_sprites(const bool behind) {
         if (!n) continue;
 
         GX_LoadTlut(&tlutSprObj[p], GX_TLUT0);
-        GX_InitTexObjTlut(&chrTexObj, GX_TLUT0);
-        GX_LoadTexObj(&chrTexObj, GX_TEXMAP0);
+        load_chr_tex();
         GX_Begin(GX_QUADS, GX_VTXFMT0, n * 4 * quads_per_sprite);
         for (int s = 0; s < OAM_SPRITES; s++) {
             const oam::sprite_t &o = oam[s];
@@ -492,6 +555,10 @@ static void draw_overlay() {
 // game logic) and calls draw_bg_band per scroll-constant band; sprites bracket
 // the background for NES priority.
 static void render_gx() {
+    // GX_DrawDone() at the end of the last WaitForPresent drained the GP, so
+    // every atlas buffer is free again for this frame's ring to hand out.
+    atlas_baked_this_frame = 0;
+
     GX_LoadProjectionMtx(proj_nes, GX_ORTHOGRAPHIC);
 
     const bool bg  = ppu::PPUMASK & ppu::mask::BG;
@@ -500,17 +567,11 @@ static void render_gx() {
     gx_mode_tiles();
 
     if (bg || spr) {
-        // A mapper (MMC3) switched a CHR bank since the atlas was last built --
-        // re-expand all 512 tiles through the translator. Gated on the
-        // generation counter so an unbanked (NROM) game never pays this cost
-        // past the one build already done in init(). GX_InvalidateTexAll below
-        // already runs unconditionally every frame (for the TLUT rebuild), so
-        // it covers invalidating the GPU's cached copy of chr_atlas too.
-        if (chr_built_gen != ppu::chrGeneration) {
-            build_chr_atlas();
-            chr_built_gen = ppu::chrGeneration;
-        }
-
+        // The atlas is NOT resolved here: a mapper (MMC3) can switch a CHR
+        // bank from inside a scanline IRQ handler, which runs part-way through
+        // GenerateBands below, so the bake is driven per band by
+        // sync_chr_atlas() instead. An unbanked (NROM) game never pays for it
+        // past the one build done in init() -- the generation never moves.
         build_tluts();
         GX_InvalidateTexAll();
 
@@ -680,12 +741,17 @@ void irq::init() {
     emu::InitMemory(video::vram_bytes());
 
     // --- GX-NATIVE resources ----------------------------------------------
-    chr_atlas = static_cast<u8 *>(memalign(32, ATLAS_W * ATLAS_H / 2));
-    build_chr_atlas();
-    chr_built_gen = ppu::chrGeneration;
-    GX_InitTexObjCI(&chrTexObj, chr_atlas, ATLAS_W, ATLAS_H, GX_TF_CI4,
-                    GX_CLAMP, GX_CLAMP, GX_FALSE, GX_TLUT0);
-    GX_InitTexObjFilterMode(&chrTexObj, GX_NEAR, GX_NEAR);
+    for (int i = 0; i < ATLAS_SLOTS; i++) {
+        chr_atlas[i] = static_cast<u8 *>(memalign(32, ATLAS_W * ATLAS_H / 2));
+        GX_InitTexObjCI(&chrTexObj[i], chr_atlas[i], ATLAS_W, ATLAS_H, GX_TF_CI4,
+                        GX_CLAMP, GX_CLAMP, GX_FALSE, GX_TLUT0);
+        GX_InitTexObjFilterMode(&chrTexObj[i], GX_NEAR, GX_NEAR);
+    }
+    // Bake slot 0 from the boot bank state; the ring hands out slot 1 next, so
+    // this one survives for as long as its generation stays live.
+    build_chr_atlas(0);
+    atlas_cur  = 0;
+    atlas_ring = 1;
 
     ogc_input_init();
 
@@ -712,7 +778,7 @@ void irq::post() {
     // libogc has no teardown counterpart to VIDEO_Init/GX_Init that a homebrew
     // app needs at exit; the loader resets the machine. Free the scratch buffers
     // so a clean shutdown doesn't leak (mostly documentary on a console).
-    free(chr_atlas);
+    for (u8 *a : chr_atlas) free(a);
     free(gp_fifo);
 
 #ifdef TARGET_WII
