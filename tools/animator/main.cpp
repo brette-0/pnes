@@ -15,6 +15,7 @@
 
 #include "chr_table.hpp"
 #include "codegen.hpp"
+#include "exporter.hpp"
 #include "metasprite_page.hpp"
 #include "palette_store.hpp"
 #include "palette_window.hpp"
@@ -582,20 +583,12 @@ private:
     /// exactly; a tile id alone does not, since two entries at the same offset
     /// into their VMAs share ids. The id is the fallback for a manifest that
     /// has been reorganised since the save.
+    /// The loaded sheet's cell for a saved sprite, by the same rule the
+    /// headless export uses (proj::findCell) -- so opening a project and
+    /// exporting it from a script resolve every sprite to the same cell.
     [[nodiscard]] const chr::Cell* findCell(const std::string& entry, const std::string& include,
                                             int tile, int id) const {
-        if (!table_) return nullptr;
-
-        for (const chr::Cell& cell : table_->cells) {
-            if (cell.include == include && cell.tileInInclude == tile &&
-                table_->entries[cell.entry].name == entry) {
-                return &cell;
-            }
-        }
-        for (const chr::Cell& cell : table_->cells) {
-            if (cell.id == id) return &cell;
-        }
-        return nullptr;
+        return table_ ? proj::findCell(*table_, entry, include, tile, id) : nullptr;
     }
 
     static QString formatCellId(const chr::Cell& cell) {
@@ -991,6 +984,30 @@ private:
 } // namespace
 
 int main(int argc, char** argv) {
+    // --export-all switches into the headless export (exporter::run) instead
+    // of opening anything -- parsed by hand, ahead of QApplication ever
+    // touching argv, because the export needs no Qt at all: every piece of it
+    // (proj, chr, codegen) is Qt-free, so this path works over ssh, from a
+    // script, or in a CI job with no display server. It is the same
+    // exporter::run the standalone `animator-export` binary is, so the two
+    // write identical headers; see exporter.hpp.
+    {
+        // The GUI's own switches, so --help from this binary describes the
+        // whole of it and not just the export half.
+        static constexpr const char* kGuiUsage =
+            "  -t, --tall         open a bare manifest with 8x16 tile grouping\n"
+            "\n"
+            "Without -E/--export-all the designer opens, on the project or "
+            "manifest given.\n";
+        exporter::Options options;
+        switch (exporter::parseArgs(argc, argv, options, /*exportImplied=*/false, kGuiUsage)) {
+            case exporter::Parse::Export: return exporter::run(options);
+            case exporter::Parse::Help:   return 0;
+            case exporter::Parse::Error:  return 1;
+            case exporter::Parse::NoExport: break;  // open the window as usual
+        }
+    }
+
     QApplication app(argc, argv);
 
     // Everything QApplication didn't claim (its own -style, -platform, ... are

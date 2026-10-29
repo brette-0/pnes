@@ -52,6 +52,22 @@
 #       act -j blobman-check
 #       cd demo/chr && blobman -i config.toml -o chr.bin -l cpp -v
 #
+#   animator-check (below) is the same arrangement for the animation data:
+#   demo/animations/gen/*.hpp (the pattern-byte tables demo/src reads a frame
+#   of animation out of) are committed, and this re-exports them from
+#   demo/animations/animations.anim with tools/animator's headless exporter and
+#   diffs the result. Every platform job re-exports them for itself as part of
+#   its own configure (the animator-export step in the root CMakeLists.txt),
+#   falling back to the committed headers on an image that cannot build the
+#   exporter -- so, as with blobman, what needs catching is the committed
+#   headers drifting away from the project or from the CHR layout they resolve
+#   against. Locally:
+#
+#       act -j animator-check
+#       cmake --build <builddir>   # the headers re-export as part of configure
+#       tools/animator/build/ci/animator-export -i demo/animations/<project>.anim \
+#           -o demo/animations/gen -v
+#
 #   Every platform job needs codegen-check (below), which builds tools/uitk
 #   (needs Qt) and exports demo/gen/<name>/<target>/<name>.hpp|.cpp for every
 #   demo/ui/<name>.uis -- demo/gen/ is gitignored, so every other job downloads codegen-check's
@@ -157,6 +173,56 @@ jobs:
           if ! git diff --exit-code -- demo/chr/chr.bin demo/chr/chr.h; then
             echo "::error::demo/chr/chr.bin or chr.h is out of date." \
                  "Repack and commit: cd demo/chr && blobman -i config.toml -o chr.bin -l cpp -v"
+            exit 1
+          fi
+
+  # demo/animations/gen/*.hpp -- the pattern-byte tables demo/src reads its
+  # animation frames out of -- are COMMITTED, exactly like blobman's pair, and
+  # exported by hand from the designer. Every platform build re-exports them
+  # at configure time (the animator-export step in the root CMakeLists.txt),
+  # but only where the image can build the exporter at all, and committing the
+  # result is manual either way. That is why this job exists: a stale header
+  # compiles perfectly well against pattern bytes that no longer describe the
+  # CHR layout, and the sprite draws as something else entirely on the console
+  # with every platform job green over it.
+  #
+  # Gates nothing and publishes nothing -- a diff, not a producer, so unlike
+  # codegen-check it does not block the platform builds.
+  #
+  # Runs on the bare runner rather than a container, like blobman-check: the
+  # exporter is host-native C++23 whose only dependency is toml++, which the
+  # animator's own CMakeLists fetches when the host has no system package (the
+  # runners do not). ANIMATOR_GUI=OFF keeps Qt out of it -- the export pipeline
+  # is deliberately Qt-free, and the designer itself is not wanted here.
+  animator-check:
+    name: Animator check (animation export)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build animator-export
+        run: |
+          cmake -S tools/animator -B tools/animator/build/ci \
+            -DCMAKE_BUILD_TYPE=Release -DANIMATOR_GUI=OFF
+          cmake --build tools/animator/build/ci --target animator-export -j"$(nproc)"
+
+      # -v here, unlike the configure-time export: this is the log someone
+      # reads when the diff below fails, so it dumps every frame's pattern
+      # bytes and the sheet's own cell warnings alongside the per-header
+      # summary.
+      - name: Re-export demo/animations/gen/*.hpp
+        run: |
+          for project in demo/animations/*.anim; do
+            tools/animator/build/ci/animator-export \
+              -i "$project" -o demo/animations/gen -v
+          done
+
+      - name: Check the committed animation headers are in sync
+        run: |
+          if ! git diff --exit-code -- demo/animations/gen; then
+            echo "::error::demo/animations/gen is out of date." \
+                 "Re-export and commit: animator-export -i demo/animations/animations.anim" \
+                 "-o demo/animations/gen -v (or File > Export All Headers in the designer)"
             exit 1
           fi
 

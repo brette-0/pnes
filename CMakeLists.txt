@@ -700,6 +700,160 @@ else()
         "there.")
 endif()
 
+# ----------------------------------------------------------------------
+# animator-export -- regenerates demo/animations/gen/<metasprite>.hpp (the
+# pattern-byte tables demo/src reads a frame of animation out of) for EVERY
+# demo/animations/*.anim, from the project and the .msprite sidecars it names,
+# by building and running tools/animator's headless exporter (see
+# tools/animator/README.md).
+#
+# Runs here, at CONFIGURE time, for the same reason the uitk-export and
+# blobman steps above do: the headers have to be current BEFORE anything
+# compiles against them. The .anim, every .msprite, and the animator's own
+# sources are listed in CMAKE_CONFIGURE_DEPENDS below, so editing an animation
+# in the designer is treated exactly like editing code -- a plain
+# `cmake --build <builddir>` reconfigures, re-exports and rebuilds whatever
+# that touched. The generated headers are ordinary headers, so the compiler's
+# own depfiles take it from there.
+#
+# The pattern bytes are re-resolved from demo/chr/config.toml on every export
+# (see exporter.cpp), which is why this step sits AFTER blobman's: a CHR edit
+# renumbers tiles, and the animation data has to be regenerated against the
+# layout that was just packed, not the one the .msprite files were last saved
+# against.
+#
+# Like blobman's outputs and unlike demo/gen/, these headers are COMMITTED --
+# so a host that cannot build the exporter (no C++ compiler of its own, no
+# system toml++ and no network to fetch it) is a STATUS message and the
+# committed headers, not a configure failure. CI's animator-check job is what
+# proves those committed headers still match the project.
+#
+# ANIMATOR_GUI=OFF: the designer itself is a Qt app, and only the exporter is
+# wanted here. That target is deliberately Qt-free -- toml++ is its only
+# dependency -- so this step works on the cross-build images, none of which
+# have Qt (unlike the uitk-export step above, which needs it and falls back to
+# a CI artifact without it).
+#
+# Built via its own nested `cmake` invocation rather than add_subdirectory,
+# for all the reasons spelled out on the uitk block above. The CXX/CC host
+# swap around it is still in force here -- it is the blobman step's own swap,
+# undone just below this block.
+# GLOB, not GLOB_RECURSE: the animator's sources are flat, and recursing would
+# sweep up whatever a developer's own tools/animator/cmake-build-*/ holds --
+# moc output that is rewritten on every build, so every build would then
+# reconfigure this one.
+file(GLOB ANIMATOR_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tools/animator/*.cpp)
+# Every project under demo/animations/, and every .msprite any of their sidecar
+# folders holds -- globbed rather than listed, so adding a second .anim (or a
+# metasprite to an existing one) needs no edit here, exactly as a new
+# demo/ui/*.uis needs none in the uitk step above. GLOB_RECURSE for the
+# sidecars because the folder's name is the .anim's own business.
+file(GLOB ANIMATOR_PROJECTS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/demo/animations/*.anim)
+file(GLOB_RECURSE ANIMATOR_METASPRITES CONFIGURE_DEPENDS
+     ${CMAKE_SOURCE_DIR}/demo/animations/*.msprite)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             ${ANIMATOR_PROJECTS}
+             ${ANIMATOR_METASPRITES}
+             ${ANIMATOR_SOURCES}
+             ${CMAKE_SOURCE_DIR}/tools/animator/CMakeLists.txt)
+
+# Same host compiler the blobman step above probed for, and the same reasons
+# for probing rather than letting the nested configure find out for itself --
+# see that block's own comment. One probe serves both, since both are plain
+# host tools built in the same configure pass.
+if(BLOBMAN_HOST_CXX)
+    clear_nested_build_dir_on_generator_change(${CMAKE_BINARY_DIR}/animator-build)
+    execute_process(
+            COMMAND ${CMAKE_COMMAND} -S ${CMAKE_SOURCE_DIR}/tools/animator
+                                     -B ${CMAKE_BINARY_DIR}/animator-build
+                                     -DCMAKE_BUILD_TYPE=Release
+                                     -DCMAKE_CXX_COMPILER=${BLOBMAN_HOST_CXX}
+                                     -DANIMATOR_GUI=OFF
+                                     ${NESTED_HOST_CMAKE_ARGS}
+            RESULT_VARIABLE ANIMATOR_CONFIGURE_RESULT
+            OUTPUT_QUIET)
+else()
+    set(ANIMATOR_CONFIGURE_RESULT 1)
+endif()
+
+# --target animator-export, not a bare build: ANIMATOR_GUI=OFF already means
+# the GUI is not a target of that build tree, and naming the one target this
+# step needs keeps it that way even if something else is added there later.
+if(ANIMATOR_CONFIGURE_RESULT EQUAL 0)
+    execute_process(
+            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/animator-build
+                                     --target animator-export
+            RESULT_VARIABLE ANIMATOR_BUILD_RESULT
+            OUTPUT_QUIET)
+else()
+    set(ANIMATOR_BUILD_RESULT 1)
+endif()
+
+# Why the headers could not be regenerated, phrased for both message branches
+# below -- one quoted string per case, for the same list-vs-string reason the
+# blobman block spells out.
+if(BLOBMAN_HOST_CXX)
+    set(ANIMATOR_FALLBACK_REASON "tools/animator's exporter failed to build with ${BLOBMAN_HOST_CXX} (see the output above -- most often no system toml++ and no network to fetch it)")
+else()
+    set(ANIMATOR_FALLBACK_REASON "this image/host has no C++ compiler of its own, only a cross toolchain (expected on the PS2 build image, for one)")
+endif()
+
+file(GLOB ANIMATOR_COMMITTED_HEADERS ${CMAKE_SOURCE_DIR}/demo/animations/gen/*.hpp)
+
+if(ANIMATOR_BUILD_RESULT EQUAL 0)
+    # Relative paths with the source tree as the working directory: the export
+    # log is read in the middle of CMake's own output, where an absolute path
+    # per line is noise. Nothing in the generated headers depends on it -- the
+    # banner names the project file, not the path it was reached by -- so this
+    # is cosmetic, unlike blobman's own relative invocation.
+    #
+    # No -v here: the default log already names every header it writes with
+    # the sizes baked into it, which is what a configure wants. -v adds every
+    # frame's pattern bytes and the sheet's own cell warnings -- the right
+    # thing when diagnosing wrong-looking sprites by hand, too much for every
+    # build. CI's animator-check job runs it verbose for exactly that reason.
+    # One export per project found above, all of them into the one gen folder:
+    # a header is named after its metasprite, and two projects with a
+    # metasprite of the same name would be refused by the exporter itself for
+    # the same reason it refuses two inside one project.
+    foreach(ANIMATOR_PROJECT ${ANIMATOR_PROJECTS})
+        file(RELATIVE_PATH ANIMATOR_PROJECT_RELATIVE ${CMAKE_SOURCE_DIR} ${ANIMATOR_PROJECT})
+        execute_process(
+                COMMAND ${CMAKE_BINARY_DIR}/animator-build/animator-export
+                        -i ${ANIMATOR_PROJECT_RELATIVE}
+                        -o demo/animations/gen
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                RESULT_VARIABLE ANIMATOR_EXPORT_RESULT)
+        if(NOT ANIMATOR_EXPORT_RESULT EQUAL 0)
+            message(FATAL_ERROR
+                "animator: exporting ${ANIMATOR_PROJECT_RELATIVE} failed (see output "
+                "above). The project or demo/chr/config.toml is the problem -- most "
+                "often a sprite naming art the CHR layout no longer has -- so this is "
+                "not a toolchain fallback case, and it is fatal: the alternative is "
+                "compiling against animation data nobody can account for.")
+        endif()
+    endforeach()
+elseif(ANIMATOR_COMMITTED_HEADERS)
+    # STATUS, not WARNING, for the same reason the blobman fallback is: this is
+    # the expected path on every Docker/CI image without a host compiler or a
+    # way to get toml++, where a warning would be permanent build noise.
+    message(STATUS
+        "animator: ${ANIMATOR_FALLBACK_REASON}; using the committed "
+        "demo/animations/gen/*.hpp instead of re-exporting them from "
+        "demo/animations/animations.anim. That is fine for a cross build -- "
+        "they are committed -- but edits to the project, to a .msprite, or to "
+        "the CHR layout they resolve against will NOT be picked up here. "
+        "Re-export on a host with a C++23 compiler, or let CI's animator-check "
+        "job catch the drift.")
+else()
+    message(FATAL_ERROR
+        "animator: ${ANIMATOR_FALLBACK_REASON}, and demo/animations/gen/ holds no "
+        "generated headers -- nothing to fall back to. Either restore the "
+        "committed ones or give this host a C++23 compiler and a toml++ (system "
+        "package or network); demo/src reads its animation frames out of those "
+        "headers and cannot compile without them.")
+endif()
+
 if(_MOS_ENV_CXX)
     set(ENV{CXX} "${_MOS_ENV_CXX}")
 else()

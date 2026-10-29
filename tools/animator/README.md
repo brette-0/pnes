@@ -4,21 +4,36 @@ This is an internal tool used to author sprite animations for use with the pnes 
 
 ### Building
 
-Standalone, like `tools/uitk` -- it is not part of the root CMake build:
+Standalone, like `tools/uitk` -- the root CMake build never adds it as a
+subdirectory:
 
 ```
 cmake -B build -S tools/animator
 cmake --build build
 ```
 
-Needs Qt6 (Qt5 also works) Widgets development packages. toml++ is used from
-the system if installed, fetched otherwise -- the same fallback `tools/blobman`
-has.
+Two targets come out of that:
+
+* `animator` -- the designer. Needs Qt6 (Qt5 also works) Widgets development
+  packages.
+* `animator-export` -- the same export with no designer attached, built from
+  the pipeline's Qt-free half. **No Qt at all**, so it builds anywhere a C++23
+  compiler and toml++ do.
+
+toml++ is used from the system if installed, fetched otherwise -- the same
+fallback `tools/blobman` has. `-DANIMATOR_GUI=` picks what gets built: `AUTO`
+(the default) builds the designer when Qt is found and says so when it is not,
+`ON` makes a missing Qt an error, `OFF` builds only the exporter.
+
+The root build does configure this directory, at configure time, to build and
+run `animator-export` -- see *Headless export* below.
 
 ### Usage
 
 ```
 animator [-t|--tall] [<project.anim> | <manifest.toml>]
+animator      -E|--export-all [-i <project.anim>] [-o <dir>] [-v]
+animator-export               [-i <project.anim>] [-o <dir>] [-v]
 ```
 
 The file is either a project (`.anim`) or a blobman manifest (`tools/blobman`,
@@ -26,6 +41,9 @@ e.g. `demo/chr/config.toml`) -- told apart by extension, since both are TOML.
 Either can also be opened from the File menu. `-t`/`--tall` starts in 8x16 mode,
 which *View -> 8x16 Tiles* toggles; a project carries its own mode, so the flag
 does not apply to one.
+
+`-E`/`--export-all` exports instead of opening anything; `animator-export`
+needs no switch to do that, since it is all it does.
 
 ### Current state
 
@@ -295,3 +313,77 @@ refused by *Export Header*: there is no animation to emit, and a zero-length
 array is not something C++ takes. Two metasprites whose names fold to one
 identifier are refused outright, before anything is written, for the same
 reason the `.msprite` stems are: one header would overwrite the other.
+
+### Headless export
+
+The export is also a command line, and the same one either binary takes:
+
+```
+animator-export -i <project.anim> -o <dir> [-v]
+animator --export-all -i <project.anim> -o <dir> [-v]
+```
+
+It writes what *Export All Headers* writes -- one header per metasprite, into
+`-o` (`gen/` beside the project if left out) -- and nothing else: no window is
+opened, no display server is needed, and `animator-export` does not even link
+Qt. Every piece of the pipeline it drives (the manifest reader, the project
+format, the code generator) is deliberately Qt-free, which is what makes that
+possible; the designer runs the identical code, so a headless export and a
+*File -> Export All* of the same project write identical bytes.
+
+**Pattern bytes are re-resolved from the manifest on every export**, not taken
+from the `.msprite` files. A saved sprite names the art it was stamped from --
+its entry, its include and the tile index within that include -- and that is
+what survives a CHR edit: repacking an include or moving an entry's VMA
+renumbers tiles, and the sprite still means the same picture. So the manifest
+is read, each sprite is matched back to its cell, and the cell's pattern byte
+is what gets emitted. A sprite that names art the manifest no longer has
+**fails** the export rather than exporting a hole where a drawn sprite should
+be: the project and the CHR layout genuinely disagree, which is for a human to
+settle.
+
+What it logs, on stdout, is what it is exporting: the project and its sizes,
+the manifest it resolved against, the output folder, and one line per header
+with the extent, the slot count, the frame count and the bytes. `-v`/`--verbose`
+adds every frame's pattern bytes exactly as the header will hold them, the
+sheet's own cell warnings, and every sprite whose stored byte the manifest
+disagreed with. Problems go to stderr, and a failed export exits non-zero with
+the reason on it.
+
+```
+animator: project demo/animations/animations.anim: 2 metasprites, 1 palette, 8x16 tiles
+animator:   manifest ../chr/config.toml -> demo/chr/config.toml
+animator:   output   demo/animations/gen
+animator:   sheet    4 entries, 70 cells, blob 16384 bytes (27 cell warnings -- -v lists them)
+animator:   mary_standing.hpp: 2x1 tiles, 2 slots, 1 frame, 2 bytes, palette 'player'
+animator:     frame 0 "standing" timer 0: 05 07
+animator: exported 2 headers, 8 bytes of frame data, into demo/animations/gen
+```
+
+That log is the point of the headless path having one at all: it runs inside
+somebody else's build output, where a step that said nothing would be the one
+step nobody could tell had gone stale.
+
+### In the build and in CI
+
+The root `CMakeLists.txt` runs this at **configure** time -- the
+`animator-export` step, beside the `uitk-export` and `blobman` ones -- so the
+generated headers are current before anything compiles against them. It
+configures this directory with `-DANIMATOR_GUI=OFF`, builds `animator-export`
+and runs it once per project it finds -- the projects are globbed, so a new one
+needs no edit there. Every project file, every `.msprite` beside them and the
+animator's own sources are configure dependencies, so editing an animation
+reconfigures, re-exports and rebuilds on the next `cmake --build <builddir>`
+with nothing to remember.
+
+It sits *after* the blobman step deliberately: pattern bytes are resolved
+against the CHR layout, so the export has to see the manifest that was just
+packed.
+
+A host that cannot build the exporter -- no compiler of its own, no system
+toml++ and no network to fetch one, which is several of the cross-build images
+-- gets a `STATUS` line and the committed headers instead, exactly as the
+blobman step falls back to the committed CHR pair. The generated headers are
+committed for that reason. CI's `animator-check` job is what catches them
+drifting: it builds the exporter, re-exports verbosely and diffs the result
+against what is committed.

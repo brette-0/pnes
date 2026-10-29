@@ -350,4 +350,18 @@ std::optional<Project> load(const std::filesystem::path& path, std::string& erro
     return project;
 }
 
+const chr::Cell* findCell(const chr::Table& table, const std::string& entry,
+                          const std::string& include, int tile, int id) {
+    for (const chr::Cell& cell : table.cells) {
+        if (cell.include == include && cell.tileInInclude == tile &&
+            table.entries[cell.entry].name == entry) {
+            return &cell;
+        }
+    }
+    for (const chr::Cell& cell : table.cells) {
+        if (cell.id == id) return &cell;
+    }
+    return nullptr;
+}
+
 } // namespace proj

@@ -132,4 +132,20 @@ std::filesystem::path resolve(const Project& project, const std::string& relativ
 /// own identifier folding so the two tools agree on what a name may contain.
 std::string fileStem(const std::string& name);
 
+/**
+ * @brief The cell of @p table holding the art a sprite names, or nullptr.
+ *
+ * Matched on the art itself -- @p entry, @p include and @p tile, the tile's
+ * index within that include -- because that is what survives a CHR layout
+ * change: moving an entry's VMA or repacking an include renumbers every id in
+ * it while the sprite still means the same picture. @p id is only the
+ * fallback, for a .msprite naming art no include of this manifest has.
+ *
+ * Shared by the editor's own load path and the headless export (exporter.cpp)
+ * so the two cannot disagree about which cell -- and therefore which pattern
+ * byte -- a saved sprite resolves to.
+ */
+const chr::Cell* findCell(const chr::Table& table, const std::string& entry,
+                          const std::string& include, int tile, int id);
+
 } // namespace proj
