@@ -23,7 +23,10 @@ MetaspritePage::MetaspritePage(int zoom, PaletteStore* palettes, QWidget* parent
 
     name_ = new QLineEdit(attributes);
     // The name is the .msprite filename and the tab label, so it is an
-    // attribute of the metasprite rather than something the window owns.
+    // attribute of the metasprite rather than something the window owns. It is
+    // also the generated class's name, so it is held to a C++ identifier the
+    // same way a frame name is.
+    name_->setValidator(identifierValidator(name_));
     connect(name_, &QLineEdit::textChanged, this, &MetaspritePage::nameChanged);
     connect(name_, &QLineEdit::textChanged, this, &MetaspritePage::dirtied);
 
@@ -166,7 +169,9 @@ QString MetaspritePage::name() const {
 }
 
 void MetaspritePage::setName(const QString& name) {
-    name_->setText(name);  // textChanged carries it on to the tab label
+    // setText bypasses the validator, so a load is folded here -- see
+    // ::identifierSafe.
+    name_->setText(identifierSafe(name));  // textChanged carries it on to the tab label
 }
 
 QString MetaspritePage::paletteName() const {
@@ -241,7 +246,7 @@ void MetaspritePage::clearFrames() {
 
 void MetaspritePage::newFrame() {
     auto* frame = new MetaspriteFrame(frameIdCounter_++, zoom_,
-                                      QString("frame %1").arg(++frameNumber_), frames_);
+                                      QString("frame_%1").arg(++frameNumber_), frames_);
     adopt(frame);
 
     const int index = frames_->addTab(frame, frame->frameName());
@@ -276,12 +281,15 @@ void MetaspritePage::adopt(MetaspriteFrame* frame) {
     connect(frame, &MetaspriteFrame::attributesChanged, this, [this, frame] {
         emit dirtied();
         if (frames_->currentWidget() == frame) {
-            emit statusChanged(frame->timerFrames() == kStopTimer
-                                   ? QString("%1  timer 0 -- the animation stops on this frame")
-                                         .arg(frame->frameName())
-                                   : QString("%1  timer %2 NES frames")
-                                         .arg(frame->frameName())
-                                         .arg(frame->timerFrames()));
+            const QString publicity =
+                frame->isPublicFrame() ? QString("  -- public in the generated header") : QString();
+            emit statusChanged((frame->timerFrames() == kStopTimer
+                                    ? QString("%1  timer 0 -- the animation stops on this frame")
+                                          .arg(frame->frameName())
+                                    : QString("%1  timer %2 NES frames")
+                                          .arg(frame->frameName())
+                                          .arg(frame->timerFrames())) +
+                               publicity);
         }
     });
 }
@@ -374,6 +382,6 @@ void MetaspritePage::retitle(MetaspriteFrame* frame) {
     // An all-whitespace name would leave an unclickable tab, so the tab falls
     // back to the frame's id while the field is empty.
     const QString name = frame->frameName().trimmed();
-    frames_->setTabText(index, name.isEmpty() ? QString("frame %1").arg(frame->frameId()) : name);
+    frames_->setTabText(index, name.isEmpty() ? QString("frame_%1").arg(frame->frameId()) : name);
 }
 

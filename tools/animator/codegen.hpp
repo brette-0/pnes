@@ -23,6 +23,13 @@
  * and get wrong: the extent, the slot count (the metasprite's total size, i.e.
  * the hardware sprites it takes to draw), the frame count and the byte total.
  *
+ * The frame table is private -- a frame is reached through Get(), by index. A
+ * frame the designer marks public (proj::Frame::isPublic) additionally gets a
+ * public `kTiles_<frame>` naming that row of it: a reference, so it is the same
+ * bytes rather than a second copy. That is for the animations nothing plays --
+ * a still pose, a frame picked by game state -- where the timer and the frame
+ * index are both ceremony and the bytes themselves are what a consumer wants.
+ *
  * Deliberately Qt-free -- plain std types only, like proj and chr: what a
  * header looks like is independent of the GUI that filled it in.
  */

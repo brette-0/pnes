@@ -121,6 +121,8 @@ std::string header(const proj::Metasprite& metasprite, const std::string& source
     const int tilesY = std::max(1, metasprite.tilesY);
     const std::size_t size = static_cast<std::size_t>(tilesX) * static_cast<std::size_t>(tilesY);
     const std::vector<std::string> constants = frameConstants(metasprite);
+    const bool anyPublic = std::any_of(metasprite.frames.begin(), metasprite.frames.end(),
+                                       [](const proj::Frame& frame) { return frame.isPublic; });
 
     std::ostringstream out;
     // Two lines rather than one: the metasprite's name and the file it came
@@ -199,7 +201,8 @@ std::string header(const proj::Metasprite& metasprite, const std::string& source
 
         const int timer = timerOf(frame);
         out << "        // " << f << ": \"" << oneLine(frame.name) << "\", timer " << timer
-            << (timer == 0 ? " -- the animation stops here\n" : "\n");
+            << (timer == 0 ? " -- the animation stops here" : "")
+            << (frame.isPublic ? " -- public, named below" : "") << "\n";
 
         // A single-row metasprite is one line; taller ones get a line per row,
         // so the braces read like the field the sprites were stamped on.
@@ -223,8 +226,27 @@ std::string header(const proj::Metasprite& metasprite, const std::string& source
         out << "        },\n";
     }
 
-    out << "    };\n"
-           "};\n\n"
+    out << "    };\n";
+
+    // The public frames come after the table because they NAME rows of it: a
+    // reference has to be initialised with something already declared, and the
+    // sizes above have to be declared before the table that is sized by them.
+    // Two public sections is the price of saying both in one class.
+    if (anyPublic) {
+        out << "\npublic:\n"
+               "    /// Frames marked public in the designer. The table stays private --\n"
+               "    /// each of these is a reference to one of its rows, so it is the same\n"
+               "    /// bytes under a name of their own and costs nothing. For an animation\n"
+               "    /// no timer drives -- a still pose, or a frame picked by game state --\n"
+               "    /// that name is the whole interface, and Get() need never be called.\n";
+        for (std::size_t i = 0; i < metasprite.frames.size(); ++i) {
+            if (!metasprite.frames[i].isPublic) continue;
+            out << "    static constexpr const u8 (&kTiles_" << constants[i] << ")[kSize] = kTiles["
+                << "kFrame_" << constants[i] << "];\n";
+        }
+    }
+
+    out << "};\n\n"
         << "} // namespace " << kNamespace << "\n";
     return out.str();
 }

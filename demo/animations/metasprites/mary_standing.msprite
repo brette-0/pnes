@@ -10,6 +10,6 @@ height = 1
 name  = "standing"
 timer = 0    # 0 -- the animation stops on this frame
 sprites = [
-    { col = 0, row = 0, id = 0x04, entry = "normalSprites", include = "player_standing", tile = 0, flip_h = false, flip_v = false },
-    { col = 1, row = 0, id = 0x06, entry = "normalSprites", include = "player_standing", tile = 2, flip_h = false, flip_v = false },
+    { col = 0, row = 0, id = 0x04, pattern = 0x05, entry = "normalSprites", include = "player_standing", tile = 0, flip_h = false, flip_v = false },
+    { col = 1, row = 0, id = 0x06, pattern = 0x07, entry = "normalSprites", include = "player_standing", tile = 2, flip_h = false, flip_v = false },
 ]

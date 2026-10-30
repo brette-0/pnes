@@ -38,6 +38,12 @@ class Actor {
     eActorState actorState;
     const u8* animationFrame;
     u8  animationTimer;
+    // Which way the actor is facing: false right, true left. A bool and not the
+    // sign of moveForce.x, because facing is an intent and velocity is not --
+    // skidding, being shoved, or standing still all leave an actor looking the
+    // way it last chose to. Whoever drives the actor latches it; the drawing
+    // side reads it (level.cpp's FeedOAM turns it into the OAM flip bit).
+    bool horizontalFacingDir;
 
     static constexpr vec2<u8> GetSize(const eActorType actorType) {
         return actorType < eActorType::End

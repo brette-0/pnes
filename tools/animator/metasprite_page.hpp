@@ -111,7 +111,8 @@ signals:
     void framesChanged();
 
     /// Anything about this metasprite that a save would record changed: its
-    /// name, extent, palette, or any frame's name, timer or sprites. The window
+    /// name, extent, palette, or any frame's name, timer, public flag or
+    /// sprites. The window
     /// tracks unsaved work off this.
     void dirtied();
 

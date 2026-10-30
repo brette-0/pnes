@@ -5,7 +5,6 @@
 #include "banks.hpp"   // ACTORS
 
 #include "../animations/gen/mary_standing.hpp"
-#include "../animations/gen/mary_walking.hpp"
 
 static void TranslateWorldSpace(vec2<u16>& worldSpace, vec2<i8> delta);
 
@@ -49,9 +48,16 @@ static void TranslateWorldSpace(vec2<u16>& worldSpace, const vec2<i8> delta) {
 }
 
 ACTORS void Actor::Start() {
+    // Every actor faces right to begin with -- outside the switch, since the
+    // field is on Actor and not just the player, and an actor type that forgets
+    // to set it should still start somewhere defined rather than wherever its
+    // storage happened to be.
+    this->horizontalFacingDir = false;   // right, the way the art is drawn
+
     switch (this->actorType) {
         case eActorType::Player:
             this->animationFrame = gen::mary_standing::Get();
+            this->animationTimer = 0;   // spent: the first step of a walk is immediate
             break;
         case eActorType::Mushlet:
             break;
@@ -62,6 +68,9 @@ ACTORS void Actor::Start() {
 ACTORS void Actor::Update() {
     switch (this->actorType) {
         case eActorType::Player:
+            // The player's frame is picked in Player::Update, not here: it
+            // turns on whether the player is grounded, which is that
+            // function's own working-out and not anything the Actor holds.
             break;
         case eActorType::Mushlet:
             break;

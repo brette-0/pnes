@@ -85,6 +85,13 @@ tab label follows it as you type) and a timer: a plain integer entry, 0-255, in
 NES frames -- a byte of ticks at the console's refresh. The unit and what 0
 means are in the row label, not in the box.
 
+A frame can also be marked **public**, which is an attribute of the *export* and
+nothing else: the editor and the preview treat it like any other frame, but the
+generated header -- whose frame table is otherwise private -- names that frame's
+bytes as well (see [Generated code](#generated-code)). It is there for the
+animations nothing plays, where the timer and the frame index are both ceremony:
+a still pose, or a frame a consumer picks from game state and reads directly.
+
 > **Playback convention.** Frames are contiguous: they play in tab order, and
 > the last frame loops back to the first. A timer of **0** ends the animation on
 > that frame instead of advancing, so a one-frame animation with timer 0 is a
@@ -205,6 +212,7 @@ height = 2
 [[frame]]
 name  = "walk_1"
 timer = 8
+public = true    # optional; names this frame's bytes in the generated header
 sprites = [
     { col = 0, row = 0, id = 0x40, entry = "normalSprites", include = "player_standing", tile = 2, flip_h = false, flip_v = false },
 ]
@@ -269,6 +277,8 @@ public:
     static constexpr const u8* Get(u8 frame) { return &kTiles[frame][0]; }
 private:
     static constexpr u8 kTiles[kFrames][kSize] = { ... };
+public:                                                // only if a frame is public
+    static constexpr const u8 (&kTiles_frame_1)[kSize] = kTiles[kFrame_frame_1];
 };
 } // namespace gen
 ```
@@ -281,6 +291,15 @@ array, so the frame after `frame` starts at `Get(frame) + kSize` and an
 animation can be walked with a pointer -- which is what `Actor::animationFrame`
 in the demo is. `kTiles` itself is private: a frame is reached through `Get`,
 by `kFrame_<name>` where a name is wanted.
+
+A frame marked **public** in the designer gets one thing more: a public
+`kTiles_<frame>` naming that row of the private table. It is a *reference*, not
+a second table, so the bytes exist once and the name costs nothing -- and
+because it is `constexpr`, it can be taken as an array, passed along or indexed
+at compile time. The second `public:` section is where it has to live: a
+reference can only be initialised with something already declared, and the sizes
+have to come before the table they size. For an animation no timer drives, that
+name is the whole interface and `Get` need never be called.
 
 The timers come too, in a table of their own rather than in the middle of a
 frame's tiles: they are frame data, the playback convention is counted down in
@@ -356,7 +375,7 @@ animator:   manifest ../chr/config.toml -> demo/chr/config.toml
 animator:   output   demo/animations/gen
 animator:   sheet    4 entries, 70 cells, blob 16384 bytes (27 cell warnings -- -v lists them)
 animator:   mary_standing.hpp: 2x1 tiles, 2 slots, 1 frame, 2 bytes, palette 'player'
-animator:     frame 0 "standing" timer 0: 05 07
+animator:     frame 0 "standing" timer 0 public: 05 07
 animator: exported 2 headers, 8 bytes of frame data, into demo/animations/gen
 ```
 

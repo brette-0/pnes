@@ -267,7 +267,8 @@ int run(const Options& options) {
         for (std::size_t f = 0; f < metasprite.frames.size(); ++f) {
             const proj::Frame& frame = metasprite.frames[f];
             info("    frame " + std::to_string(f) + " \"" + frame.name + "\" timer " +
-                 std::to_string(frame.timer) + ": " + frameBytes(frame, tilesX, tilesY));
+                 std::to_string(frame.timer) + (frame.isPublic ? " public" : "") + ": " +
+                 frameBytes(frame, tilesX, tilesY));
         }
     }
 

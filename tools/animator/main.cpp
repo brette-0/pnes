@@ -279,7 +279,7 @@ public:
             page->setBrush(&table_->cells[*pick_], pickEntry_);
         }
 
-        page->setName(QString("metasprite %1").arg(++metaspriteCount_));
+        page->setName(QString("metasprite_%1").arg(++metaspriteCount_));
 
         const int index = tabs_->addTab(page, page->name());
         pages_.push_back(page);
@@ -666,6 +666,7 @@ public:
             proj::Frame out;
             out.name  = frame->frameName().toStdString();
             out.timer = frame->timerFrames();
+            out.isPublic = frame->isPublicFrame();
 
             for (const PlacedSprite& sprite : frame->field()->sprites()) {
                 proj::Sprite saved;
@@ -897,6 +898,7 @@ public:
                 if (!built) continue;
                 built->setFrameName(QString::fromStdString(frame.name));
                 built->setTimerFrames(frame.timer);
+                built->setPublicFrame(frame.isPublic);
 
                 for (const proj::Sprite& sprite : frame.sprites) {
                     const chr::Cell* cell =

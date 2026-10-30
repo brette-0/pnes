@@ -66,6 +66,11 @@ namespace level {
     // loop. Called from the top-level mode dispatch while gameMode == Level.
     void main();
 
+    // Rewrites the players' OAM entries -- position, animation frame, facing --
+    // from the state UpdateActors just committed. ::ACTORS-tagged (level.cpp),
+    // reached via mmc3::Call<FeedOAM>, never called directly: it shares window 1
+    // with the level's own bank, so even level::main cannot reach it without the
+    // switch. Moved out of ::LEVEL_CODE when that bank ran out of room.
     void FeedOAM();
 
     // Called (as an ordinary C++ function, not a raw vector jump) from

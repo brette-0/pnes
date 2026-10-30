@@ -151,11 +151,9 @@ namespace level {
     static oam::oam_t Zero(u16 _);
     static oam::oam_t SpriteY(u16 i);
     static oam::oam_t SpriteX(u16 i);
-    static oam::oam_t SpriteTile(u16 i);
 #ifdef PLAYER2_SUPPORTED
     static oam::oam_t SpriteY2(u16 i);
     static oam::oam_t SpriteX2(u16 i);
-    static oam::oam_t SpriteTile2(u16 i);
 #endif
     static i16 ClampRow(u16 y);
     static COLD NI void EnterLevelSetup() {
@@ -193,11 +191,13 @@ namespace level {
 
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);
 
-        // Attributes are nobody's frame data: the generated animations carry no
-        // palette and no mirroring (see their banner), and the level draws every
-        // sprite out of sprite palette 0 unflipped -- which is a zero. Cleared
-        // across the whole buffer because the title screen had its own sprites
-        // in here and only the Y column above is reset for it.
+        // The generated animations carry no palette and no mirroring (see their
+        // banner), and the level draws every sprite out of sprite palette 0 --
+        // which is a zero. The players' own attribute bytes are frame data now
+        // that they can face left, and ::FeedOAM rewrites those two (or four)
+        // every frame; this clears the whole buffer anyway, because the title
+        // screen had its own sprites in here and only the Y column above is
+        // reset for it.
         oam::PopulateFromProvider(OAMBuffer, 0, oam::attributes, Zero, 64);
 
         // Tiles and positions are NOT seeded here: ::FeedOAM owns them, and it
@@ -245,11 +245,10 @@ namespace level {
             player2.Start();
 #endif
         });
-        // FeedOAM is ::LEVEL_CODE, same as LoadLevel and ColMapSeed above, so it
-        // needs its bank mapped in -- this is cold code.
-        mmc3::CallInBlock<level_code_tag>([] {
-            FeedOAM();
-        });
+        // FeedOAM is ::ACTORS now, so it goes through its binding rather than a
+        // CallInBlock on this bank -- same form the gameplay loop uses, and one
+        // fewer per-lambda trampoline in ::FIXED than CallInBlock would cost.
+        mmc3::Call<level::FeedOAM>();
         oam::RefreshSprites(OAMBuffer);   /* seed the first frame's sprite snapshot */
 
         video::WaitForPresent();
@@ -273,24 +272,82 @@ namespace level {
             ColMapTrack(cameraX >> 4);
             mmc3::CallPairedBlock<audio_tag, audio_data_tag>([] { audio::Update(); });
 
-            FeedOAM();
+            // Banked: window 1 holds this function's own bank right now, so the
+            // switch has to happen from the ::FIXED trampoline mmc3::Call uses.
+            mmc3::Call<level::FeedOAM>();
 
             video::WaitForPresent();
         }
     }
 
-    LEVEL_CODE void FeedOAM() {
+    // ::ACTORS, not ::LEVEL_CODE -- see level.hpp's declaration for why, and
+    // note everything this reaches has to be resident or FIXED: bank 0 and
+    // bank 5 are both window 1, so while this runs the level's own code is
+    // not mapped. The Sprite* providers, AdjustSprite*, and oam::OAMFromProvider
+    // all sit in untagged .text at $C000, which is always in.
+    // NI for the same reason DrainPendingColumn (player.cpp) carries one:
+    // mmc3::Call inlines its target into the ::FIXED window trampoline, so
+    // without this the whole body lands in the always-mapped $E000-$FFFF bank
+    // -- measured, not theoretical: the first cut of this move left
+    // prg_rom_actors untouched and grew prg_rom_fixed by 158 bytes. One jsr
+    // into the actors bank is the point of moving it there.
+    NI ACTORS void FeedOAM() {
 #ifdef PLAYER2_SUPPORTED
         const u8 shuffleBegin = multiplayer ? 4 : 2;
 #else
         const u8 shuffleBegin = 2;
 #endif
 
+        // A 16x16 metasprite mirrors by flipping each tile and swapping the two
+        // columns -- for a single row of two slots, writing them to each other's
+        // place. Four byte stores, which is why facing costs no second,
+        // pre-mirrored copy of every frame in ROM.
+        static_assert(gen::mary_standing::kWidth == 2 && gen::mary_standing::kHeight == 1
+                   && gen::mary_walking::kWidth  == 2 && gen::mary_walking::kHeight  == 1,
+            "FeedOAM mirrors the player by swapping a pair of slots, which assumes a "
+            "2x1 metasprite -- a wider or taller one needs row*kWidth + (kWidth-1-col)");
+
+        // Sprite attribute bit 6: flip this sprite horizontally. The rest of the
+        // byte stays zero -- palette 0, front priority, no vertical flip.
+        constexpr u8 kFlipH = 0x40;
+
+        // Tile and attribute go in directly rather than through
+        // ::oam::PopulateFromProvider. The provider form pays an indirect call
+        // per slot and needs a function whose body can see the facing, and at
+        // two slots that costs more -- in cycles and in this bank's very
+        // limited room -- than just writing the four bytes. Y and X keep their
+        // providers: those are shared with the setup path and with player 2,
+        // and neither depends on facing.
         oam::PopulateFromProvider(OAMBuffer, 1, oam::y, SpriteY, kPlayerSprites);
         oam::PopulateFromProvider(OAMBuffer, 1, oam::x, SpriteX, kPlayerSprites);
 
-        // TODO: add walking animation based on player velocity weakly
-        oam::PopulateFromProvider(OAMBuffer, 1, oam::tile, SpriteTile, kPlayerSprites);
+        // The animation frame is one tile id per slot, packed -- NOT the sprite_t
+        // records ::oam::PopulateFromBuffer walks by the sprite stride, which
+        // would read every slot but the first from the wrong byte. Indexed here,
+        // where the layout and the facing are both known. The ids are OAM-ready
+        // as they stand: the designer folds in the pattern-table half of the CHR
+        // entry the art was banked into (see the generated header's banner).
+        //
+        // X is untouched by the mirror: slot 0 stays at the left of the pair and
+        // simply receives what slot 1 was holding, flipped. Swapping the tiles
+        // and swapping the positions would cancel out.
+        {
+            oam::sprite_t* const pair  = &OAMBuffer[1];
+            const u8*      const frame = player1.actor.animationFrame;
+            // Facing is the actor's own state, latched from input by
+            // Player::Update -- read here, never decided here.
+            if (player1.actor.horizontalFacingDir) {
+                pair[0].tile = frame[1];
+                pair[1].tile = frame[0];
+                pair[0].attributes = kFlipH;
+                pair[1].attributes = kFlipH;
+            } else {
+                pair[0].tile = frame[0];
+                pair[1].tile = frame[1];
+                pair[0].attributes = 0;
+                pair[1].attributes = 0;
+            }
+        }
 
 #ifdef PLAYER2_SUPPORTED
         // Left at the Clear() park unless multiplayer is on -- same reason as the
@@ -298,7 +355,19 @@ namespace level {
         if (multiplayer) {
             oam::PopulateFromProvider(OAMBuffer, 1 + kPlayerSprites, oam::y, SpriteY2, kPlayerSprites);
             oam::PopulateFromProvider(OAMBuffer, 1 + kPlayerSprites, oam::x, SpriteX2, kPlayerSprites);
-            oam::PopulateFromProvider(OAMBuffer, 1 + kPlayerSprites, oam::tile, SpriteTile2, kPlayerSprites);
+            oam::sprite_t* const pair  = &OAMBuffer[1 + kPlayerSprites];
+            const u8*      const frame = player2.actor.animationFrame;
+            if (player2.actor.horizontalFacingDir) {
+                pair[0].tile = frame[1];
+                pair[1].tile = frame[0];
+                pair[0].attributes = kFlipH;
+                pair[1].attributes = kFlipH;
+            } else {
+                pair[0].tile = frame[0];
+                pair[1].tile = frame[1];
+                pair[0].attributes = 0;
+                pair[1].attributes = 0;
+            }
         }
 #endif
     }
@@ -403,13 +472,6 @@ namespace level {
     static oam::oam_t SpriteY(const u16 i)  { return AdjustSpriteY(&player1.actor, i); }
 #endif
     static oam::oam_t SpriteX(const u16 i)  { return AdjustSpriteX(&player1.actor, i); }
-    // The animation frame is one tile id per slot, packed -- NOT the sprite_t
-    // records ::oam::PopulateFromBuffer walks by the sprite stride, which would
-    // read every slot but the first from the wrong byte. Indexed here instead,
-    // where the layout is known. The ids are OAM-ready as they stand: the
-    // designer folds in the pattern-table half of the CHR entry the art was
-    // banked into (see the generated header's banner).
-    static oam::oam_t SpriteTile(const u16 i)  { return player1.actor.animationFrame[i]; }
 #ifdef PLAYER2_SUPPORTED
 #ifdef PNES_WINDOWED_PANEL
     static oam::oam_t SpriteY2(const u16 i) { return WindowedSpriteY(AdjustSpriteY(&player2.actor, i), player1.actor.screen.y); }
@@ -417,7 +479,6 @@ namespace level {
     static oam::oam_t SpriteY2(const u16 i) { return AdjustSpriteY(&player2.actor, i); }
 #endif
     static oam::oam_t SpriteX2(const u16 i) { return AdjustSpriteX(&player2.actor, i); }
-    static oam::oam_t SpriteTile2(const u16 i) { return player2.actor.animationFrame[i]; }
 #endif
 
     static i16 ClampRow(const u16 y) {

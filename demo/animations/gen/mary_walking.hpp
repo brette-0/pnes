@@ -62,13 +62,23 @@ public:
 
 private:
     static constexpr u8 kTiles[kFrames][kSize] = {
-        // 0: "frame 1", timer 8
+        // 0: "frame_1", timer 8 -- public, named below
         { 0x09, 0x0b },
-        // 1: "frame 2", timer 8
+        // 1: "frame_2", timer 8 -- public, named below
         { 0x0d, 0x0f },
-        // 2: "frame 3", timer 8
+        // 2: "frame_3", timer 8 -- public, named below
         { 0x11, 0x13 },
     };
+
+public:
+    /// Frames marked public in the designer. The table stays private --
+    /// each of these is a reference to one of its rows, so it is the same
+    /// bytes under a name of their own and costs nothing. For an animation
+    /// no timer drives -- a still pose, or a frame picked by game state --
+    /// that name is the whole interface, and Get() need never be called.
+    static constexpr const u8 (&kTiles_frame_1)[kSize] = kTiles[kFrame_frame_1];
+    static constexpr const u8 (&kTiles_frame_2)[kSize] = kTiles[kFrame_frame_2];
+    static constexpr const u8 (&kTiles_frame_3)[kSize] = kTiles[kFrame_frame_3];
 };
 
 } // namespace gen

@@ -55,6 +55,14 @@ struct Sprite {
 struct Frame {
     std::string         name;
     int                 timer = 0;  ///< NES frames to hold; 0 stops the animation here.
+
+    /// Expose this frame's bytes in the generated header, where the frame table
+    /// is otherwise private (see codegen.hpp). For an animation nothing plays
+    /// -- a still pose, a frame picked by game state rather than by a timer --
+    /// going through the frame index is ceremony, so the frame gets a name of
+    /// its own that consumers can take the address of directly.
+    bool                isPublic = false;
+
     std::vector<Sprite> sprites;    ///< In placement order, which is draw order.
 };
 

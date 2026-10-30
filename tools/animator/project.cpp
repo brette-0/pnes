@@ -71,6 +71,11 @@ std::string metaspriteToml(const Metasprite& metasprite) {
                 "timer = " << frame.timer;
         if (frame.timer == 0) toml << "    # 0 -- the animation stops on this frame";
         toml << "\n";
+        // Written only when set: a frame nothing asked to expose leaves the
+        // file exactly as it was before this key existed.
+        if (frame.isPublic) {
+            toml << "public = true    # name this frame's bytes in the generated header\n";
+        }
 
         if (frame.sprites.empty()) {
             toml << "sprites = []\n";
@@ -315,6 +320,7 @@ std::optional<Project> load(const std::filesystem::path& path, std::string& erro
                 Frame frame;
                 frame.name  = (*frameTable)["name"].value_or<std::string>("frame");
                 frame.timer = static_cast<int>((*frameTable)["timer"].value_or<std::int64_t>(0));
+                frame.isPublic = (*frameTable)["public"].value_or(false);
 
                 if (const auto sprites = (*frameTable)["sprites"].as_array()) {
                     for (const auto& spriteNode : *sprites) {

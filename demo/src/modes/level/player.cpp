@@ -6,6 +6,7 @@
 #include "levels.hpp"
 #include "../level.hpp"
 #include "../../banks.hpp"   // ACTORS
+#include "../../actor/animator.hpp"
 #include <pnes/extras/debug/emphasis.hpp>
 
 using namespace demo;
@@ -231,6 +232,20 @@ ACTORS void Player::Update() {
     const bool right    = port & input::RIGHT;
     const i8   dir      = (right && !left) ? 1 : ((left && !right) ? -1 : 0);
 
+    // Facing follows the last directional input, not the velocity. dir is 0
+    // both when nothing is held and when left and right are held together, and
+    // a zero leaves the latch alone -- so releasing the d-pad, skidding to a
+    // halt, or mashing the pair all keep the player looking the way they last
+    // actually asked for. Nothing here cares how long the input was held or
+    // whether it was tapped: one frame of it is enough to turn.
+    //
+    // Grounded only: air control still steers (see kAirAccel below), but it
+    // cannot turn the sprite round. You leave the ground facing the way you
+    // last faced on it and land that way. Note this reads the footing from
+    // before the jump launch zeroes it further down, so the frame you press A
+    // can still turn you -- you were on the ground when you asked.
+    if (grounded && dir != 0) self->horizontalFacingDir = dir < 0;
+
     // -- horizontal: build speed toward a cap, shed it via friction/skid --
     const i8 vx0 = self->moveForce.x;
     i8       vx  = vx0;
@@ -296,7 +311,10 @@ ACTORS void Player::Update() {
     debug::SetColour(ppu::mask::RED | ppu::mask::GREEN);
     CollectCoinsFor(self, this);
 
+    // Animation last, on the committed state: ProcessMovement may have zeroed
+    // moveForce against a wall, and that should show in the frame picked.
     debug::SetColour(ppu::mask::RED | ppu::mask::BLUE);
+    demo::actor::NextFrame(self, grounded);
     self->Update();
     debug::SetColour(0);
 }

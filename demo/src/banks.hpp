@@ -165,3 +165,7 @@ decltype(auto) InColdBank(Block &&block) {
 #define ACTORS CREATE_SEGMENT_KEYWORD(".prg_rom_actors")
 
 MMC3_BIND(level::UpdateActors, actor);
+// Not an actor method, but it reads every actor's animation state to build the
+// sprite list and prg_rom_level_code had no room left for it -- and the actor
+// bank is where the data it walks already lives. See level.hpp's declaration.
+MMC3_BIND(level::FeedOAM, actor);
