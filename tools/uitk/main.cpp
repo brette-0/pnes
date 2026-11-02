@@ -271,11 +271,20 @@ constexpr char kRtTextBoxKind[] = "rtTextBox";
 constexpr char kNegSpaceKind[] = "negspace";
 constexpr char kSingleChoiceKind[] = "singlechoice";
 constexpr char kButtonKind[] = "button";
+// Like a Button, geometry with no baked appearance -- and, like a Button,
+// uitk owns exactly one piece of state for it: a `<name>_amount` byte
+// holding the slider's current value, where a Button instead gets a bit in
+// the shared enabled mask. Codegen emits that, where it is, how big it is,
+// and the forced-to-define Draw_<Name>/DrawChange_<Name> hooks that render
+// it -- nothing more. No range or step: those belong to whatever the slider
+// controls (see genSliderDecl).
+constexpr char kSliderKind[] = "slider";
 constexpr char kCtTextBoxPrefix[] = "[CT] ";
 constexpr char kRtTextBoxPrefix[] = "[RT] ";
 constexpr char kNegSpacePrefix[] = "[N] ";
 constexpr char kSingleChoicePrefix[] = "[SC] ";
 constexpr char kButtonPrefix[] = "[B] ";
+constexpr char kSliderPrefix[] = "[S] ";
 
 // Every backend pnes currently supports, in the order they appear in
 // the Target dropdown. Scene-wide, same as the nametable -- one scene targets
@@ -424,11 +433,22 @@ bool isButtonItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kButtonKind);
 }
 
+// Position, size, and a single byte of value -- that's a slider. uitk bakes
+// no appearance for one (a slider could be a tile-row track, a sprite bar,
+// or a row of discrete notches), only the forced-to-define Draw_<Name>/
+// DrawChange_<Name> hooks hand-written code must implement, the same
+// arrangement a Button has with DrawEnabled_/DrawDisabled_. Its state is
+// `<name>_amount`, which uitk allocates but never bounds or writes (see
+// genSliderDecl).
+bool isSliderItem(const QTreeWidgetItem* item) {
+    return item && item->data(0, kKindRole).toString() == QLatin1String(kSliderKind);
+}
+
 // Anything with a position/size -- placeable on the canvas, draggable,
 // referenceable in another node's expressions -- regardless of what kind of
 // thing it visually is.
 bool isGeometryItem(const QTreeWidgetItem* item) {
-    return isComponentItem(item) || isNegSpaceItem(item) || isButtonItem(item);
+    return isComponentItem(item) || isNegSpaceItem(item) || isButtonItem(item) || isSliderItem(item);
 }
 
 // Anything that carries a kind-specific name prefix -- every geometry item,
@@ -436,7 +456,7 @@ bool isGeometryItem(const QTreeWidgetItem* item) {
 // node (as opposed to root/plain branch nodes, which have no prefix at all).
 bool isPrefixedItem(const QTreeWidgetItem* item) { return isGeometryItem(item) || isSingleChoiceItem(item); }
 
-// The "[CT] "/"[RT] "/"[N] "/"[SC] "/"[B] " prefix a node's kind requires, or
+// The "[CT] "/"[RT] "/"[N] "/"[SC] "/"[B] "/"[S] " prefix a node's kind requires, or
 // empty for kinds (root, plain branch nodes) that don't have one.
 QString requiredPrefixFor(const QTreeWidgetItem* item) {
     if (isCtTextBoxItem(item)) return QString(kCtTextBoxPrefix);
@@ -444,6 +464,7 @@ QString requiredPrefixFor(const QTreeWidgetItem* item) {
     if (isNegSpaceItem(item)) return QString(kNegSpacePrefix);
     if (isSingleChoiceItem(item)) return QString(kSingleChoicePrefix);
     if (isButtonItem(item)) return QString(kButtonPrefix);
+    if (isSliderItem(item)) return QString(kSliderPrefix);
     return QString();
 }
 
@@ -912,13 +933,15 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
     const bool isComponent = isCtTextBox || isRtTextBox;
     const bool isNegSpace = (kind == QLatin1String("negspace"));
     const bool isButton = (kind == QLatin1String("button"));
-    if (isComponent || isNegSpace || isButton) {
+    const bool isSlider = (kind == QLatin1String("slider"));
+    if (isComponent || isNegSpace || isButton || isSlider) {
         item->setFlags(item->flags() | Qt::ItemIsEditable);
         item->setData(0, kKindRole,
                        QString(isCtTextBox   ? kCtTextBoxKind
                                : isRtTextBox ? kRtTextBoxKind
                                : isNegSpace  ? kNegSpaceKind
-                                             : kButtonKind));
+                               : isButton    ? kButtonKind
+                                             : kSliderKind));
         const QString posXExpr = obj["posXExpr"].toString(QStringLiteral("0"));
         const QString posYExpr = obj["posYExpr"].toString(QStringLiteral("0"));
         const QString sizeWExpr = obj["sizeWExpr"].toString(QStringLiteral("1"));
@@ -1052,7 +1075,7 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
 // --- Code export -----------------------------------------------------------
 //
 // Turns a resolved scene into a target-specific .hpp/.cpp pair. Two kinds of
-// generated function, one per component kind, never mixed:
+// generated function, one per textbox kind, never mixed:
 //
 //   - ctTextBox: the text is known at design time, so wrapping/alignment is
 //     baked entirely here (same math TileGridWidget::paintEvent uses to
@@ -1073,6 +1096,19 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
 //     always-inline wrapper has no meaningful placement of its own. It takes
 //     only the buffer -- Make finds that buffer's end by scanning for the
 //     charmap's terminator tile, so there is no length to pass.
+//
+// Button and Slider nodes emit no function bodies at all, only geometry
+// (`<name>_pos`/`<name>_box`, plus a Make_ on a variadic target), one piece
+// of state each, and the hooks hand-written code must define. A button's
+// state is a bit in the scene-wide `button_state` mask, driven by the
+// Enable_/Disable_/Toggle_ uitk emits around it; a slider's is its own
+// `<name>_amount` byte, which uitk allocates and then leaves entirely alone
+// -- there is no generated setter, range, or clamp, because a slider's
+// bounds belong to whatever it controls, not to the scene. The hooks are
+// DrawEnabled_/DrawDisabled_ for a button, and Draw_<Name>/
+// DrawChange_<Name> for a slider -- first placement and subsequent movement
+// respectively, which are different enough in cost to be worth separating
+// (see genButtonDecl/genSliderDecl).
 //
 // Negative-space nodes emit nothing themselves -- an editor-only exclusion
 // zone with no runtime counterpart at all. We never bundle a component's
@@ -1680,6 +1716,117 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     return lines.join("\n") + "\n";
 }
 
+// Emits one Slider node's declarations: `<name>_pos`, `<name>_box`, the
+// `<name>_amount` byte holding its current value, and the two
+// forced-to-define hooks that render it: Draw_<Name>(u8 defaultAmt) for the
+// initial placement and DrawChange_<Name>(u8 amt) for moving a slider that
+// is already on screen.
+//
+// Unlike a Button there is no Enable_/Disable_/Toggle_ and no
+// enabled/disabled pair of draw hooks -- a slider isn't a two-state thing,
+// so there is nothing for a generated mutator to do that wouldn't be wrong
+// for some slider. `<name>_amount` is storage and nothing else: uitk
+// allocates it (prefixed, see `bssPrefixTok`) and never generates code that
+// reads or writes it, since a slider's range, step, and clamping are
+// properties of what it controls rather than of the scene.
+//
+// `bssPrefixTok` is already empty on every target but NES (see
+// generateCode) -- it places `<name>_amount`, the only real storage a slider
+// has on a fixed-viewport target. A variadic target's `<name>_pos` is
+// mutable too, but it follows a Button's lead and goes unprefixed.
+//
+// `<name>_box` is NOT optional the way a Button's is (kButtonHasBoxRole):
+// a button's DrawEnabled_ can plausibly be a fixed-size sprite that never
+// consults its own footprint, but a slider's track length IS its range --
+// DrawSliderBody/UpdateSlider in demo/ui/impl/sliders.hpp both need the
+// width to know how far the handle can travel -- so there is no slider worth
+// emitting that doesn't want it.
+//
+// Position follows exactly the same three-way split as a Button's (see
+// genButtonDecl): a baked PPU nametable address on NES, a baked cartesian
+// vec2 on a fixed non-NES panel, and runtime-assigned storage plus a Make_
+// on a variadic-viewport target, where VIEWPORT_*-driven placement can't be
+// collapsed to a constant until the game is actually running.
+QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
+                       QTreeWidgetItem* rootItem, const QString& target, const QString& region,
+                       const QString& bssPrefixTok, const QString& ntOffXExpr, const QString& ntOffYExpr) {
+    const QString name = bareName(item);
+    const int x = item->data(0, kPosXRole).toInt() + ntOffX;
+    const int y = item->data(0, kPosYRole).toInt() + ntOffY;
+    const int w = std::clamp(item->data(0, kSizeWRole).toInt(), 1, 255);
+    const int h = std::clamp(item->data(0, kSizeHRole).toInt(), 1, 255);
+
+    QStringList lines;
+    lines << QString("// Slider: %1").arg(name);
+
+    if (isNes) {
+        lines << QString("inline constexpr u16 %1_pos = 0x%2;")
+                     .arg(name)
+                     .arg(static_cast<uint>(nesNtAddr(x, y)), 4, 16, QLatin1Char('0'));
+    } else if (variadic) {
+        lines << QString("inline atomic vec2<u16> %1_pos;").arg(name);
+    } else {
+        lines << QString("inline constexpr vec2<u16> %1_pos = {%2, %3};").arg(name).arg(x).arg(y);
+    }
+
+    lines << QString("inline constexpr vec2<u8> %1_box = {%2, %3};").arg(name).arg(w).arg(h);
+
+    // The slider's holding value -- the one piece of state uitk does own for
+    // one. `atomic` (technology.hpp: volatile on NES, a true atomic
+    // elsewhere) for the same reason a SingleChoice's `_option` is: whatever
+    // moves it is rarely the same code that later reads it back to draw.
+    // Carries bssPrefixTok so it lands in the scene's declared RAM section,
+    // exactly like that `_option`.
+    //
+    // uitk deliberately emits nothing else around it -- no range, no step,
+    // no clamping, no setter. A slider's bounds are a property of what it is
+    // actually controlling (a volume in 0..15, a speed in 0..3, a raw 0..255
+    // byte), which the scene has no way to know, so the only thing that
+    // would be right for every slider is the storage itself. Writing and
+    // bounding it is the caller's job.
+    lines << QString("%1inline atomic u8 %2_amount = 0;").arg(bssPrefixTok, name);
+
+    // Forced-to-define, same as a Button's DrawEnabled_/DrawDisabled_ --
+    // hand-written game code must define both of these somewhere linked
+    // into the final binary. They're split because putting a slider on
+    // screen and moving one already on screen are different amounts of
+    // work, not two cases of one operation: Draw_ lays down the whole
+    // track (both end caps and every cell between them, the full
+    // `<name>_box` footprint) and then puts the handle at `defaultAmt`,
+    // whereas DrawChange_ touches exactly two cells -- it restores the one
+    // the handle is leaving and marks the one it's arriving at. That's the
+    // DrawSliderBody/UpdateSlider split in demo/ui/impl/sliders.hpp, and
+    // the reason a scene can't just call Draw_ again on every nudge: a full
+    // redraw per frame is a whole row of PPU writes where two would do.
+    //
+    // Each takes only the amount it couldn't otherwise know.  Draw_ takes
+    // `defaultAmt` because it runs before anything has established a value,
+    // which also makes it the natural place to seed `<name>_amount`.
+    // DrawChange_ takes just the amount being moved TO: the amount being
+    // moved from is whatever `<name>_amount` still holds at the point of
+    // the call, since nothing uitk generates ever writes that byte. So the
+    // hook reads the old value out of it, repaints the two cells, and
+    // stores the new one -- a second parameter would only be the caller
+    // handing back a number it had just read from there itself.
+    lines << QString("void Draw_%1(u8 defaultAmt);").arg(name);
+    lines << QString("void DrawChange_%1(u8 amt);").arg(name);
+
+    if (!isNes && variadic) {
+        const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
+        const QString yExpr = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
+        const QString xFinal =
+            ntOffXExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(xExpr, ntOffXExpr) : xExpr;
+        const QString yFinal =
+            ntOffYExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(yExpr, ntOffYExpr) : yExpr;
+        lines << QString("inline AI void Make_%1() {\n"
+                          "    %1_pos = vec2<u16>{static_cast<u16>(%2), static_cast<u16>(%3)};\n"
+                          "}")
+                     .arg(name, xFinal, yFinal);
+    }
+
+    return lines.join("\n") + "\n";
+}
+
 // Builds the target-specific .hpp/.cpp pair for `rootItem`'s whole scene.
 // Components hidden on `target`/`region` (or under a hidden ancestor -- see
 // isEffectivelyHidden) are skipped entirely, so an export never emits a
@@ -1792,6 +1939,12 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
         if (isButtonItem(item)) {
             hppDecls << genButtonDecl(item, ntOffX, ntOffY, isNes, variadic, rootItem, target, region, ntOffXExpr,
                                         ntOffYExpr, buttonBitIndex.value(item), kButtonStateArrayName);
+            continue;
+        }
+
+        if (isSliderItem(item)) {
+            hppDecls << genSliderDecl(item, ntOffX, ntOffY, isNes, variadic, rootItem, target, region,
+                                        bssPrefixTok, ntOffXExpr, ntOffYExpr);
             continue;
         }
 
@@ -2052,6 +2205,37 @@ protected:
                         continue;  // interior -- left hollow
                     }
                     painter.fillRect(tileRect(x + col, y + row), QColor(120, 90, 20));
+                }
+            }
+
+            painter.setFont(glyphFont_);
+            painter.setPen(Qt::white);
+            const QString name = bareName(item);
+            for (int i = 0; i < name.length() && i < w; ++i) {
+                drawCellGlyph(painter, tileRect(x + i, y), name.at(i));
+            }
+        }
+
+        // Same deal as a button -- uitk bakes no appearance for a slider
+        // either (Draw_<Name>/DrawChange_<Name> own that entirely, see
+        // genSliderDecl), so
+        // this is purely something to see and grab in the editor. Drawn as a
+        // solid track rather than a hollow frame: a slider's whole footprint
+        // IS its range (the handle travels across every cell of it), so
+        // previewing the interior as empty would misrepresent what the box
+        // means, unlike a button's border.
+        for (QTreeWidgetItem* item : collectComponents()) {
+            if (!isSliderItem(item)) {
+                continue;
+            }
+            const int x = item->data(0, kPosXRole).toInt();
+            const int y = item->data(0, kPosYRole).toInt();
+            const int w = std::max(1, item->data(0, kSizeWRole).toInt());
+            const int h = std::max(1, item->data(0, kSizeHRole).toInt());
+
+            for (int row = 0; row < h; ++row) {
+                for (int col = 0; col < w; ++col) {
+                    painter.fillRect(tileRect(x + col, y + row), QColor(60, 100, 60));
                 }
             }
 
@@ -2395,9 +2579,10 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                                   "Only ever emitted when exporting for NES -- every other target's "
                                   "generated code never references it.");
 
-    // Same idea as Linker Prefix, but for a SingleChoice's own mutable
-    // storage (and, on a variadic-viewport target, its mutable options
-    // array) -- code/rodata and BSS commonly need different placement
+    // Same idea as Linker Prefix, but for the scene's mutable storage: a
+    // SingleChoice's own instance state (and, on a variadic-viewport target,
+    // its mutable options array) plus every Slider's `<Name>_amount` byte
+    // -- code/rodata and BSS commonly need different placement
     // attributes on NES (see demo/src/banks.hpp's TITLE vs TITLE_DATA for
     // why: LLD rejects code and data sharing one literal section name), so
     // this is a second, independent free-form field rather than reusing
@@ -2405,7 +2590,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // only ever emitted when exporting for NES.
     auto* bssPrefixEdit = new QLineEdit(content);
     bssPrefixEdit->setToolTip("Emitted immediately before a SingleChoice's own instance storage (and, on a "
-                               "variadic-viewport target, its mutable options array) -- e.g. a RAM-section "
+                               "variadic-viewport target, its mutable options array), and before every "
+                               "Slider's <Name>_amount byte -- e.g. a RAM-section "
                                "placement attribute. Left empty, nothing is emitted. Only ever emitted when "
                                "exporting for NES.");
 
@@ -3246,6 +3432,29 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         return child;
     };
 
+    // A slider's only state is its generated `<name>_amount` byte, which
+    // always starts at 0 and has no editor-side knob (see genSliderDecl) --
+    // so, unlike a button, there are no kind-specific defaults to seed here
+    // at all, just geometry.
+    auto sliderCounter = std::make_shared<int>(1);
+    auto addSliderNode = [sliderCounter](QTreeWidgetItem* parent) {
+        const QString name = QString(kSliderPrefix) + "Slider" + QString::number((*sliderCounter)++);
+        auto* child = new QTreeWidgetItem(parent, QStringList{name});
+        child->setFlags(child->flags() | Qt::ItemIsEditable);
+        child->setData(0, kKindRole, QString(kSliderKind));
+        child->setData(0, kPosXExprRole, QStringLiteral("0"));
+        child->setData(0, kPosYExprRole, QStringLiteral("0"));
+        child->setData(0, kSizeWExprRole, QStringLiteral("1"));
+        child->setData(0, kSizeHExprRole, QStringLiteral("1"));
+        child->setData(0, kPosXRole, 0);
+        child->setData(0, kPosYRole, 0);
+        child->setData(0, kSizeWRole, 1);
+        child->setData(0, kSizeHRole, 1);
+        child->setData(0, kLastValidNameRole, name);
+        parent->setExpanded(true);
+        return child;
+    };
+
     // Deleting a node is structural (unlike every other edit here, which
     // goes through setData()/itemChanged), so it has to explicitly do what
     // itemChanged would otherwise trigger automatically: mark the scene
@@ -3275,21 +3484,25 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     QObject::connect(
         tree, &QTreeWidget::customContextMenuRequested,
         [tree, rootItem, addCtTextBoxNode, addRtTextBoxNode, addNegativeSpaceNode, addSingleChoiceNode,
-         addButtonNode, deleteNode](const QPoint& pos) {
+         addButtonNode, addSliderNode, deleteNode](const QPoint& pos) {
             QTreeWidgetItem* clicked = tree->itemAt(pos);
             const bool onSingleChoice = isSingleChoiceItem(clicked);
             // A Button can likewise take ctTextBox/rtTextBox children (e.g.
             // a label), same reasoning as SingleChoice's own options below --
             // so it gets the same textbox-only menu when right-clicked.
             const bool onButton = isButtonItem(clicked);
-            const bool onTextBoxContainer = onSingleChoice || onButton;
+            // A Slider takes textbox children for the same reason -- a
+            // volume slider's "MUSIC" label belongs with the slider, not
+            // loose at root, so its position can be written relative to it.
+            const bool onSlider = isSliderItem(clicked);
+            const bool onTextBoxContainer = onSingleChoice || onButton || onSlider;
             // A single choice's own children are its ctTextBox/rtTextBox
             // options, so right-clicking one targets textbox adds at it
             // rather than at root -- same as every other add here, which
             // still always targets root until there's UI for nesting more
-            // generally. It (and a Button, for its label) houses only
-            // textboxes, so Negative Space, Single Choice, and Button
-            // aren't offered there at all.
+            // generally. It (and a Button or Slider, for its label) houses
+            // only textboxes, so Negative Space, Single Choice, Button, and
+            // Slider aren't offered there at all.
             QTreeWidgetItem* textBoxParent = onTextBoxContainer ? clicked : rootItem;
             QMenu menu;
             QAction* addCtTextboxAction = menu.addAction("Add Compile-Time Textbox");
@@ -3297,6 +3510,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             QAction* addNegSpaceAction = onTextBoxContainer ? nullptr : menu.addAction("Add Negative Space");
             QAction* addSingleChoiceAction = onTextBoxContainer ? nullptr : menu.addAction("Add Single Choice");
             QAction* addButtonAction = onTextBoxContainer ? nullptr : menu.addAction("Add Button");
+            QAction* addSliderAction = onTextBoxContainer ? nullptr : menu.addAction("Add Slider");
             QAction* deleteAction = nullptr;
             if (clicked && clicked != rootItem) {
                 menu.addSeparator();
@@ -3313,6 +3527,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                 tree->setCurrentItem(addSingleChoiceNode(rootItem));
             } else if (chosen && chosen == addButtonAction) {
                 tree->setCurrentItem(addButtonNode(rootItem));
+            } else if (chosen && chosen == addSliderAction) {
+                tree->setCurrentItem(addSliderNode(rootItem));
             } else if (chosen && chosen == deleteAction) {
                 deleteNode(clicked);
             }
