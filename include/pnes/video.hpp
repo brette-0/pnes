@@ -443,10 +443,18 @@ extern u8 scale;
 #endif
 #if defined(TARGET_OGC)
 /** @brief World columns visible this run (tiles). The GameCube/Wii TV output
- *         resolution is runtime-only, so this is computed once at init from the
- *         real TV pixel width (VIDEO_GetPreferredMode) rather than being a
- *         compile-time constant. GC/Wii backend only. */
+ *         resolution AND display aspect are runtime-only, so this is computed
+ *         once at init from the real TV pixel width (VIDEO_GetPreferredMode)
+ *         and the display aspect (see ::video::GamecubeWidescreen) rather than
+ *         being a compile-time constant. GC/Wii backend only. */
 extern u16 ogc_world_tx;
+#endif
+#if defined(TARGET_WIIU)
+/** @brief World columns visible this run (tiles). The Wii U's TV aspect is a
+ *         system setting, not a fixed property of the console, so this is
+ *         computed once at init from AVMGetTVAspectRatio rather than being a
+ *         compile-time constant. Wii U backend only. */
+extern u16 wiiu_world_tx;
 #endif
 
 namespace video {
@@ -462,17 +470,26 @@ namespace video {
     /** @brief Viewport height in pixels (tiles * 8). */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
 #elif defined(TARGET_OGC)
-    // The GameCube/Wii TV output resolution (NTSC/PAL, 4:3/16:9,
-    // interlace/progressive) is known only at runtime, unlike the fixed 3DS
-    // panel below. Height stays pinned to the NES's 30 rows/240px; width is
-    // ogc_world_tx, computed once at init (src/ogc/video.cpp) from the real TV
-    // pixel width, so GX renders more of the game world to fill a wider screen
-    // instead of stretching a fixed 256px image -- the same "render more world"
-    // model the SDL LANDSCAPE desktop path uses. A tiny/unusual TV mode simply
-    // crops the camera (ogc_world_tx can resolve below 32); the underlying
-    // nametable VRAM is sized separately to never go below the NES's own
-    // 2-page/0x800-byte minimum (see the InitMemory call in src/ogc/video.cpp).
-    /** @brief Viewport width in tiles (GC/Wii: runtime, covers the real TV width). */
+    // The GameCube/Wii TV output resolution (NTSC/PAL, interlace/progressive)
+    // AND its display aspect (4:3 or 16:9) are known only at runtime, unlike
+    // the fixed 3DS panel below. Height stays pinned to the NES's 30
+    // rows/240px; width is ogc_world_tx, computed once at init
+    // (src/ogc/video.cpp) from the real TV pixel width and that aspect, so GX
+    // renders more of the game world to fill a wider screen instead of
+    // stretching a fixed 256px image -- the same "render more world" model the
+    // SDL LANDSCAPE desktop path uses. A tiny/unusual TV mode simply crops the
+    // camera (ogc_world_tx can resolve below 32); the underlying nametable
+    // VRAM is sized separately to never go below the NES's own 2-page/
+    // 0x800-byte minimum (see the InitMemory call in src/ogc/video.cpp).
+    //
+    // 16:9 does NOT change the framebuffer: GX still renders 640x480 (or
+    // whatever the TV mode is) and the TV stretches it, i.e. anamorphic. What
+    // changes is how many world columns that framebuffer has to cover before
+    // the result reads as square pixels, which is why this is a viewport
+    // question and not a VI one. A 4:3 480-line mode resolves to 40 columns
+    // (320x240 world, square pixels at 4:3); the same mode at 16:9 resolves to
+    // 52 (416x240, ~16:9), the same widescreen viewport TARGET_NX uses.
+    /** @brief Viewport width in tiles (GC/Wii: runtime, covers the real TV width at its real aspect). */
     constexpr u16 viewport_tx() { return ogc_world_tx; }
     /** @brief Viewport height in tiles (GC/Wii: fixed 30, matching the NES). */
     constexpr u16 viewport_ty() { return 30; }
@@ -480,6 +497,7 @@ namespace video {
     constexpr u16 viewport_px() { return viewport_tx() << 3; }
     /** @brief Viewport height in pixels (tiles * 8). */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
+
 #elif defined(TARGET_CTR)
     // The 3DS presents the viewport across BOTH panels, so the viewport is the
     // bounding box of the two rather than the top screen alone: 400x240 (top)
@@ -552,20 +570,46 @@ namespace video {
     constexpr u16 viewport_px() { return viewport_tx() << 3; }
     /** @brief Viewport height in pixels (tiles * 8 = 160). */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
-#elif defined(TARGET_NX) || defined(TARGET_WIIU)
-    // The Switch and Wii U are 16:9 consoles, so unlike the 4:3 GX/3DS consoles
-    // they do NOT pillarbox a 256-wide frame. Instead they widen the viewport
-    // (the same "render more of the world horizontally" model as the SDL
-    // LANDSCAPE desktop path), keeping the NES's 30-tile height. 52 tiles (416px)
-    // x 30 (240px) is ~16:9; the height stays a multiple of the source so a clean
-    // integer 3x fills 720p vertically, and the backend (src/switch/video.cpp,
-    // src/wiiu/video.cpp) scales the width to fill the panel. 52 is a multiple of
-    // 4 tiles, keeping the 32px attribute regions aligned (matching the SDL
-    // path's `& ~3u`). VRAM is the same two pages (0x800) the SDL path uses for
-    // any sub-512px render width.
-    /** @brief Viewport width in tiles (Switch/Wii U: 52, widescreen). */
+#elif defined(TARGET_NX)
+    // The Switch's own output is 16:9 and cannot be anything else -- docked
+    // HDMI and the handheld panel are both 16:9, and SetSysTvSettings
+    // (libnx, switch/services/set.h) carries resolution, RGB range and colour
+    // settings but no aspect field, because there is nothing to choose. So
+    // unlike the GX/3DS/Wii U paths this is a genuine compile-time constant and
+    // nothing is probed.
+    //
+    // Rather than pillarbox a 256-wide frame it widens the viewport (the same
+    // "render more of the world horizontally" model as the SDL LANDSCAPE
+    // desktop path), keeping the NES's 30-tile height. 52 tiles (416px) x 30
+    // (240px) is ~16:9; the height stays a multiple of the source so a clean
+    // integer 3x fills 720p vertically, and the backend (src/switch/video.cpp)
+    // scales the width to fill the panel. 52 is a multiple of 4 tiles, keeping
+    // the 32px attribute regions aligned (matching the SDL path's `& ~3u`).
+    // VRAM is the same two pages (0x800) the SDL path uses for any sub-512px
+    // render width.
+    /** @brief Viewport width in tiles (Switch: 52, widescreen -- fixed, the console has no 4:3 mode). */
     constexpr u16 viewport_tx() { return 52; }
-    /** @brief Viewport height in tiles (Switch/Wii U: 30). */
+    /** @brief Viewport height in tiles (Switch: 30). */
+    constexpr u16 viewport_ty() { return 30; }
+    /** @brief Viewport width in pixels (tiles * 8). */
+    constexpr u16 viewport_px() { return viewport_tx() << 3; }
+    /** @brief Viewport height in pixels (tiles * 8). */
+    constexpr u16 viewport_py() { return viewport_ty() << 3; }
+#elif defined(TARGET_WIIU)
+    // Same widescreen model as TARGET_NX above (render more world horizontally
+    // rather than pillarbox a 256-wide frame, NES-native 30-tile height), but
+    // the Wii U's aspect is NOT fixed: it is a system setting, and a Wii U
+    // wired to a 4:3 set is a configuration Cafe OS supports. Hardcoding the
+    // 52-tile widescreen viewport there stretched every tile by 4/3.
+    //
+    // So width is wiiu_world_tx, read once at init (src/wiiu/video.cpp) from
+    // AVMGetTVAspectRatio: 52 tiles (416x240, ~16:9) on a widescreen set, 40
+    // (320x240, exactly 4:3) on a 4:3 one. Both are multiples of 4 tiles,
+    // keeping the 32px attribute regions aligned (matching the SDL path's
+    // `& ~3u`), and both stay at or under the 512px/2-page VRAM step.
+    /** @brief Viewport width in tiles (Wii U: runtime, 52 widescreen or 40 at 4:3). */
+    constexpr u16 viewport_tx() { return wiiu_world_tx; }
+    /** @brief Viewport height in tiles (Wii U: 30). */
     constexpr u16 viewport_ty() { return 30; }
     /** @brief Viewport width in pixels (tiles * 8). */
     constexpr u16 viewport_px() { return viewport_tx() << 3; }
@@ -671,6 +715,71 @@ namespace video {
     /** @brief Viewport height in pixels (tiles * 8) — runtime, follows ::video::viewport_ty. */
     constexpr u16 viewport_py() { return viewport_ty() << 3; }
 #endif
+
+/**
+ * @brief GameCube/Wii-specific display controls.
+ *
+ * Declared on every target, so game code can call into it without guarding on
+ * the platform; everything in here is an inline no-op away from the console it
+ * belongs to.
+ */
+namespace ogc {
+#if defined(TARGET_GC)
+    /**
+     * @brief Switches the GameCube between the 4:3 and 16:9 anamorphic
+     *        viewports, live.
+     *
+     * Every GameCube build can do this -- it is a runtime switch, not a build
+     * configuration -- and every build boots 4:3 until told otherwise, which is
+     * the era-correct default and what an unmodified console on an unknown TV
+     * should assume.
+     *
+     * It has to be a call the game makes, because the GameCube is the one
+     * target here that cannot work the answer out for itself. The Wii holds the
+     * TV screen format in SYSCONF and the backend reads it with
+     * CONF_GetAspectRatio(); the Wii U has AVMGetTVAspectRatio(). The
+     * GameCube's entire persistent config is the RTC-backed SRAM the IPL
+     * writes -- language, video mode, mono/stereo, progressive scan, EuRGB60,
+     * horizontal screen offset and the RTC counter bias (the `syssram` struct,
+     * libogc's ogc/system.h) -- which has no aspect field, and there is no EDID
+     * on an analog cable to probe either. That is exactly why GameCube games
+     * each shipped their own widescreen toggle, and this is that toggle's
+     * engine side: the game owns the setting (and its persistence, if any) and
+     * tells the engine.
+     *
+     * Nothing about the video mode changes: VI still scans out the same
+     * framebuffer and the TV still stretches it, i.e. ordinary anamorphic
+     * widescreen. What changes is ::viewport_tx() -- how much of the game world
+     * is rendered into that framebuffer, so the stretch lands back on square
+     * pixels (40 columns at 4:3, 52 at 16:9, for the ordinary 480-line modes).
+     *
+     * @warning The viewport width IS the nametable page width
+     *          (::nametable_plane_bytes, ::emu::ComputeNtGeometry), so changing
+     *          it re-strides the whole plane and everything already in VRAM
+     *          lands at the wrong offsets. A caller must therefore treat this
+     *          like a scene change: switch with rendering disabled, then redraw
+     *          the background from scratch and re-run the generated UI's
+     *          `Make_*` calls so every anchor is re-derived against the new
+     *          viewport. The allocation itself never moves -- irq::init()
+     *          already sizes VRAM for the wider of the two -- so no pointer the
+     *          game holds is invalidated. Calling it with the value already in
+     *          effect does nothing at all.
+     *
+     * @param on True for the 16:9 anamorphic viewport, false for 4:3.
+     */
+    void SetWidescreen(bool on);
+#else
+    /**
+     * @brief No-op away from the GameCube.
+     *
+     * The Wii, the Wii U and the desktop/LANDSCAPE path all read the real
+     * display geometry themselves, so there is nothing for a game to set; on a
+     * fixed-panel target there is nothing to set either. Present so a call site
+     * shared with the GameCube build needs no `#ifdef`.
+     */
+    inline void SetWidescreen(bool) {}
+#endif
+}
 
     /**
      * @brief One physical panel's rectangle inside the viewport, in pixels.

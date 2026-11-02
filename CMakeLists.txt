@@ -2040,9 +2040,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 ${CMAKE_SOURCE_DIR}/include
                 ${CMAKE_SOURCE_DIR}/include/umbrella
         )
-        # TARGET_WIIU is the native-Wii-U define; the engine headers pair it with
-        # the Switch (TARGET_NX) family for the widescreen 52x30 (416x240)
-        # viewport, and exclude the SDL3 headers (this backend uses SDL2).
+        # TARGET_WIIU is the native-Wii-U define; the engine headers give it a
+        # runtime viewport -- 52x30 (416x240) widescreen or 40x30 (320x240) at
+        # 4:3, chosen at init from AVMGetTVAspectRatio since the Wii U's TV
+        # aspect is a system setting (src/wiiu/video.cpp) -- and exclude the
+        # SDL3 headers (this backend uses SDL2).
         target_compile_definitions(pnes PUBLIC TARGET_WIIU)
         # Alternative nametable wiring (see the TARGET_NES branch's own comment,
         # near the top of this file): a fact about which board a build is

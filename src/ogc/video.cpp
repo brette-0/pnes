@@ -46,6 +46,7 @@
 #include <malloc.h>
 #include <string.h>
 #ifdef TARGET_WII
+#include <ogc/conf.h>
 #include <wiiuse/wpad.h>
 #endif
 
@@ -87,15 +88,86 @@ static constexpr u32 FIFO_SIZE = 256 * 1024;
 static int         efbH, fbW;             // EFB dimensions (scissor / overlay)
 
 // World columns visible this run (tiles) -- declared in video.hpp, computed
-// once in init() below from the real TV pixel width. NOT static: video.hpp's
-// video::viewport_tx() reads it from every other translation unit.
+// once in init() below from the real TV pixel width and display aspect. NOT
+// static: video.hpp's video::viewport_tx() reads it from every other
+// translation unit.
 u16 ogc_world_tx;
 
-// Projections, built once at init. NES-space (256x240) for the GX-native
-// tiles/sprites; screen-space for the profiler overlay.
+// NES-space projection (viewport_px() x viewport_py()) for the GX-native
+// tiles/sprites. Rebuilt by apply_aspect() below rather than only at init,
+// since on GameCube the viewport width can change at runtime.
 static Mtx44       proj_nes;
 #if defined(OGC_PROFILER)
-static Mtx44       proj_screen;   // screen-pixel space, profiler overlay only
+// Screen-pixel space, profiler overlay only. Built once at init: it follows the
+// framebuffer, which no aspect change touches.
+static Mtx44       proj_screen;
+#endif
+
+// ---------------------------------------------------------------------------
+// Display aspect: 4:3 or 16:9.
+//
+// Neither console changes its VIDEO output for a widescreen TV -- VI scans out
+// the same 640x480 (or whatever rmode says) either way and the SET stretches
+// it. So the aspect is not something the video mode can be asked about; it is
+// a separate fact about the display, and all it changes here is how many world
+// columns that framebuffer has to cover before the result reads as square
+// pixels (see video::viewport_tx()'s own comment in video.hpp).
+//
+// The Wii knows the answer: the TV screen format lives in its SYSCONF, which
+// is what the System Settings widescreen option writes, and CONF_GetAspectRatio
+// reads it over IOS.
+//
+// The GameCube cannot know it. The whole of its persistent config is the 64
+// bytes of RTC-backed SRAM the IPL writes -- language, video mode (NTSC/PAL/
+// MPAL), mono/stereo, progressive scan, EuRGB60, horizontal screen offset and
+// the RTC counter bias (the `syssram` struct, libogc's ogc/system.h) -- and
+// there is no aspect field among them, nor any EDID on an analog cable to
+// probe. CONF_GetAspectRatio itself does not even exist in a GameCube build:
+// libogc guards the entire CONF_* family behind `#if defined(HW_RVL)`
+// (ogc/conf.h), because it is an IOS/SYSCONF reader and the GameCube has
+// neither. This is precisely why GameCube games shipped their own widescreen
+// toggles, so the GC side is TOLD instead, by the game, through
+// video::ogc::SetWidescreen below.
+// ---------------------------------------------------------------------------
+// The two viewport widths this TV mode resolves to, 4:3 and 16:9, both filled
+// in by init() below. Held separately rather than recomputed because the
+// GameCube can switch between them at runtime (video::ogc::SetWidescreen) and
+// both have to agree exactly with the width VRAM was sized for.
+static u16  world_tx_4_3   = 32;
+static u16  world_tx_16_9  = 32;
+// Which of the two is currently in effect. GameCube default is 4:3 -- the
+// era-correct assumption for an unmodified console on an unknown TV, and what
+// a game overrides by calling video::ogc::SetWidescreen. On Wii this is
+// whatever SYSCONF says and never moves again.
+static bool widescreen_now = false;
+
+// Points ogc_world_tx at the current choice and rebuilds the projection that
+// maps it onto the framebuffer. The framebuffer, the VI mode and the GX
+// viewport/scissor are all untouched: this is anamorphic widescreen, so the
+// only thing that changes is how much world is drawn into the same pixels.
+static void apply_aspect() {
+    ogc_world_tx = widescreen_now ? world_tx_16_9 : world_tx_4_3;
+    guOrtho(proj_nes, 0, video::viewport_py(), 0, video::viewport_px(), 0, 300);
+    GX_LoadProjectionMtx(proj_nes, GX_ORTHOGRAPHIC);
+}
+
+#if defined(TARGET_GC)
+// Runtime switch, available in EVERY GameCube build -- see the declaration in
+// video.hpp for why the GameCube has to be told rather than asked, and for the
+// redraw a caller owes after flipping it. Deliberately not a build option:
+// whether a particular console is on a widescreen set is a property of that
+// player's living room, not of the disc.
+//
+// emu::ComputeNtGeometry() re-derives the page layout from video::viewport_tx()
+// on every call and nothing caches it, so changing ogc_world_tx here is the
+// whole switch as far as the core is concerned. What it does NOT do is move the
+// bytes already in VRAM into their new positions -- hence the redraw
+// requirement documented at the declaration.
+void video::ogc::SetWidescreen(const bool on) {
+    if (on == widescreen_now) return;
+    widescreen_now = on;
+    apply_aspect();
+}
 #endif
 
 // ===========================================================================
@@ -167,18 +239,21 @@ static constexpr u32 nes_rgb[64] = {
 // (viewport width in tiles + 1) x (viewport height in tiles + 1) cells -- the
 // +1s cover the partial edge tile a non-zero fine scroll adds on each axis.
 // viewport_tx() is runtime here (ogc_world_tx, video.hpp), so this can't be
-// sized from it directly; its own formula -- ((fbWidth/ogc_scale)>>3)&~3,
-// fbWidth<=640, ogc_scale>=1 -- caps out at 80 tiles wide (a 240p/double-
-// strike TV mode forces ogc_scale down to 1), height is always the fixed 30.
+// sized from it directly; its own formula -- ((square_w/ogc_scale)>>3)&~3,
+// square_w <= fbWidth*4/3 <= 853, ogc_scale >= 1 -- caps out at 104 tiles wide
+// (a 240p/double-strike TV mode forces ogc_scale down to 1, and a 16:9 display
+// widens square_w by a further 4/3 on top of that; the same worst case was 80
+// before the aspect term existed), height is always the fixed 30.
 // A too-small bound overflows bg_bucket[3][MAX_CELLS] straight into adjacent
 // static data (TLUTs, chr_atlas state, ...), which reads as a mostly-blank/
 // corrupted screen and can crash much later when that state is next touched
 // -- this is exactly what happened on the 3DS backend's equivalent buffer,
 // whose narrower fixed 33x32 bound this one used to share, before its
 // viewport (also wider than 32 tiles) overflowed it on the very same title
-// screen. Sized for the 80x30 extreme rather than the common ~40x30 case.
+// screen. Sized for the 104x30 extreme rather than the common 40x30 (4:3) or
+// 52x30 (16:9) case.
 struct Cell { u16 atlas; i16 sx; i16 sy; };
-static constexpr int MAX_CELLS = 81 * 31;
+static constexpr int MAX_CELLS = 105 * 31;
 static Cell  bg_bucket[4][MAX_CELLS];
 static int   bg_count[4];
 
@@ -714,17 +789,53 @@ void irq::init() {
     // matching the SDL LANDSCAPE desktop formula. Derived from the same
     // rmode->fbWidth/efbHeight pair GX_SetViewport above already uses, so the
     // projection below stays self-consistent regardless of the actual TV mode.
+    //
+    // On a 16:9 display those framebuffer pixels are NOT square: the TV
+    // stretches rmode->fbWidth across 16/9 of the picture height instead of
+    // 4/3 of it, so one framebuffer pixel is 4/3 as wide as it is tall. The
+    // width the viewport actually has to cover, measured in square pixels, is
+    // therefore fbWidth * (16/9)/(4/3) == fbWidth * 4/3. Nothing about VI or
+    // the EFB changes -- this is ordinary anamorphic widescreen, the same
+    // squeeze a GameCube-era 16:9 mode has always been; the only difference is
+    // that the camera is wider so the stretch lands back on square pixels.
+    //
+    // Worked through for the ordinary 480-line modes (fbWidth 640,
+    // efbHeight 480, so ogc_scale 2): 4:3 gives (640/2)>>3 == 40 columns, a
+    // 320x240 world that IS 4:3; 16:9 gives ((640*4/3)/2)>>3 == 53, aligned
+    // down to 52, a 416x240 world that is ~16:9 -- the same 52-tile widescreen
+    // viewport TARGET_NX and the Wii U path use, arrived at independently.
+    //
+    // BOTH are resolved here, not just the one in effect, because a GameCube
+    // can switch between them mid-run (video::ogc::SetWidescreen) and the
+    // switch must not have to redo any of this.
     const u32 ogc_scale = rmode->efbHeight >= 240 ? rmode->efbHeight / 240 : 1;
-    ogc_world_tx = static_cast<u16>(((rmode->fbWidth / ogc_scale) >> 3) & ~3u);
+    world_tx_4_3  = static_cast<u16>(((rmode->fbWidth / ogc_scale) >> 3) & ~3u);
+    world_tx_16_9 = static_cast<u16>(((((rmode->fbWidth * 4u) / 3u) / ogc_scale) >> 3) & ~3u);
 
-    // Both orthographic projections, built once; identity modelview.
-    // NES-space (256 x variable-width x240): GX tiles/sprites. Screen-space:
-    // profiler overlay.
-    guOrtho(proj_nes,    0, video::viewport_py(), 0, video::viewport_px(), 0, 300);
+    // Which one this run starts on. The Wii knows, and cannot be overridden --
+    // video::ogc::SetWidescreen is GameCube-only, so this is settled for the
+    // whole run. The GameCube starts 4:3 and waits to be told (see that
+    // function's own comment).
+    //
+    // CONF_GetAspectRatio returns s32, not the enum: a SYSCONF read failure is
+    // a NEGATIVE error code, not CONF_ASPECT_4_3. Comparing against
+    // CONF_ASPECT_16_9 rather than against 4:3 is therefore deliberate -- it
+    // makes any error fall back to 4:3, the safe direction, since a 4:3 image
+    // on a widescreen set is merely pillarboxed whereas the reverse is
+    // horizontally squashed.
+#if defined(TARGET_WII)
+    widescreen_now = CONF_GetAspectRatio() == CONF_ASPECT_16_9;
+#else
+    widescreen_now = false;
+#endif
+
+    // Sets ogc_world_tx and builds proj_nes from it. Identity modelview below;
+    // the profiler's screen-space projection follows the framebuffer instead,
+    // so an aspect change never touches it and it is built once, here.
+    apply_aspect();
 #if defined(OGC_PROFILER)
     guOrtho(proj_screen, 0, rmode->efbHeight - 1, 0, rmode->fbWidth - 1, 0, 300);
 #endif
-    GX_LoadProjectionMtx(proj_nes, GX_ORTHOGRAPHIC);
 
     Mtx mv;
     guMtxIdentity(mv);
@@ -738,7 +849,23 @@ void irq::init() {
     // pages/0x800 bytes when ogc_world_tx resolves to 32 or less (e.g. a
     // tiny/unusual TV mode), scaling up with a wider TV's viewport (see
     // ::emu::ComputeNtGeometry in draw_bg_band below).
-    emu::InitMemory(video::vram_bytes());
+    //
+    // Sized for the WIDER of the two aspects, whichever is in effect right now,
+    // so video::ogc::SetWidescreen never has to reallocate: emu::InitMemory is
+    // a plain malloc (src/emu/ppu.cpp), a second call would leak the first, and
+    // every pointer the game holds into VideoRAM would move under it. The cost
+    // of the headroom is the difference between a 52-column and a 40-column
+    // plane -- under a kilobyte on the ordinary 480-line modes -- and it buys a
+    // switch that cannot fail. A Wii pays that same headroom for a switch it
+    // can never make (SetWidescreen is GameCube-only), which is cheaper than
+    // maintaining a second path for it. ogc_world_tx is parked at the wide
+    // width just long enough for vram_bytes() to read it, since that is the one
+    // place the page-layout formula lives.
+    const u16 tx_now = ogc_world_tx;
+    ogc_world_tx = world_tx_16_9 > world_tx_4_3 ? world_tx_16_9 : world_tx_4_3;
+    const unsigned vram = video::vram_bytes();
+    ogc_world_tx = tx_now;
+    emu::InitMemory(vram);
 
     // --- GX-NATIVE resources ----------------------------------------------
     for (int i = 0; i < ATLAS_SLOTS; i++) {
