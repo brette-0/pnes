@@ -17,7 +17,10 @@
 // emulation time.
 //
 // The remaining problem this tool solves is turning that address into a
-// flat, bank-switching-agnostic byte offset into demo.nes ("LMA"). The
+// flat, bank-switching-agnostic PRG-ROM byte offset ("LMA") -- PRG-relative,
+// exactly like Mesen's own emu.memType.nesPrgRom addresses that
+// tools/pnes.lua compares it against, so demo.nes's iNES header is NOT part
+// of it (see RomLocator::HeaderBytes). The
 // naive approach -- trusting the .elf's own section file offsets -- is
 // WRONG for this toolchain: llvm-mos produces demo.nes directly from the
 // project's own linker-script OUTPUT_FORMAT{FULL(region)...} ordering (see
@@ -525,15 +528,39 @@ std::vector<LineTable> ParseDebugLine(const Elf &elf) {
     return tables;
 }
 
-/// Resolves (file, line) to the nearest real instruction address: an exact
-/// (file,line) match if one exists, else the smallest address among rows in
-/// the same file whose line is >= the target (the next real statement the
-/// compiler kept a line-table entry for -- see logger.hpp's own header
-/// comment on why log() itself can never have its own row).
-std::optional<u32> ResolveAddress(const std::vector<LineTable> &tables,
-                                   const std::string &file, u32 line) {
-    std::optional<u32> exact, nearest;
-    u32 nearestLine = 0xffffffffu;
+/// How ::ResolveAddress found an address, which is exactly how much it can
+/// be trusted. Only ::Exact means "this address marks the log call site";
+/// the other two mean "this address belongs to a neighbouring statement that
+/// happened to keep a row", which can fire at the wrong time or not at all.
+enum class Fix { Exact, Forward, Backward };
+
+struct Resolution { u32 address; Fix fix; u32 fromLine; };
+
+/// Resolves (file, line) to a real instruction address.
+///
+/// An anchored build (the default -- see ::PNES_LOG_ANCHOR in
+/// include/pnes/logger.hpp) emits a `nop` at every log call site, so the
+/// line table has a row at the log's own line and ::Fix::Exact always wins.
+/// The two fallbacks exist for PNES_LOG_NO_ANCHOR builds, and they are
+/// approximations the caller is expected to warn about:
+///
+///  - ::Fix::Forward -- the next line with a row. Borrows an address that
+///    belongs to a LATER statement, so the log can fire somewhere control
+///    reaches independently (a loop head reached once per iteration, say,
+///    for a log that ran once above the loop).
+///  - ::Fix::Backward -- the previous line with a row. Fires before the
+///    log's own statement rather than at it, but still inside the same
+///    stretch of code. This exists only so a trailing log point -- one with
+///    no later row anywhere in the file, e.g. inside a switch arm the
+///    optimiser routed through a shared trampoline -- is reported in the
+///    wrong place instead of silently dropped. Silence reads as evidence,
+///    which is the worse failure.
+///
+/// Among equally-near lines the smallest address wins, for determinism.
+std::optional<Resolution> ResolveAddress(const std::vector<LineTable> &tables,
+                                         const std::string &file, u32 line) {
+    std::optional<u32> exact, fwd, back;
+    u32 fwdLine = 0xffffffffu, backLine = 0;
     for (auto &t : tables) {
         // Find every file index in this CU whose resolved path matches.
         for (u32 fi = 0; fi < t.files.size(); ++fi) {
@@ -542,20 +569,24 @@ std::optional<u32> ResolveAddress(const std::vector<LineTable> &tables,
                 if (row.file != fi) continue;
                 if (row.line == line) {
                     if (!exact || row.address < *exact) exact = row.address;
-                } else if (row.line > line && row.line < nearestLine) {
-                    nearestLine = row.line;
-                    nearest = row.address;
-                } else if (row.line > line && row.line == nearestLine) {
-                    if (!nearest || row.address < *nearest) nearest = row.address;
+                } else if (row.line > line) {
+                    if (row.line < fwdLine) { fwdLine = row.line; fwd = row.address; }
+                    else if (row.line == fwdLine && (!fwd || row.address < *fwd)) fwd = row.address;
+                } else {
+                    if (row.line > backLine) { backLine = row.line; back = row.address; }
+                    else if (row.line == backLine && (!back || row.address > *back)) back = row.address;
                 }
             }
         }
     }
-    return exact ? exact : nearest;
+    if (exact) return Resolution{ *exact, Fix::Exact, line };
+    if (fwd)   return Resolution{ *fwd,   Fix::Forward, fwdLine };
+    if (back)  return Resolution{ *back,  Fix::Backward, backLine };
+    return std::nullopt;
 }
 
 // ---------------------------------------------------------------------
-// Content-fingerprint address -> flat demo.nes byte offset. See this file's
+// Content-fingerprint address -> flat PRG-ROM byte offset. See this file's
 // header comment for why this, not .elf section file offsets, is correct.
 // ---------------------------------------------------------------------
 
@@ -563,7 +594,7 @@ class RomLocator {
 public:
     RomLocator(std::vector<u8> romBytes) : rom_(std::move(romBytes)) {}
 
-    /// Returns the flat byte offset in demo.nes for `address`, which must
+    /// Returns the flat PRG-ROM byte offset for `address`, which must
     /// fall inside `sec` (an ALLOC section from the same .elf). Caches one
     /// content-fingerprint search per section, since every log entry in the
     /// same section reuses it.
@@ -597,9 +628,30 @@ private:
                       << ") -- log points resolving into this section will be skipped\n";
             return std::nullopt;
         }
+        // THE MATCH IS A demo.nes FILE OFFSET; AN LMA IS NOT. tools/pnes.lua
+        // compares these against Mesen's own emu.memType.nesPrgRom addresses,
+        // which are PRG-ROM-relative -- the iNES header is not part of that
+        // address space. PRG-ROM begins immediately after the header (and
+        // after the trainer, on the rare board that has one), so subtracting
+        // the header size here is exactly the file-offset -> PRG-offset
+        // conversion. Leaving it in shifted every log point in logdata.lua
+        // forward by 16 bytes, which silently fires a log at whatever
+        // instruction happens to start 16 bytes later -- or, far more often,
+        // never fires it at all because that byte is mid-instruction.
+        const u32 headerBytes = HeaderBytes();
         std::cerr << "lua_log_builder: located " << sec.name << " (addr 0x" << std::hex << sec.addr
-                   << std::dec << ") at demo.nes offset " << *found << "\n";
-        return static_cast<u32>(*found);
+                   << std::dec << ") at demo.nes offset " << *found
+                   << " (ROM offset " << (*found - headerBytes) << ")\n";
+        return static_cast<u32>(*found - headerBytes);
+    }
+
+    /// Bytes of demo.nes that precede PRG-ROM: the 16-byte iNES/NES2.0
+    /// header, plus a 512-byte trainer when header flags6 bit 2 says one is
+    /// present. Zero for a headerless image, so a project that ships raw
+    /// PRG needs no special case.
+    u32 HeaderBytes() const {
+        if (rom_.size() < 16 || std::memcmp(rom_.data(), "NES\x1a", 4) != 0) return 0;
+        return 16u + ((rom_[6] & 0x04) ? 512u : 0u);
     }
 
     std::vector<u8> rom_;
@@ -762,15 +814,29 @@ int main(int argc, char **argv) {
             out << "return { logs = {\n";
         }
 
-        int resolved = 0, unresolved = 0;
+        int resolved = 0, unresolved = 0, inexact = 0;
         for (auto &e : entries) {
-            auto address = ResolveAddress(lineTables, e.file, e.line);
-            if (!address) {
+            auto res = ResolveAddress(lineTables, e.file, e.line);
+            if (!res) {
                 std::cerr << "lua_log_builder: warning: could not resolve " << e.file << ":" << e.line
                           << " (\"" << e.message << "\") to any address -- skipped\n";
                 ++unresolved;
                 continue;
             }
+            // An inexact fix means this log point will report a place that is
+            // not its own call site (see ::Fix). Say so per call site: it
+            // changes how its output must be read, and in an anchored build it
+            // should never happen at all.
+            if (res->fix != Fix::Exact) {
+                std::cerr << "lua_log_builder: warning: " << e.file << ":" << e.line
+                          << " (\"" << e.message << "\") has no line-table row of its own -- using the "
+                          << (res->fix == Fix::Forward ? "next" : "previous")
+                          << " row, at line " << res->fromLine
+                          << ". It will fire wherever that line's code runs, which is not necessarily "
+                             "this call site. Build without PNES_LOG_NO_ANCHOR to make it exact.\n";
+                ++inexact;
+            }
+            const std::optional<u32> address = res->address;
             const Section *sec = elf.FindContaining(*address);
             if (!sec) {
                 std::cerr << "lua_log_builder: warning: " << e.file << ":" << e.line
@@ -803,7 +869,9 @@ int main(int argc, char **argv) {
 
         out << "} }\n";
         std::cerr << "lua_log_builder: wrote " << args.outputPath << " -- "
-                  << resolved << " log point(s) resolved, " << unresolved << " skipped\n";
+                  << resolved << " log point(s) resolved, " << unresolved << " skipped"
+                  << (inexact ? ", " + std::to_string(inexact) + " INEXACT (see warnings above)" : "")
+                  << "\n";
         return 0;
     } catch (const std::exception &e) {
         std::cerr << "lua_log_builder: error: " << e.what() << "\n";

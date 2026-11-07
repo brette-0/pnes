@@ -14,7 +14,7 @@
 HEADER(
     Mirroring::Horizontal, false,
     262144, 16384,
-    0, 8192,
+    8192, 0,
     0, 0,
     REGION ? Timing::PAL : Timing::NTSC
 );

@@ -65,6 +65,7 @@ RESET {
     log("RESET: audio::Init returned");
 
     while (!quit) {
+        log("RESET: %d", gameMode);
         switch (gameMode) {
             case eGameModes::Level:
                 log("RESET: entering level::main");

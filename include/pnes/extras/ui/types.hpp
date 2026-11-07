@@ -57,3 +57,40 @@ struct Rect {
         return true;
     }
 };
+
+/**
+ * @brief One entry in a generated Canvas's component table: where a component
+ *        is, and the single function that hands it a frame's input.
+ *
+ * A Canvas (see uitk's genCanvasDecl) has no geometry or appearance of its own
+ * -- it is a focus ring over the interactable nodes nested inside it. To move
+ * that focus it needs both halves of each component by *index*, which is only
+ * known at runtime, so this is the indexable view over nodes that are
+ * otherwise reachable by name alone.
+ *
+ * Both members are pointers into the component's own storage rather than
+ * copies of it, which is what keeps the generated table `constexpr` on every
+ * target. A fixed-viewport node's `rect` is itself `constexpr`, but a
+ * runtime-viewport one's is mutable storage its `Make()` fills, so a table of
+ * Rect *values* could not be built ahead of time there -- while the ADDRESS of
+ * that storage is a compile-time constant everywhere. It also means an entry
+ * can never disagree with the node it describes: there is only ever one rect.
+ *
+ * `rect` is `const volatile` -- which is what `atomic Rect` is on every C++
+ * build (technology.hpp) -- so one pointer type covers both: a `constexpr
+ * Rect`'s address converts by merely adding the qualifiers. Reading one copies
+ * it out through ::Rect's volatile copy constructor, the same way a generated
+ * `Make()` already copies a member's rect into a SingleChoice's option table.
+ *
+ * `func` is the component's `Pass(u8)`, and in generated code it is never
+ * anything else: a Canvas only ever hands a component input. Note that this is
+ * the one place a generated `Pass` is called indirectly -- taking its address
+ * forces an out-of-line copy of a function uitk marks always-inline, so the
+ * component bodies a Canvas reaches cost a call where a direct one would not.
+ * That is the price of indexing by a runtime value, and it is paid once per
+ * press.
+ */
+struct InvokeableComponant {
+    const volatile Rect* rect;  ///< The component's own `rect` storage.
+    void (*func)(u8);           ///< The component's own `Pass`.
+};

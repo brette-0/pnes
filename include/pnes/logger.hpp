@@ -2,7 +2,10 @@
  * @file logger.hpp
  * @brief Zero-footprint NES logging.
  *
- * log("message") never becomes an instruction on TARGET_NES: it declares
+ * log("message") costs one instruction on TARGET_NES -- a single `nop`,
+ * which exists so the call site has an address of its own for the host-side
+ * tooling to find (see ::PNES_LOG_ANCHOR for what goes wrong without it,
+ * and how to opt back out). Everything else it emits is free: it declares
  * `static const` data (never read or written by anything at runtime) tagged
  * into `.pnes_log`, a section none of the mapper linker scripts (see
  * src/nes/mappers/debug-log.ld, INCLUDEd from mmc3-helper.ld/vrc1-helper.ld)
@@ -163,8 +166,49 @@ extern const float silentStackAmount;
  */
 #define pause() PNES_LOG_IMPL(PNES_LOG_KIND_PAUSE, "", __COUNTER__)
 
+/**
+ * @brief The one real instruction a log call site emits: its anchor.
+ *
+ * WITHOUT THIS, A LOG POINT HAS NO ADDRESS OF ITS OWN. The metadata below
+ * records (file, line) and nothing else, so tools/luaLogBuilder has to find
+ * the call site's address in the .elf's DWARF line table -- and a statement
+ * that emits no instructions gets no line-table row. The builder then
+ * borrows the nearest row at a LATER line, which fails in both directions,
+ * and both failures were observed in this project's own demo:
+ *
+ *  - A log sitting just above a loop borrowed the row belonging to the
+ *    loop's first instruction, so a once-at-boot message printed on every
+ *    iteration, forever -- reporting a place control had already left.
+ *  - The three logs inside that loop's switch arms had no later row in the
+ *    file at all (the optimiser funnels every arm through one shared
+ *    trampoline, whose rows sit at earlier lines), so they resolved to
+ *    nothing and were dropped with a build warning. A log point that cannot
+ *    fire is worse than none: its silence reads as evidence.
+ *
+ * One `nop` fixes both: the line table gets a row at exactly this line, the
+ * builder's exact-match path always wins, and the address it resolves to is
+ * an instruction that exists only to mark this call site -- so reaching it
+ * means reaching the log, and nothing else does. `volatile` is what keeps
+ * it: the compiler must not delete it, duplicate it, or hoist it out of a
+ * loop, and it may not reorder it past another volatile asm or a memory
+ * access. It cannot move across the statements that matter either, which is
+ * the whole point of putting it here rather than trusting line attribution.
+ *
+ * THE COST IS ONE BYTE AND TWO CYCLES PER CALL SITE, which is no longer
+ * "zero footprint" (see this file's header comment) -- the .pnes_log
+ * metadata still costs nothing, but the anchor is real ROM. Define
+ * ::PNES_LOG_NO_ANCHOR to get the old behaviour back: zero bytes, and log
+ * positions that are approximate at best and silently absent at worst.
+ */
+#ifdef PNES_LOG_NO_ANCHOR
+    #define PNES_LOG_ANCHOR() ((void)0)
+#else
+    #define PNES_LOG_ANCHOR() __asm__ volatile("nop")
+#endif
+
 #define PNES_LOG_IMPL(kind, msg, id, ...)                                       \
     do {                                                                        \
+        PNES_LOG_ANCHOR();                                                      \
         PNES_LOG_TEXT(PNES_LOG_CAT(_pnes_log_file_, id), __FILE__);             \
         PNES_LOG_TEXT(PNES_LOG_CAT(_pnes_log_msg_, id), msg);                   \
         static const ::log_detail::Arg PNES_LOG_CAT(_pnes_log_args_, id)[]      \

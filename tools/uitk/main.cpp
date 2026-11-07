@@ -262,6 +262,26 @@ constexpr int kButtonToggleableRole = Qt::UserRole + 23;
 // that only ever cares about `<Name>_pos`) has no use for it, so it isn't
 // forced on every button the way pos is.
 constexpr int kButtonHasBoxRole = Qt::UserRole + 24;
+// Canvas-only: which axis moves its focus. Vertical (the default) steps the
+// focused index on UP/DOWN and hands everything else to the focused
+// component, which is what lets a Canvas hold a Slider -- LEFT/RIGHT fall
+// through to it. Horizontal steps on LEFT/RIGHT instead, and so cannot
+// usefully hold one: nothing is left to adjust it with (see genCanvasDecl).
+constexpr int kCanvasVerticalRole = Qt::UserRole + 25;
+// SingleChoice-only, and the same idea as kCanvasVerticalRole: which axis
+// steps its selected option. Vertical (the default) steps on UP/DOWN, a
+// stacked list of options; horizontal steps on LEFT/RIGHT, a row of them.
+// It is also what lets a SingleChoice sit inside a Canvas -- the two have to
+// disagree about the axis for both to be reachable (see canvasComponents).
+constexpr int kSingleChoiceVerticalRole = Qt::UserRole + 26;
+// SingleChoice-only: whether the derived `rect` covering every option it shows
+// is emitted at all (see genSingleChoiceDecl). Off by default, because it is
+// not free on a runtime-viewport target -- there it is six bytes of mutable
+// storage plus a fold in Make() -- and a menu that nothing measures has no use
+// for it. Same arrangement as a Button's kButtonHasBoxRole. Forced on, whatever
+// this says, when the menu is a Canvas component: the Canvas's table is built
+// out of that rect, so there it isn't a choice (see isCanvasComponent).
+constexpr int kSingleChoiceHasRectRole = Qt::UserRole + 27;
 // Compile-time and runtime textboxes are separate kinds -- currently
 // identical in behavior, but distinguished now because they'll diverge in
 // meaning later (e.g. how their text is ultimately resolved by generated
@@ -279,12 +299,20 @@ constexpr char kButtonKind[] = "button";
 // it -- nothing more. No range or step: those belong to whatever the slider
 // controls (see genSliderDecl).
 constexpr char kSliderKind[] = "slider";
+// A pure grouping node like SingleChoice -- no geometry, no appearance -- but
+// where a SingleChoice groups textboxes into one value, a Canvas groups
+// INTERACTABLE nodes (toggleable Buttons, Sliders) into one focus ring, so a
+// menu can hand a whole screenful of controls input through a single Pass()
+// and let the Canvas decide which control it reaches. The only state it owns
+// is the focused index (see genCanvasDecl).
+constexpr char kCanvasKind[] = "canvas";
 constexpr char kCtTextBoxPrefix[] = "[CT] ";
 constexpr char kRtTextBoxPrefix[] = "[RT] ";
 constexpr char kNegSpacePrefix[] = "[N] ";
 constexpr char kSingleChoicePrefix[] = "[SC] ";
 constexpr char kButtonPrefix[] = "[B] ";
 constexpr char kSliderPrefix[] = "[S] ";
+constexpr char kCanvasPrefix[] = "[C] ";
 
 // Every backend pnes currently supports, in the order they appear in
 // the Target dropdown. Scene-wide, same as the quadrant -- one scene targets
@@ -444,6 +472,17 @@ bool isSliderItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kSliderKind);
 }
 
+// A pure grouping node, like SingleChoice -- it has no geometry of its own
+// either. What it groups is interactable nodes: the toggleable Buttons and
+// Sliders nested under it become its components[] table, and its Pass() moves
+// a focused index over them and forwards input to whichever one has focus.
+// Children that have no Pass() of their own (a label, a non-toggleable button)
+// still get their namespaces and geometry as they would anywhere else -- they
+// just cannot take focus (see canvasComponents).
+bool isCanvasItem(const QTreeWidgetItem* item) {
+    return item && item->data(0, kKindRole).toString() == QLatin1String(kCanvasKind);
+}
+
 // Anything with a position/size -- placeable on the canvas, draggable,
 // referenceable in another node's expressions -- regardless of what kind of
 // thing it visually is.
@@ -454,10 +493,12 @@ bool isGeometryItem(const QTreeWidgetItem* item) {
 // Anything that carries a kind-specific name prefix -- every geometry item,
 // plus SingleChoice, which has no geometry of its own but is still a genuine
 // node (as opposed to root/plain branch nodes, which have no prefix at all).
-bool isPrefixedItem(const QTreeWidgetItem* item) { return isGeometryItem(item) || isSingleChoiceItem(item); }
+bool isPrefixedItem(const QTreeWidgetItem* item) {
+    return isGeometryItem(item) || isSingleChoiceItem(item) || isCanvasItem(item);
+}
 
-// The "[CT] "/"[RT] "/"[N] "/"[SC] "/"[B] "/"[S] " prefix a node's kind requires, or
-// empty for kinds (root, plain branch nodes) that don't have one.
+// The "[CT] "/"[RT] "/"[N] "/"[SC] "/"[B] "/"[S] "/"[C] " prefix a node's kind
+// requires, or empty for kinds (root, plain branch nodes) that don't have one.
 QString requiredPrefixFor(const QTreeWidgetItem* item) {
     if (isCtTextBoxItem(item)) return QString(kCtTextBoxPrefix);
     if (isRtTextBoxItem(item)) return QString(kRtTextBoxPrefix);
@@ -465,6 +506,7 @@ QString requiredPrefixFor(const QTreeWidgetItem* item) {
     if (isSingleChoiceItem(item)) return QString(kSingleChoicePrefix);
     if (isButtonItem(item)) return QString(kButtonPrefix);
     if (isSliderItem(item)) return QString(kSliderPrefix);
+    if (isCanvasItem(item)) return QString(kCanvasPrefix);
     return QString();
 }
 
@@ -487,9 +529,9 @@ QVector<QTreeWidgetItem*> collectComponentItems(QTreeWidgetItem* node) {
 }
 
 // Same walk as collectComponentItems, but over every prefixed node (geometry
-// items plus SingleChoice) -- used for name-uniqueness checks, since a
-// SingleChoice's name has to be unique against everything else that carries
-// a prefix, not just against other geometry.
+// items plus SingleChoice and Canvas) -- used for name-uniqueness checks,
+// since a grouping node's name has to be unique against everything else that
+// carries a prefix, not just against other geometry.
 QVector<QTreeWidgetItem*> collectPrefixedItems(QTreeWidgetItem* node) {
     QVector<QTreeWidgetItem*> result;
     std::function<void(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* n) {
@@ -532,6 +574,76 @@ QVector<QTreeWidgetItem*> singleChoiceMembers(const QTreeWidgetItem* scItem, con
             result.push_back(child);
         }
     }
+    return result;
+}
+
+// Whether this node has a generated Pass(u8), and a rect to go with it, and so
+// can be a Canvas component:
+//
+//  - a Slider, always;
+//  - a Button, only when it is toggleable -- a non-toggleable one has no press
+//    uitk could define for it, so it has no Pass() (see genButtonDecl);
+//  - a SingleChoice, as long as this target shows at least one of its options.
+//    It has no authored geometry, but it does have a derived `rect` covering
+//    the options it shows (see genSingleChoiceDecl), which is what a Canvas
+//    needs of it. The axis each one steps is a property of both (see
+//    kCanvasVerticalRole/kSingleChoiceVerticalRole), so for both to be
+//    reachable they have to disagree about it: a vertical Canvas holding a
+//    horizontal menu spends UP/DOWN on focus and hands LEFT/RIGHT to the menu.
+//    Agreeing is allowed -- the menu is still focusable, still takes A/B, and
+//    uitk has no business overruling a layout -- it just means the Canvas wins
+//    the axis and that menu cannot change its option while it is nested.
+//
+// Deliberately NOT a nested Canvas, which has a Pass() but no rect of its own,
+// and would need focus to mean two things at once.
+bool hasGeneratedPass(const QTreeWidgetItem* item, const QString& target, const QString& region) {
+    if (isSliderItem(item)) return true;
+    if (isButtonItem(item)) return item->data(0, kButtonToggleableRole).toBool();
+    return isSingleChoiceItem(item) && !singleChoiceMembers(item, target, region).isEmpty();
+}
+
+// Whether this node is a component of some Canvas -- i.e. whether a Canvas's
+// table will name it. The nearest PREFIXED ancestor is the one that decides:
+// anything in between is a transparent branch node, which codegen flattens
+// away (see childNamespaceNames), so a node inside one still belongs to the
+// Canvas above it. Doesn't check hidden-ness: a hidden Canvas hides everything
+// under it (isEffectivelyHidden walks up), so a visible node under a Canvas is
+// a node under a visible Canvas.
+bool isCanvasComponent(const QTreeWidgetItem* item, const QString& target, const QString& region) {
+    const QTreeWidgetItem* parent = item ? item->parent() : nullptr;
+    while (parent && !isPrefixedItem(parent)) parent = parent->parent();
+    return parent && isCanvasItem(parent) && hasGeneratedPass(item, target, region);
+}
+
+// A Canvas's components, in tree order: the nodes nested under it that have a
+// Pass() of their own, and so can take its focus (see hasGeneratedPass).
+// Everything else under a Canvas -- a label, a non-toggleable button -- keeps
+// its namespace and geometry and simply isn't focusable; a Canvas is a focus
+// ring, not a container that changes what its children are.
+//
+// Descends through non-prefixed branch nodes for the same reason codegen does
+// (they're transparent, see childNamespaceNames), but stops at any prefixed
+// node it takes: a Button's own label children are the Button's business, not
+// the Canvas's. Hidden-for-target/region nodes are dropped, same as
+// everywhere else, so a Canvas never indexes a component that isn't on the
+// exported target -- which also means the same scene can have a different
+// component count per target, and that is fine: nothing outside the generated
+// namespace depends on the indices.
+QVector<QTreeWidgetItem*> canvasComponents(const QTreeWidgetItem* canvasItem, const QString& target,
+                                            const QString& region) {
+    QVector<QTreeWidgetItem*> result;
+    std::function<void(const QTreeWidgetItem*)> visit = [&](const QTreeWidgetItem* n) {
+        for (int i = 0; i < n->childCount(); ++i) {
+            QTreeWidgetItem* child = n->child(i);
+            if (!isPrefixedItem(child)) {
+                visit(child);  // transparent branch
+                continue;
+            }
+            if (isEffectivelyHidden(child, target, region)) continue;
+            if (hasGeneratedPass(child, target, region)) result.push_back(child);
+        }
+    };
+    visit(canvasItem);
     return result;
 }
 
@@ -891,6 +1003,11 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
     } else if (isSingleChoiceItem(item)) {
         obj["kind"] = QStringLiteral("singlechoice");
         obj["defaultOption"] = item->data(0, kDefaultOptionRole).toInt();
+        obj["vertical"] = item->data(0, kSingleChoiceVerticalRole).toBool();
+        obj["provideBounds"] = item->data(0, kSingleChoiceHasRectRole).toBool();
+    } else if (isCanvasItem(item)) {
+        obj["kind"] = QStringLiteral("canvas");
+        obj["vertical"] = item->data(0, kCanvasVerticalRole).toBool();
     } else {
         obj["kind"] = QStringLiteral("branch");
     }
@@ -965,6 +1082,21 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
         item->setFlags(item->flags() | Qt::ItemIsEditable);
         item->setData(0, kKindRole, QString(kSingleChoiceKind));
         item->setData(0, kDefaultOptionRole, obj["defaultOption"].toInt(0));
+        // Defaults to vertical, which is the axis every SingleChoice written
+        // before this key existed was generated with.
+        item->setData(0, kSingleChoiceVerticalRole, obj["vertical"].toBool(true));
+        // Off by default: a scene written before this key existed was
+        // generated without a rect at all, so absent means off (see
+        // kSingleChoiceHasRectRole).
+        item->setData(0, kSingleChoiceHasRectRole, obj["provideBounds"].toBool(false));
+        item->setData(0, kLastValidNameRole, item->text(0));
+    } else if (kind == QLatin1String("canvas")) {
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
+        item->setData(0, kKindRole, QString(kCanvasKind));
+        // Defaults to vertical, matching addCanvasNode -- a scene written
+        // before this key existed, or by hand without it, gets the layout
+        // that can still hold a Slider (see kCanvasVerticalRole).
+        item->setData(0, kCanvasVerticalRole, obj["vertical"].toBool(true));
         item->setData(0, kLastValidNameRole, item->text(0));
     }
     if (isPrefixedItem(item)) {
@@ -1602,8 +1734,9 @@ QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOf
 }
 
 // Emits one SingleChoice node's own declarations: the runtime-indexable
-// `options` anchor table, the `option`/`nOptions` variables, and the Make()/
-// Pass() functions that initialize/step them. Its members' own namespaces are
+// `options` anchor table, optionally the `rect` covering all of them, the
+// `option`/`nOptions` variables, and the Make()/Pass() functions that
+// initialize/step them. Its members' own namespaces are
 // emitted separately, immediately BEFORE this, by emitNodeNamespace -- which is
 // what lets Draw() below name them. Everything lives header-only (`inline`),
 // same reasoning as rtTextBox's own wrapper: it has to be safely includable
@@ -1630,6 +1763,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     }
     const int nOptions = members.size();
     const int defaultOption = std::clamp(scItem->data(0, kDefaultOptionRole).toInt(), 0, nOptions - 1);
+    const bool scVertical = scItem->data(0, kSingleChoiceVerticalRole).toBool();
 
     QStringList lines;
 
@@ -1668,6 +1802,62 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     lines << QString("%1inline atomic u8 option = %2;").arg(bssPrefixTok).arg(defaultOption);
     lines << QString("inline constexpr u8 nOptions = %1;").arg(nOptions);
 
+    // The whole menu's footprint: the smallest Rect covering every option it
+    // shows. A SingleChoice has no geometry of its own to place -- this is
+    // derived, not authored -- but something that treats the menu as one thing
+    // needs one Rect for it: a Canvas holding this menu paints focus over
+    // exactly this area (see genCanvasDecl), and a scene framing or clearing
+    // the menu wants the same bounds.
+    //
+    // Opt-in, because it is only free on a fixed-viewport target. There it
+    // folds at compile time and a `constexpr` nothing addresses costs no ROM;
+    // on a runtime-viewport one it is six bytes of mutable storage and a fold
+    // in every Make(), which a menu nobody measures should not be paying.
+    // Being a Canvas component overrides the switch rather than erroring on
+    // it: that table is built out of this rect, so "off" there is not a
+    // preference uitk could honour -- it would just fail to compile, naming a
+    // generated line rather than the thing to fix.
+    //
+    // When it is off, nothing is emitted at all -- no empty stub, unlike a
+    // Make(), which every kind has so no call site needs a #if around it. A
+    // rect is a value, not a call, and the honest absence of one is a compile
+    // error at whatever tried to read it, naming this menu.
+    //
+    // Folded out of `options` rather than recomputed from the placement math,
+    // so it cannot disagree with the rects it covers, and so an option hidden
+    // on this target is absent from the bounds for free. It follows the same
+    // fixed/runtime split as `options` itself: a compile-time fold over a
+    // constexpr table, or, on a runtime-viewport target, mutable storage the
+    // Make() below folds once the table is filled.
+    const bool wantRect =
+        scItem->data(0, kSingleChoiceHasRectRole).toBool() || isCanvasComponent(scItem, target, region);
+    const QString boundsFold =
+        QString("    u16 x0 = options[0].pos.x;\n"
+                 "    u16 y0 = options[0].pos.y;\n"
+                 "    u16 x1 = static_cast<u16>(options[0].pos.x + options[0].size.x);\n"
+                 "    u16 y1 = static_cast<u16>(options[0].pos.y + options[0].size.y);\n"
+                 "    for (u8 i = 1; i < nOptions; ++i) {\n"
+                 "        const Rect r = options[i];\n"
+                 "        if (r.pos.x < x0) x0 = r.pos.x;\n"
+                 "        if (r.pos.y < y0) y0 = r.pos.y;\n"
+                 "        if (static_cast<u16>(r.pos.x + r.size.x) > x1) x1 = static_cast<u16>(r.pos.x + r.size.x);\n"
+                 "        if (static_cast<u16>(r.pos.y + r.size.y) > y1) y1 = static_cast<u16>(r.pos.y + r.size.y);\n"
+                 "    }\n");
+    const QString boundsValue = QString("Rect{{x0, y0}, {static_cast<u8>(x1 - x0), static_cast<u8>(y1 - y0)}}");
+    if (wantRect) {
+        if (runtimePos) {
+            lines << QString("%1inline atomic Rect rect;").arg(bssPrefixTok);
+        } else {
+            // An immediately-invoked constexpr lambda, so the fold sits with
+            // the table it folds instead of needing a named helper in the
+            // library for the one place that uses it. Legal in a header: C++17
+            // onward requires a closure type in an inline variable's
+            // initializer to be the same entity in every TU that sees it.
+            lines << QString("%1inline constexpr Rect rect = [] {\n%2    return %3;\n}();")
+                         .arg(dataPrefixTok, boundsFold, boundsValue);
+        }
+    }
+
     // Make() makes every child namespace this node holds first -- its options,
     // plus anything else nested under it -- then snapshots the options' rects.
     // It makes them
@@ -1691,21 +1881,38 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
                             .arg(bareName(members[i]))
                             .arg(i);
         }
+        if (wantRect) {
+            // Folded here, after the table is filled and out of the table
+            // itself -- the same fold the fixed-target `rect` above does at
+            // compile time, re-indented one level to sit inside Make()'s own
+            // scope.
+            QString nestedFold = boundsFold;
+            nestedFold.replace(QLatin1String("\n    "), QLatin1String("\n        "));
+            makeBody << QString("    {\n    %1        rect = %2;\n    }").arg(nestedFold, boundsValue);
+        }
     }
     makeBody << QString("    option = %1;").arg(defaultOption);
 
     lines << QString("inline AI void Make() {\n%1\n}").arg(makeBody.join("\n"));
 
-    // Clamps `option` against input::UP/DOWN -- same clamp logic
-    // ui::choice::SingleChoice::Pass used to carry as a template member;
-    // there's nothing here left to specialize on vertical vs. horizontal
-    // (both directions moved the option the same way), so it's just one
-    // plain function.
-    lines << QString(
-                 "inline AI void Pass(const u8 inputs) {\n"
-                 "    if      (inputs & input::UP)   { if (option != 0) option -= 1; }\n"
-                 "    else if (inputs & input::DOWN) { if (option != nOptions - 1) option += 1; }\n"
-                 "}");
+    // Clamps `option` against the two direction bits of the menu's own axis --
+    // UP/DOWN for a vertical list, LEFT/RIGHT for a row (see
+    // kSingleChoiceVerticalRole). Only those two: the other axis is left
+    // untouched so something outside can spend it, which is exactly what lets
+    // a Canvas hold this menu and still move its own focus (see
+    // genCanvasDecl). The clamp logic itself is what
+    // ui::choice::SingleChoice::Pass used to carry as a template member.
+    //
+    // The ends clamp rather than wrap, same as a Canvas's focus and for the
+    // same reason: a menu can build wrapping on top of clamping, but cannot
+    // take it back out.
+    const QString scBack = scVertical ? QStringLiteral("input::UP") : QStringLiteral("input::LEFT");
+    const QString scFwd = scVertical ? QStringLiteral("input::DOWN") : QStringLiteral("input::RIGHT");
+    lines << QString("inline AI void Pass(const u8 inputs) {\n"
+                      "    if      (inputs & %1) { if (option != 0) option -= 1; }\n"
+                      "    else if (inputs & %2) { if (option != nOptions - 1) option += 1; }\n"
+                      "}")
+                 .arg(scBack, scFwd);
 
     // Draw()/Erase(): the whole option list's labels in one call. Each member's
     // own Draw()/Erase() only exists on the targets that don't hide it (see
@@ -1988,6 +2195,166 @@ QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
 }
 
 
+// Emits one Canvas node's own declarations: the `components` table over the
+// interactable nodes nested under it, the `index` holding which of them has
+// focus, the Make() that drives its children, the forced-to-define
+// DrawUpdate() that repaints a focus move, and the generated Pass() that turns
+// a frame's input into either a focus move or a call into the focused
+// component. Its children's own namespaces are emitted separately,
+// immediately BEFORE this, by emitNodeNamespace -- which is what lets the
+// table below name them.
+//
+// A Canvas has no geometry and no appearance: it is a focus ring over the
+// Sliders, toggleable Buttons and SingleChoice menus nested under it (see
+// hasGeneratedPass), and the only state it owns is `index`. That is deliberately the whole of it -- a Canvas
+// never draws, never positions anything, and never changes what its children
+// are. Nesting a Button under one is exactly the same Button, with the same
+// rect and the same Pass(); the Canvas just decides when that Pass() is the
+// one input reaches.
+//
+// Never returns empty, unlike genSingleChoiceDecl: a Canvas with nothing
+// focusable in it still has children to make, so it still gets a namespace and
+// a Make(). What it loses is the table, the index, DrawUpdate() and Pass() --
+// there is no focus to hold or move.
+//
+// `bssPrefixTok`/`dataPrefixTok` are empty on every target but NES (see
+// generateCode): the first places `index`, the second the components table,
+// which is `constexpr` and therefore ROM on every target (see
+// InvokeableComponant in pnes/extras/ui/types.hpp for why it can be).
+QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const QString& region,
+                       const QString& bssPrefixTok, const QString& dataPrefixTok) {
+    const QVector<QTreeWidgetItem*> comps = canvasComponents(canvasItem, target, region);
+    const int size = comps.size();
+    const bool vertical = canvasItem->data(0, kCanvasVerticalRole).toBool();
+
+    QStringList lines;
+
+    if (size > 0) {
+        // The indexable view over the components: each entry is a pointer to
+        // the node's own rect and a pointer to the node's own Pass(), so the
+        // table is a compile-time constant on every target and never a second
+        // copy of anything (see InvokeableComponant). `size` is named rather
+        // than baked into the subscript so a caller -- and the Pass() below --
+        // can bound-check against the same constant the table was built from.
+        lines << QString("inline constexpr u8 size = %1;").arg(size);
+        QStringList entries;
+        for (QTreeWidgetItem* comp : comps) {
+            entries << QString("    {&%1::rect, &%1::Pass},").arg(bareName(comp));
+        }
+        lines << QString("%1inline constexpr InvokeableComponant components[size] {\n%2\n};")
+                     .arg(dataPrefixTok, entries.join("\n"));
+
+        // Which component has focus. `atomic` (technology.hpp: volatile on
+        // NES, a true atomic elsewhere) for the same reason a SingleChoice's
+        // `option` is -- whatever moves the focus is rarely the same code that
+        // later reads it back -- and under bssPrefixTok so it lands in the
+        // scene's declared RAM section, exactly like that `option`.
+        //
+        // Starts at 0: the first component in document order. There is no
+        // editor knob for a starting index the way a SingleChoice has a
+        // default option, because a Canvas's component list is filtered per
+        // target (a hidden control is not in it, see canvasComponents), so an
+        // authored index would mean a different control on different targets.
+        lines << QString("%1inline atomic u8 index = 0;").arg(bssPrefixTok);
+
+        // Forced-to-define, like every other draw hook uitk emits: moving
+        // focus has to unpaint one component and paint another, and what that
+        // looks like is entirely the scene's business (an attribute change, a
+        // cursor sprite, a palette swap -- see ui::impl::UpdateCanvas in
+        // demo/ui/impl/canvas.hpp). uitk knows only the two rects involved.
+        //
+        // Takes plain `const Rect&`s, not the `const volatile Rect*`s the
+        // table holds: Pass() copies each out into a local first (::Rect has a
+        // volatile copy constructor for exactly this), so the hook gets a
+        // settled value it can read as many times as it likes rather than
+        // storage that is re-read on every access.
+        lines << QString("void DrawUpdate(const Rect& last, const Rect& current);");
+    }
+
+    // Children first, then the focus seed, same contract as every other
+    // Make(): a parent always makes its children (see childNamespaceNames).
+    // `index` is re-seeded here rather than only in its initializer so that
+    // making a scene twice puts the focus back where the scene starts.
+    QStringList makeBody;
+    for (const QString& kid : childNamespaceNames(canvasItem, target, region)) {
+        makeBody << QString("    %1::Make();").arg(kid);
+    }
+    if (size > 0) makeBody << QString("    index = 0;");
+    lines << (makeBody.isEmpty() ? QString("inline AI void Make() {}")
+                                  : QString("inline AI void Make() {\n%1\n}").arg(makeBody.join("\n")));
+
+    if (size == 0) {
+        return lines.join("\n") + "\n";
+    }
+
+    // The input hook, and the point of the whole node: one Pass(u8) that a
+    // menu loop can hand a frame's input to without knowing which control is
+    // focused, or even what kind of control it is. `payload` is the
+    // newly-pressed bits (input::Buttons, see pnes/input.hpp), the same
+    // convention a Button, a Slider and a SingleChoice already take.
+    //
+    // A direction along the Canvas's own axis moves the focus and stops there
+    // -- it is never also delivered to a component, because the press that
+    // leaves a control is not a press that control should act on. Everything
+    // else goes straight through to the focused component's own Pass(), which
+    // is what lets a vertical Canvas hold a Slider: UP/DOWN are the Canvas's,
+    // LEFT/RIGHT are the slider's. A horizontal Canvas therefore cannot
+    // usefully hold one (nothing is left to adjust it with), which is a
+    // property of the layout, not something uitk can fix.
+    //
+    // The ends don't wrap. A focus ring that jumps from the last control back
+    // to the first is a different control scheme, not a better one, and it is
+    // the one a scene cannot undo: clamping leaves a menu free to treat the
+    // ends as "nothing happened" (as this does) or to hand UP at the top to
+    // something else entirely. SingleChoice's Pass() clamps for the same
+    // reason.
+    //
+    // `index` is read once into a local: it is `atomic` (volatile on NES), so
+    // every mention of it would otherwise be a fresh load, and the body needs
+    // it three times.
+    if (size == 1) {
+        // One component means there is nowhere for focus to move, so neither
+        // direction bit is special and the whole press belongs to that
+        // component. Emitted as its own shape rather than left to the general
+        // body below, whose `index == size - 1` guard would be a comparison
+        // against zero that is always true -- dead code the compiler is right
+        // to warn about.
+        lines << QString("inline AI void Pass(const u8 payload) {\n"
+                          "    components[0].func(payload);\n"
+                          "}");
+        return lines.join("\n") + "\n";
+    }
+
+    const QString back = vertical ? QStringLiteral("input::UP") : QStringLiteral("input::LEFT");
+    const QString fwd = vertical ? QStringLiteral("input::DOWN") : QStringLiteral("input::RIGHT");
+    lines << QString("inline AI void Pass(const u8 payload) {\n"
+                      "    const u8 from = index;\n"
+                      "\n"
+                      "    if (payload & %1) {\n"
+                      "        if (from == 0) return;\n"
+                      "        index = static_cast<u8>(from - 1);\n"
+                      "        const Rect last = *components[from].rect;\n"
+                      "        const Rect current = *components[from - 1].rect;\n"
+                      "        DrawUpdate(last, current);\n"
+                      "        return;\n"
+                      "    }\n"
+                      "\n"
+                      "    if (payload & %2) {\n"
+                      "        if (from == size - 1) return;\n"
+                      "        index = static_cast<u8>(from + 1);\n"
+                      "        const Rect last = *components[from].rect;\n"
+                      "        const Rect current = *components[from + 1].rect;\n"
+                      "        DrawUpdate(last, current);\n"
+                      "        return;\n"
+                      "    }\n"
+                      "\n"
+                      "    components[from].func(payload);\n"
+                      "}")
+                 .arg(back, fwd);
+
+    return lines.join("\n") + "\n";
+}
+
 // Builds the target-specific .hpp/.cpp pair for `rootItem`'s whole scene.
 // Components hidden on `target`/`region` (or under a hidden ancestor -- see
 // isEffectivelyHidden) are skipped entirely, so an export never emits a
@@ -2157,6 +2524,15 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                 if (decl.isEmpty()) continue;  // no visible options -- nothing to construct
                 body << decl;
                 usesInput = true;
+                makeAll << qual;
+            } else if (isCanvasItem(child)) {
+                body << genCanvasDecl(child, target, region, bssPrefixTok, dataPrefixTok);
+                // A Canvas names input:: only once it has somewhere to move
+                // focus TO: with one component its Pass() just forwards the
+                // payload, and with none it has no Pass() at all. Either way
+                // any component it does hold is a slider or a toggleable
+                // button, which has already set this itself.
+                if (canvasComponents(child, target, region).size() > 1) usesInput = true;
                 makeAll << qual;
             } else {
                 // Every remaining prefixed kind is a geometry node -- ctTextBox,
@@ -3219,6 +3595,24 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                                    "Leave unchecked if your DrawEnabled_/DrawDisabled_/etc. implementation has "
                                    "no use for its own footprint (e.g. a fixed-size sprite).");
 
+    // SingleChoice-only (see kSingleChoiceVerticalRole).
+    auto* choiceVerticalCheck = new QCheckBox(properties);
+    choiceVerticalCheck->setToolTip("Vertical: the options are a stacked list, stepped with UP/DOWN.\n"
+                                     "Unchecked: a row, stepped with LEFT/RIGHT. Inside a Canvas, set this\n"
+                                     "to the opposite of the Canvas's own axis so both can be moved.");
+
+    auto* choiceHasRectCheck = new QCheckBox(properties);
+    choiceHasRectCheck->setToolTip("Also generate a <Name>::rect covering every option this target shows.\n"
+                                    "Leave unchecked unless something measures the menu as a whole -- on a\n"
+                                    "runtime-viewport target it costs six bytes and a fold in Make(). Implied,\n"
+                                    "whatever this says, when the menu sits inside a Canvas.");
+
+    // Canvas-only (see kCanvasVerticalRole).
+    auto* canvasVerticalCheck = new QCheckBox(properties);
+    canvasVerticalCheck->setToolTip("Vertical: focus steps with UP/DOWN and everything else (including\n"
+                                     "LEFT/RIGHT) reaches the focused component -- the layout a Slider can\n"
+                                     "live in. Unchecked: focus steps with LEFT/RIGHT instead.");
+
     // Hide-on-Target/Region: a checkable-menu button rather than a list
     // widget, so a multi-select fits the sidebar's width without eating a
     // block of vertical space the way an always-expanded checklist would.
@@ -3316,6 +3710,13 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     auto* choiceForm = new QFormLayout(choiceGroup);
     choiceForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     choiceForm->addRow("Default Option", defaultOptionSpin);
+    choiceForm->addRow("Vertical", choiceVerticalCheck);
+    choiceForm->addRow("Provide Bounds", choiceHasRectCheck);
+
+    auto* canvasGroup = new QGroupBox("Canvas", properties);
+    auto* canvasForm = new QFormLayout(canvasGroup);
+    canvasForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    canvasForm->addRow("Vertical", canvasVerticalCheck);
 
     auto* buttonGroup = new QGroupBox("Button", properties);
     auto* buttonForm = new QFormLayout(buttonGroup);
@@ -3342,6 +3743,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     propertiesLayout->addWidget(componentGroup);
     propertiesLayout->addWidget(erasingGroup);
     propertiesLayout->addWidget(choiceGroup);
+    propertiesLayout->addWidget(canvasGroup);
     propertiesLayout->addWidget(buttonGroup);
     propertiesLayout->addWidget(visibilityGroup);
     properties->setVisible(false);
@@ -3350,7 +3752,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // edit handlers below (which would otherwise write the same values
     // straight back -- harmless, but pointless).
     auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, textEdit, splitterEdit,
-                         charmapOverrideEdit, provideErasingCheck, defaultOptionSpin, buttonDefaultEnabledCheck,
+                         charmapOverrideEdit, provideErasingCheck, defaultOptionSpin, choiceVerticalCheck,
+                         choiceHasRectCheck, canvasVerticalCheck, buttonDefaultEnabledCheck,
                          buttonToggleableCheck, buttonHasBoxCheck, hideTargetsButton,
                          hideTargetActions, hideRegionsButton, hideRegionActions, updateHideButtonSummary,
                          suppressHideWrite](QTreeWidgetItem* item) {
@@ -3364,6 +3767,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         const QSignalBlocker bc(charmapOverrideEdit);
         const QSignalBlocker be(provideErasingCheck);
         const QSignalBlocker bd(defaultOptionSpin);
+        const QSignalBlocker bscv(choiceVerticalCheck);
+        const QSignalBlocker bscr(choiceHasRectCheck);
+        const QSignalBlocker bcv(canvasVerticalCheck);
         const QSignalBlocker bbe(buttonDefaultEnabledCheck);
         const QSignalBlocker bbt(buttonToggleableCheck);
         const QSignalBlocker bbb(buttonHasBoxCheck);
@@ -3382,6 +3788,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         charmapOverrideEdit->setText(item->data(0, kCharmapOverrideRole).toString());
         provideErasingCheck->setChecked(item->data(0, kProvideErasingRole).toBool());
         defaultOptionSpin->setValue(item->data(0, kDefaultOptionRole).toInt());
+        choiceVerticalCheck->setChecked(item->data(0, kSingleChoiceVerticalRole).toBool());
+        choiceHasRectCheck->setChecked(item->data(0, kSingleChoiceHasRectRole).toBool());
+        canvasVerticalCheck->setChecked(item->data(0, kCanvasVerticalRole).toBool());
         buttonDefaultEnabledCheck->setChecked(item->data(0, kButtonDefaultEnabledRole).toBool());
         buttonToggleableCheck->setChecked(item->data(0, kButtonToggleableRole).toBool());
         buttonHasBoxCheck->setChecked(item->data(0, kButtonHasBoxRole).toBool());
@@ -3416,12 +3825,12 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
 
     QObject::connect(
         tree, &QTreeWidget::currentItemChanged,
-        [properties, geometryGroup, componentGroup, erasingGroup, choiceGroup, buttonGroup, visibilityGroup,
-         populateFrom, updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
+        [properties, geometryGroup, componentGroup, erasingGroup, choiceGroup, canvasGroup, buttonGroup,
+         visibilityGroup, populateFrom, updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
             const bool selected = isPrefixedItem(current);
             properties->setVisible(selected);
-            // Geometry means nothing for SingleChoice -- it's a pure grouping
-            // node, no position/size of its own. Alignment/text/splitter only
+            // Geometry means nothing for SingleChoice or Canvas -- both are pure
+            // grouping nodes, no position/size of their own. Alignment/text/splitter only
             // mean something for a textbox's text -- neither SingleChoice nor
             // a negative-space zone has any text. Provide Erasing is
             // ctTextBox-only: rtTextBox's text isn't known until runtime, so
@@ -3433,6 +3842,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             componentGroup->setVisible(isComponentItem(current));
             erasingGroup->setVisible(isCtTextBoxItem(current));
             choiceGroup->setVisible(isSingleChoiceItem(current));
+            canvasGroup->setVisible(isCanvasItem(current));
             buttonGroup->setVisible(isButtonItem(current));
             visibilityGroup->setVisible(selected);
             if (selected) {
@@ -3449,7 +3859,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     QObject::connect(
         tree, &QTreeWidget::itemChanged,
         [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit, sizeHEdit, textEdit,
-         splitterEdit, charmapOverrideEdit, provideErasingCheck, defaultOptionSpin, buttonDefaultEnabledCheck,
+         splitterEdit, charmapOverrideEdit, provideErasingCheck, defaultOptionSpin, choiceVerticalCheck,
+         choiceHasRectCheck, canvasVerticalCheck, buttonDefaultEnabledCheck,
          buttonToggleableCheck, buttonHasBoxCheck](QTreeWidgetItem* item, int column) {
             if (column != 0 || item != tree->currentItem() || !isPrefixedItem(item)) {
                 return;
@@ -3458,6 +3869,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             if (posXEdit->hasFocus() || posYEdit->hasFocus() || sizeWEdit->hasFocus() || sizeHEdit->hasFocus() ||
                 textEdit->hasFocus() || splitterEdit->hasFocus() || charmapOverrideEdit->hasFocus() ||
                 provideErasingCheck->hasFocus() || defaultOptionSpin->hasFocus() ||
+                choiceVerticalCheck->hasFocus() || choiceHasRectCheck->hasFocus() ||
+                canvasVerticalCheck->hasFocus() ||
                 buttonDefaultEnabledCheck->hasFocus() ||
                 buttonToggleableCheck->hasFocus() || buttonHasBoxCheck->hasFocus()) {
                 return;
@@ -3519,6 +3932,24 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         QTreeWidgetItem* item = tree->currentItem();
         if (isSingleChoiceItem(item)) {
             item->setData(0, kDefaultOptionRole, v);
+        }
+    });
+    QObject::connect(choiceVerticalCheck, &QCheckBox::toggled, [tree](bool checked) {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isSingleChoiceItem(item)) {
+            item->setData(0, kSingleChoiceVerticalRole, checked);
+        }
+    });
+    QObject::connect(choiceHasRectCheck, &QCheckBox::toggled, [tree](bool checked) {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isSingleChoiceItem(item)) {
+            item->setData(0, kSingleChoiceHasRectRole, checked);
+        }
+    });
+    QObject::connect(canvasVerticalCheck, &QCheckBox::toggled, [tree](bool checked) {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isCanvasItem(item)) {
+            item->setData(0, kCanvasVerticalRole, checked);
         }
     });
     QObject::connect(buttonDefaultEnabledCheck, &QCheckBox::toggled, [tree](bool checked) {
@@ -3645,6 +4076,25 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         auto* child = new QTreeWidgetItem(parent, QStringList{name});
         child->setFlags(child->flags() | Qt::ItemIsEditable);
         child->setData(0, kKindRole, QString(kSingleChoiceKind));
+        child->setData(0, kSingleChoiceVerticalRole, true);
+        child->setData(0, kSingleChoiceHasRectRole, false);
+        child->setData(0, kLastValidNameRole, name);
+        parent->setExpanded(true);
+        return child;
+    };
+
+    // A canvas, like a single choice, is nothing but a parent node -- no
+    // geometry -- but it does have one property: which axis its focus moves
+    // along. Defaults to vertical, the layout that can still hold a Slider
+    // (see kCanvasVerticalRole). Its Button/Slider children are added onto it
+    // via the context menu below, same as a SingleChoice's options.
+    auto canvasCounter = std::make_shared<int>(1);
+    auto addCanvasNode = [canvasCounter](QTreeWidgetItem* parent) {
+        const QString name = QString(kCanvasPrefix) + "Canvas" + QString::number((*canvasCounter)++);
+        auto* child = new QTreeWidgetItem(parent, QStringList{name});
+        child->setFlags(child->flags() | Qt::ItemIsEditable);
+        child->setData(0, kKindRole, QString(kCanvasKind));
+        child->setData(0, kCanvasVerticalRole, true);
         child->setData(0, kLastValidNameRole, name);
         parent->setExpanded(true);
         return child;
@@ -3728,7 +4178,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     QObject::connect(
         tree, &QTreeWidget::customContextMenuRequested,
         [tree, rootItem, addCtTextBoxNode, addRtTextBoxNode, addNegativeSpaceNode, addSingleChoiceNode,
-         addButtonNode, addSliderNode, deleteNode](const QPoint& pos) {
+         addCanvasNode, addButtonNode, addSliderNode, deleteNode](const QPoint& pos) {
             QTreeWidgetItem* clicked = tree->itemAt(pos);
             const bool onSingleChoice = isSingleChoiceItem(clicked);
             // A Button can likewise take ctTextBox/rtTextBox children (e.g.
@@ -3740,21 +4190,40 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             // loose at root, so its position can be written relative to it.
             const bool onSlider = isSliderItem(clicked);
             const bool onTextBoxContainer = onSingleChoice || onButton || onSlider;
+            // A Canvas holds the interactables it rings -- Buttons, Sliders,
+            // and whole SingleChoice menus -- and can hold textboxes too (a
+            // label belongs with the group it labels), so right-clicking one
+            // targets all of those at it. It isn't a textbox-only container
+            // like the three above, hence its own flag rather than joining
+            // them.
+            const bool onCanvas = isCanvasItem(clicked);
             // A single choice's own children are its ctTextBox/rtTextBox
             // options, so right-clicking one targets textbox adds at it
             // rather than at root -- same as every other add here, which
             // still always targets root until there's UI for nesting more
             // generally. It (and a Button or Slider, for its label) houses
-            // only textboxes, so Negative Space, Single Choice, Button, and
-            // Slider aren't offered there at all.
-            QTreeWidgetItem* textBoxParent = onTextBoxContainer ? clicked : rootItem;
+            // only textboxes, so Negative Space, Single Choice, Button,
+            // Slider, and Canvas aren't offered there at all. A Canvas is the
+            // one container that takes the interactables as well.
+            QTreeWidgetItem* textBoxParent = (onTextBoxContainer || onCanvas) ? clicked : rootItem;
+            // Where an interactable lands: inside the Canvas when one was
+            // right-clicked, at root otherwise.
+            QTreeWidgetItem* interactableParent = onCanvas ? clicked : rootItem;
             QMenu menu;
             QAction* addCtTextboxAction = menu.addAction("Add Compile-Time Textbox");
             QAction* addRtTextboxAction = menu.addAction("Add Runtime Textbox");
-            QAction* addNegSpaceAction = onTextBoxContainer ? nullptr : menu.addAction("Add Negative Space");
+            QAction* addNegSpaceAction =
+                (onTextBoxContainer || onCanvas) ? nullptr : menu.addAction("Add Negative Space");
             QAction* addSingleChoiceAction = onTextBoxContainer ? nullptr : menu.addAction("Add Single Choice");
+            // Offered on a Canvas (that is what a Canvas is for) but not
+            // inside a textbox-only container.
             QAction* addButtonAction = onTextBoxContainer ? nullptr : menu.addAction("Add Button");
             QAction* addSliderAction = onTextBoxContainer ? nullptr : menu.addAction("Add Slider");
+            // No nested Canvases yet: unlike a SingleChoice, which brings its
+            // own axis and a rect covering its options, a Canvas has neither,
+            // so focus inside focus needs a design of its own first.
+            QAction* addCanvasAction =
+                (onTextBoxContainer || onCanvas) ? nullptr : menu.addAction("Add Canvas");
             QAction* deleteAction = nullptr;
             if (clicked && clicked != rootItem) {
                 menu.addSeparator();
@@ -3768,11 +4237,13 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             } else if (chosen && chosen == addNegSpaceAction) {
                 tree->setCurrentItem(addNegativeSpaceNode(rootItem));
             } else if (chosen && chosen == addSingleChoiceAction) {
-                tree->setCurrentItem(addSingleChoiceNode(rootItem));
+                tree->setCurrentItem(addSingleChoiceNode(interactableParent));
             } else if (chosen && chosen == addButtonAction) {
-                tree->setCurrentItem(addButtonNode(rootItem));
+                tree->setCurrentItem(addButtonNode(interactableParent));
             } else if (chosen && chosen == addSliderAction) {
-                tree->setCurrentItem(addSliderNode(rootItem));
+                tree->setCurrentItem(addSliderNode(interactableParent));
+            } else if (chosen && chosen == addCanvasAction) {
+                tree->setCurrentItem(addCanvasNode(rootItem));
             } else if (chosen && chosen == deleteAction) {
                 deleteNode(clicked);
             }
