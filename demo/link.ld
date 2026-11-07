@@ -63,6 +63,28 @@ PROVIDE(__mmc3_resident_windows = 1);
  * post-INCLUDE block below. Anything untagged still falls through to the
  * resident catch-all as before. */
 
+/* The $6000-$7FFF window is this cart's SAVE memory, not volatile work RAM:
+ * demo/src/header.hpp declares all 8 KiB of it as PRG-NVRAM with the battery
+ * bit set (see its own comment for why MMC3 makes that all-or-nothing). These
+ * two lines carry the same fact into the layout, so mmc3-helper.ld's defaults
+ * -- 8 KiB volatile, no NVRAM -- don't describe the window as something the
+ * header contradicts.
+ *
+ * NO ADDRESS MOVES: prg_ram's LENGTH is the SUM of the two (mmc3-helper.ld's
+ * MEMORY block), which is 8 KiB either way, and the region stays one flat
+ * span at $6000 holding .data/.bss/.noinit with the heap and softstack carved
+ * off its top further down this file. Volatility is not something the linker
+ * could place against anyway -- MMC3 exposes one chunk, so there is no
+ * non-volatile sub-range to target even if these two were split. Anything
+ * stored here is battery-backed because the WHOLE window is, and is
+ * trustworthy only if it validates itself: the arena is garbage on a first
+ * boot with a fresh battery and nothing here zeroes it.
+ *
+ * MUST be set before `INCLUDE mmc3-helper.ld`, same as __mmc3_reserved_banks
+ * above: PROVIDE() only takes its first value. */
+PROVIDE(__program_ram_size = 0);
+PROVIDE(__program_nvram_size = 8);
+
 INCLUDE mmc3-helper.ld
 
 /* ------------------------------------------------------------------------

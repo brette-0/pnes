@@ -59,35 +59,44 @@ namespace ui::impl {
     }
 
     constexpr void UpdateTextBox(const eButtonState state, const u16 pos, const vec2<u8> &box) {
-        // use attribute tables to change colours for state
+
     }
 }
 
 // impl for gen code
 namespace gen::options {
-    inline void DrawEnabled_reduceFlashesButton() {
-        const u16 addr = ppu::CartesianToAddress(reduceFlashesButton_pos);
-        ui::impl::DrawTextBox(addr, reduceFlashesButton_box);
-        ui::impl::UpdateTextBox(ui::impl::Disabled, addr, reduceFlashesButton_box);
-    }
+    // `pos` is already the button's PPU address -- uitk resolves it in Make(),
+    // so there is no CartesianToAddress call left to pay here. `rect` is copied
+    // out whole before its size is read: on a runtime-viewport target it is
+    // `atomic Rect`, i.e. volatile, so reading it goes through Rect's volatile
+    // copy constructor once rather than per field.
+    namespace reduceFlashesButton {
+        inline void DrawEnabled() {
+            const Rect r = rect;
+            ui::impl::DrawTextBox(pos, r.size);
+            ui::impl::UpdateTextBox(ui::impl::Disabled, pos, r.size);
+        }
 
-    inline void DrawDisabled_reduceFlashesButton() {
-        const u16 addr = ppu::CartesianToAddress(reduceFlashesButton_pos);
-        ui::impl::DrawTextBox(addr, reduceFlashesButton_box);
-        ui::impl::UpdateTextBox(ui::impl::Disabled, addr, reduceFlashesButton_box);
+        inline void DrawDisabled() {
+            const Rect r = rect;
+            ui::impl::DrawTextBox(pos, r.size);
+            ui::impl::UpdateTextBox(ui::impl::Disabled, pos, r.size);
+        }
     }
 
 #if TARGET_GC
-    inline void DrawEnabled_enableWidescreenButton() {
-        const u16 addr = ppu::CartesianToAddress(enableWidescreenButton_pos);
-        ui::impl::DrawTextBox(addr, enableWidescreenButton_box);
-        ui::impl::UpdateTextBox(ui::impl::Disabled, addr, enableWidescreenButton_box);
-    }
+    namespace enableWidescreenButton {
+        inline void DrawEnabled() {
+            const Rect r = rect;
+            ui::impl::DrawTextBox(pos, r.size);
+            ui::impl::UpdateTextBox(ui::impl::Disabled, pos, r.size);
+        }
 
-    inline void DrawDisabled_enableWidescreenButton() {
-        const u16 addr = ppu::CartesianToAddress(enableWidescreenButton_pos);
-        ui::impl::DrawTextBox(addr, enableWidescreenButton_box);
-        ui::impl::UpdateTextBox(ui::impl::Disabled, addr, enableWidescreenButton_box);
+        inline void DrawDisabled() {
+            const Rect r = rect;
+            ui::impl::DrawTextBox(pos, r.size);
+            ui::impl::UpdateTextBox(ui::impl::Disabled, pos, r.size);
+        }
     }
 #endif
 }

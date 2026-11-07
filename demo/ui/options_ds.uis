@@ -82,7 +82,7 @@
             "posYExpr": "30 + 7",
             "sizeHExpr": "4",
             "sizeWExpr": "9",
-            "toggleable": false
+            "toggleable": true
         },
         {
             "align": 0,
@@ -134,7 +134,7 @@
             "posYExpr": "30 + 13",
             "sizeHExpr": "4",
             "sizeWExpr": "12",
-            "toggleable": false
+            "toggleable": true
         },
         {
             "align": 1,

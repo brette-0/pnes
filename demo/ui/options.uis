@@ -96,7 +96,7 @@
             "posYExpr": "7",
             "sizeHExpr": "4",
             "sizeWExpr": "9",
-            "toggleable": false
+            "toggleable": true
         },
         {
             "align": 0,
@@ -152,7 +152,7 @@
             "posYExpr": "13",
             "sizeHExpr": "4",
             "sizeWExpr": "12",
-            "toggleable": false
+            "toggleable": true
         },
         {
             "align": 1,
@@ -255,7 +255,7 @@
             "posYExpr": "7",
             "sizeHExpr": "4",
             "sizeWExpr": "9",
-            "toggleable": false
+            "toggleable": true
         },
         {
             "children": [
@@ -320,7 +320,7 @@
             "posYExpr": "13",
             "sizeHExpr": "4",
             "sizeWExpr": "9",
-            "toggleable": false
+            "toggleable": true
         },
         {
             "children": [
@@ -446,7 +446,7 @@
             "posYExpr": "15",
             "sizeHExpr": "4",
             "sizeWExpr": "9",
-            "toggleable": false
+            "toggleable": true
         }
     ],
     "region": "NTSC",

@@ -19,7 +19,7 @@
 #include "pnes/extras/ui/text.hpp"
 
 namespace title {
-    static_assert(gen::title::TitleOptions_nOptions == End + 1,
+    static_assert(gen::title::TitleOptions::nOptions == End + 1,
                   "title.uis and title.hpp's titleOptions enum disagree on the menu's options");
 
     static atomic bool playModeActive = false;
@@ -27,19 +27,19 @@ namespace title {
 
     template <typename Options>
     static u16 ArrowAddr(const Options& options, const u8 i) {
-        return ppu::CartesianToAddress({static_cast<u16>(options[i].x - 2), static_cast<u16>(options[i].y)});
+        return ppu::CartesianToAddress({static_cast<u16>(options[i].pos.x - 2), static_cast<u16>(options[i].pos.y)});
     }
 
     static u8 ActiveOption() {
-        return playModeActive ? gen::gameOptions::gameOptions_option : gen::title::TitleOptions_option;
+        return playModeActive ? gen::gameOptions::gameOptions::option : gen::title::TitleOptions::option;
     }
 
     static u16 TitleArrowAddr() {
-        return ArrowAddr(gen::title::TitleOptions_options, gen::title::TitleOptions_option);
+        return ArrowAddr(gen::title::TitleOptions::options, gen::title::TitleOptions::option);
     }
 
     static u16 PlayModeArrowAddr() {
-        return ArrowAddr(gen::gameOptions::gameOptions_options, gen::gameOptions::gameOptions_option);
+        return ArrowAddr(gen::gameOptions::gameOptions::options, gen::gameOptions::gameOptions::option);
     }
 
     static u16 ActiveArrowAddr() {
@@ -282,11 +282,11 @@ namespace title {
     // screen the panel lived in its own nametable and the title menu could
     // never overwrite it, so drawing it once was enough.
     static void DrawOptionsPanel() {
-        gen::options::Draw_optionsTitle();
-        gen::options::Draw_videoOptions();
-        gen::options::Draw_reduceFlashesText();
-        gen::options::Draw_superMarySistersText();
-        gen::options::Draw_reduceFlashesButton();
+        gen::options::optionsTitle::Draw();
+        gen::options::videoOptions::Draw();
+        gen::options::reduceFlashesButton::reduceFlashesText::Draw();
+        gen::options::superMarySistersText::Draw();
+        gen::options::reduceFlashesButton::Draw();
     }
 
     // Blanks the WHOLE bottom-panel UI band -- plane row 30 (where every
@@ -350,33 +350,33 @@ namespace title {
 
         BuildPaletteFadePhases();
 
-#if TARGET_VARIADIC_DISPLAY
-        // Make_ resolves this button's anchor against the viewport THIS run
-        // has -- on NES/GBA/PSP the position is a `constexpr` instead (see
-        // ::TARGET_VARIADIC_DISPLAY), so there's no Make_ to call there. It
-        // stays here, not in ::DrawOptionsPanel: it resolves anchors and zeroes
-        // running state, which must happen once, not on every mode entry.
-        gen::options::Make_reduceFlashesButton();
-#endif
+        // Make() resolves this button's rect against the viewport THIS run has
+        // and its pos to a PPU address. uitk emits it on every target -- an
+        // empty stub where both are already `constexpr` (NES) -- so no #if is
+        // needed around the call. It stays here, not in ::DrawOptionsPanel: it
+        // resolves anchors and zeroes running state, which must happen once,
+        // not on every mode entry.
+        gen::options::reduceFlashesButton::Make();
         // Dual-screen: left unloaded until OPTIONS is picked (::ClearUiBand).
         if constexpr (!kUiOnOwnPanel) DrawOptionsPanel();
 #if TARGET_GC
-        // TARGET_GC is always inside the OGC (variadic) family, so Make_ is
-        // unconditional here -- no fixed-panel build ever sets TARGET_GC.
-        gen::options::Make_enableWidescreenButton();
-        gen::options::Draw_enableWidescreenButton();
+        // The #if is about the BUTTON, not about Make(): this scene hides
+        // enableWidescreenButton everywhere but the GameCube, so the namespace
+        // itself only exists there.
+        gen::options::enableWidescreenButton::Make();
+        gen::options::enableWidescreenButton::Draw();
 #endif
 
         InitTitleScreen();
 
-        // Make_ zeroes each menu's running option and, on a variadic target,
-        // resolves every option's anchor against the viewport THIS run has --
-        // so it has to run here rather than at static-init time.
-        gen::title::Make_TitleOptions();
-        gen::gameOptions::Make_gameOptions();
+        // Make() makes each member, snapshots their rects into `options`, and
+        // zeroes the menu's running option -- so it has to run here rather
+        // than at static-init time.
+        gen::title::TitleOptions::Make();
+        gen::gameOptions::gameOptions::Make();
         playModeActive = false;
 
-        gen::title::Draw_TitleOptions();
+        gen::title::TitleOptions::Draw();
         QueueSelectorDraw(TitleArrowAddr());
 
         ppu::SetScroll({0, 0xff});
@@ -394,21 +394,21 @@ namespace title {
 
             if (!optionsLocked) {
                 const u8 lastOption = ActiveOption();
-                if (playModeActive) gen::gameOptions::Pass_gameOptions(pressed);
-                else                gen::title::Pass_TitleOptions(pressed);
+                if (playModeActive) gen::gameOptions::gameOptions::Pass(pressed);
+                else                gen::title::TitleOptions::Pass(pressed);
                 if (ActiveOption() != lastOption) MoveSelector(ActiveArrowAddr());
 
                 if (pressed & input::A) {
                     if (playModeActive) {
 #ifdef PLAYER2_SUPPORTED
-                        level::multiplayer = gen::gameOptions::gameOptions_option != 0;
+                        level::multiplayer = gen::gameOptions::gameOptions::option != 0;
 #endif
                         ppu::PPUMASK = 0;
                         gameMode = eGameModes::Level;
                         return;
                     }
 
-                    switch (gen::title::TitleOptions_option) {
+                    switch (gen::title::TitleOptions::option) {
                         case NewGame:
                         case Continue:
                             playModeActive = true;
@@ -472,8 +472,8 @@ namespace title {
     // QueueSelectorDraw's clear-then-arrow onto one tile.
     static void nmi_handler_drawPlayMode() {
         ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
-        gen::title::Erase_TitleOptions();
-        gen::gameOptions::Draw_gameOptions();
+        gen::title::TitleOptions::Erase();
+        gen::gameOptions::gameOptions::Draw();
         QueueSelectorDraw(PlayModeArrowAddr());
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
@@ -485,8 +485,8 @@ namespace title {
 
     static void nmi_handler_drawMenu() {
         ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
-        gen::gameOptions::Erase_gameOptions();
-        gen::title::Draw_TitleOptions();
+        gen::gameOptions::gameOptions::Erase();
+        gen::title::TitleOptions::Draw();
         QueueSelectorDraw(TitleArrowAddr());
         SelectorUpdate();
         ppu::SetScroll({0, PreviewScrollY()});
@@ -583,7 +583,7 @@ namespace title {
 
     static void nmi_handler_lockOptions() {
         ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
-        gen::title::Erase_TitleOptions();
+        gen::title::TitleOptions::Erase();
         mmc3::AcknowledgeScanlineIRQ();
         oam::RefreshSprites(OAMBuffer);
 
@@ -687,9 +687,9 @@ namespace title {
             // that with it, since it sits inside the band at rows 31-32.
             if constexpr (kUiOnOwnPanel) {
                 ClearUiBand();
-                gen::title::Draw_GameTitle();
+                gen::title::GameTitle::Draw();
             }
-            gen::title::Draw_TitleOptions();
+            gen::title::TitleOptions::Draw();
             QueueSelectorDraw(TitleArrowAddr());
             SelectorUpdate();
             ppu::SetScroll({0, PreviewScrollY()});
@@ -760,7 +760,7 @@ namespace title {
     }
 
     void InitTitleScreen() {
-        gen::title::Draw_GameTitle();
+        gen::title::GameTitle::Draw();
     }
 
     static oam::oam_t Clear(const u16) {

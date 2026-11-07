@@ -66,9 +66,32 @@
 // The callbacks below just set the existing `quit` flag so the ordinary
 // `while (!quit)` game loop (demo/src/main.cpp) unwinds normally; post()
 // below then completes the handshake with the real SYS_ResetSystem call.
+//
+// WHICH handshake depends on why we are leaving, so the callbacks also record
+// their intent. Only the power button means "turn the console off"; a quit from
+// the game itself, or the physical Reset button, means "go back where I came
+// from" -- and where that is differs between an HBC .dol and an installed
+// channel, which is what resolve below sorts out.
 #ifdef TARGET_WII
-static void wii_power_callback() { quit = 1; }
-static void wii_remote_power_callback(s32 chan) { quit = 1; }
+enum ExitIntent { EXIT_RETURN, EXIT_POWEROFF };
+static ExitIntent exit_intent = EXIT_RETURN;
+static void wii_power_callback() { exit_intent = EXIT_POWEROFF; quit = 1; }
+static void wii_remote_power_callback(s32 chan) { exit_intent = EXIT_POWEROFF; quit = 1; }
+
+// The Homebrew Channel (and loaders that mimic it) copy a small "return to
+// loader" stub to 0x80001800 and stamp the magic "STUBHAXX" just after it.
+// libogc's exit path jumps to that stub, so when it is present the correct
+// thing to do is simply RETURN from post() and let the loader reclaim the
+// machine -- calling SYS_ResetSystem(SYS_RETURNTOMENU) instead would skip
+// the loader and drop the user at the System Menu, losing HBC.
+//
+// An installed WAD/channel has no such stub: nothing will reclaim the machine,
+// so the title must hand itself back to the System Menu explicitly. Booting
+// off a disc or via a forwarder that cleared the stub lands here too, which is
+// the right behaviour in both cases.
+static bool loader_stub_present() {
+    return memcmp(reinterpret_cast<const void *>(0x80001804), "STUBHAXX", 8) == 0;
+}
 #endif
 static void wii_reset_callback(u32 irq, void *ctx) { quit = 1; }
 
@@ -914,6 +937,18 @@ void irq::post() {
     // SYS_ResetSystem call is the acknowledgement IOS/STM (and, in Dolphin,
     // the Stop button) is waiting on. Without it the request is never
     // answered and Dolphin hangs on "Shutting Down" instead of closing.
-    SYS_ResetSystem(SYS_POWEROFF, 0, 0);
+    //
+    // Three exits, three correct answers (see the ExitIntent comment above):
+    if (exit_intent == EXIT_POWEROFF) {
+        // The user pressed a power button. Honour it literally.
+        SYS_ResetSystem(SYS_POWEROFF, 0, 0);
+    } else if (!loader_stub_present()) {
+        // Installed channel: no loader to fall back into, so return to the
+        // System Menu ourselves. This also answers the STM reset request.
+        SYS_ResetSystem(SYS_RETURNTOMENU, 0, 0);
+    }
+    // Otherwise an HBC-style loader stub is live at 0x80001800: fall through
+    // and let the ordinary return-from-main path jump into it, which puts the
+    // user back in the launcher they started from.
 #endif
 }

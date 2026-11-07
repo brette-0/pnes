@@ -287,7 +287,7 @@ constexpr char kButtonPrefix[] = "[B] ";
 constexpr char kSliderPrefix[] = "[S] ";
 
 // Every backend pnes currently supports, in the order they appear in
-// the Target dropdown. Scene-wide, same as the nametable -- one scene targets
+// the Target dropdown. Scene-wide, same as the quadrant -- one scene targets
 // one platform at a time. Kept as display names (matched by text, not index)
 // so the .uis format doesn't depend on this list's order.
 const QStringList kTargetNames = {"NES", "GBA", "GCN", "DS",     "DSI", "Wii",
@@ -496,25 +496,6 @@ QVector<QTreeWidgetItem*> collectPrefixedItems(QTreeWidgetItem* node) {
         for (int i = 0; i < n->childCount(); ++i) {
             QTreeWidgetItem* child = n->child(i);
             if (isPrefixedItem(child)) {
-                result.push_back(child);
-            }
-            visit(child);
-        }
-    };
-    visit(node);
-    return result;
-}
-
-// Every SingleChoice node in the tree, in document order -- codegen's own
-// walk over the grouping nodes ctTextBox/rtTextBox codegen never visits
-// directly (collectComponentItems skips them, since they carry no geometry
-// of their own).
-QVector<QTreeWidgetItem*> collectSingleChoiceItems(QTreeWidgetItem* node) {
-    QVector<QTreeWidgetItem*> result;
-    std::function<void(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* n) {
-        for (int i = 0; i < n->childCount(); ++i) {
-            QTreeWidgetItem* child = n->child(i);
-            if (isSingleChoiceItem(child)) {
                 result.push_back(child);
             }
             visit(child);
@@ -995,14 +976,14 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
     }
 }
 
-// `nametable`, `target`, `region`, and `linker_prefix` are all scene-wide
-// (which physical NES nametable the whole UI's tile positions resolve into,
+// `quadrant`, `target`, `region`, and `linker_prefix` are all scene-wide
+// (which quadrant of the 2x2 world grid the whole UI's tile positions resolve into,
 // which pnes backend the scene targets, which TV broadcast standard
 // it's timed against, and what codegen should emit ahead of every generated,
 // non-AI-marked function definition), not per-node properties, so each is
 // stored once at the document's top level alongside "version" rather than on
 // every node.
-bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int nametable, const QString& target,
+bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int quadrant, const QString& target,
                    const QString& region, const QString& linkerPrefix, const QString& bssPrefix,
                    const QString& dataPrefix, const QString& charmap, bool showTileGrid, int tileGridW,
                    int tileGridH) {
@@ -1012,7 +993,7 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
     }
     QJsonObject doc;
     doc["version"] = 1;
-    doc["nametable"] = nametable;
+    doc["quadrant"] = quadrant;
     doc["target"] = target;
     doc["region"] = region;
     doc["linker_prefix"] = linkerPrefix;
@@ -1044,7 +1025,7 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int name
 // `linker_prefix`/`bss_prefix`/`data_prefix`/`charmap` have no such
 // validation -- they're free-form text -- and simply default to empty when
 // absent (e.g. an older file).
-bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, QString& outTarget,
+bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outQuadrant, QString& outTarget,
                    QString& outRegion, QString& outLinkerPrefix, QString& outBssPrefix, QString& outDataPrefix,
                    QString& outCharmap, bool& outShowTileGrid, int& outTileGridW, int& outTileGridH) {
     QFile file(path);
@@ -1057,7 +1038,15 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outNametable, 
         return false;
     }
     outNodes = doc.object()["nodes"].toArray();
-    outNametable = std::clamp(doc.object()["nametable"].toInt(0), 0, 3);
+    // "quadrant" since the scene property stopped claiming to name a physical
+    // nametable; "nametable" is still read so scenes written before the rename
+    // (and the backups beside them) keep loading unchanged. The stored value is
+    // the same 0..3 in both: bit 0 is the right-hand column, bit 1 the bottom
+    // row, i.e. UL/UR/BL/BR.
+    const QJsonObject docObj = doc.object();
+    const QJsonValue quadrantVal =
+        docObj.contains("quadrant") ? docObj["quadrant"] : docObj["nametable"];
+    outQuadrant = std::clamp(quadrantVal.toInt(0), 0, 3);
     outTarget = doc.object()["target"].toString();
     outRegion = doc.object()["region"].toString();
     outLinkerPrefix = doc.object()["linker_prefix"].toString();
@@ -1160,6 +1149,23 @@ constexpr int kNametableQuadH = 30;
 // same way ctTextBox already does; everything in it re-derives them at
 // runtime in Make_ (see the generateCode doc comment above).
 const QSet<QString> kVariadicTargets{"GCN", "DS", "DSI", "Wii", "Wii U", "3DS", "Switch", "PC"};
+
+// The subset of the above whose viewport is not merely variable in principle
+// but genuinely unknown until the game runs: video::viewport_tx() resolves to
+// a plain `extern` there (ogc_world_tx / wiiu_world_tx) or to a read through a
+// live SDL mode pointer, so an expression over VIEWPORT_* is not a constant
+// expression and `inline constexpr Rect rect = {...}` would not compile. Every
+// other target's viewport_tx()/ty() really are constexpr literals (DS/DSI 32x48,
+// 3DS 50x60, Switch 52x30, GBA 30x20, PSP 60x30, NES 32x30 -- see video.hpp), so
+// those keep a `constexpr` Rect even though they still emit the VIEWPORT_*
+// expression rather than a baked literal: it folds at compile time there.
+//
+// This is deliberately NOT the same split as kVariadicTargets. That set decides
+// whether placement is EMITTED as a runtime expression; this one decides whether
+// the resulting Rect can be `constexpr` STORAGE. A target can be in the first and
+// not the second (3DS, Switch, DS, DSI), and the generated code is correct either
+// way -- the expression simply folds.
+const QSet<QString> kRuntimePosTargets{"GCN", "Wii", "Wii U", "PC"};
 
 QString bareName(const QTreeWidgetItem* item) {
     return item->text(0).mid(requiredPrefixFor(item).length());
@@ -1330,7 +1336,7 @@ QString emitPosComponent(const QTreeWidgetItem* item, int exprRole, int literalR
 // re-derives the page-aware address per tile -- required once a viewport can
 // be wider/taller than one nametable page, which NES's fixed 32x30 panel
 // never is.
-CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, int ntOffX, int ntOffY, bool isNes,
+CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes,
                                bool variadic, QTreeWidgetItem* rootItem, const QString& target,
                                const QString& region, const QString& dataPrefixTok, const QString& charmapFn,
                                const QString& ntOffXExpr, const QString& ntOffYExpr) {
@@ -1362,7 +1368,10 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, const QString& name, 
                                  .arg(rowVar, cStringEscape(rowText));
                 sourceArgs = QString("reinterpret_cast<const u8*>(%1), sizeof(%1) - 1").arg(rowVar);
             } else {
-                const QString dataName = QString("%1_row%2").arg(name).arg(row);
+                // Node-local now: this declaration lands inside the node's
+                // own namespace (see emitNodeNamespace), so it needs no
+                // `<name>_` disambiguator -- gen::options::audioText::row0.
+                const QString dataName = QString("row%1").arg(row);
                 rootLines << QString("%1inline constexpr auto %2 = %3.encode(\"%4\");")
                                  .arg(dataPrefixTok, dataName, charmapFn, cStringEscape(rowText));
                 sourceArgs = QString("SIZED_STR(%1)").arg(dataName);
@@ -1464,129 +1473,251 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
     return bodyLines.join("\n");
 }
 
-// Emits one SingleChoice node's declarations: its options' positions
-// (`<name>_options`), its plain `<name>_option`/`<name>_nOptions`
-// variables, and the Make_/Pass_ functions that initialize/step them --
-// see the generateCode doc comment above for why the shape differs between
-// a fixed and a variadic target. Everything lives header-only (`inline`),
+// The bare names of the child namespaces emitted INSIDE `item`'s own namespace,
+// in document order -- i.e. exactly the nodes a parent's Make() has to drive.
+// Mirrors emitNodeNamespace's walk, so the list is never out of step with what
+// was actually emitted: a non-prefixed branch is transparent (its prefixed
+// descendants land at this level too), a hidden node is emitted nowhere, and
+// neither is a SingleChoice left with no visible options.
+//
+// Every parent Make() calls every one of these unconditionally, so a node with
+// a parent is made once by its own namespace's caller and again by each
+// ancestor above it -- a whole-scene Make() therefore makes a button's label
+// twice. That is the intended trade: making geometry again is a few stores of
+// values that cannot have changed, whereas a made/not-made flag would cost
+// permanent storage per node, a branch on every Make(), and a state that goes
+// stale the moment a caller makes a subtree directly (which callers do -- see
+// genSingleChoiceDecl). Redundant work is both the cheaper and the safer half.
+QStringList childNamespaceNames(const QTreeWidgetItem* item, const QString& target, const QString& region) {
+    QStringList names;
+    for (int i = 0; i < item->childCount(); ++i) {
+        QTreeWidgetItem* child = item->child(i);
+        if (!isPrefixedItem(child)) {
+            names += childNamespaceNames(child, target, region);  // transparent branch
+            continue;
+        }
+        if (isEffectivelyHidden(child, target, region)) continue;
+        if (isSingleChoiceItem(child) && singleChoiceMembers(child, target, region).isEmpty()) continue;
+        names << bareName(child);
+    }
+    return names;
+}
+
+// Emits the geometry every placeable node now carries, in the three shapes a
+// target can need it (see kRuntimePosTargets): `rect` -- the node's anchor AND
+// footprint as one ::Rect (pnes/extras/ui/types.hpp) -- `pos`, the same anchor
+// already resolved to a PPU address, and the `Make()` that fills whichever of
+// the two could not be established ahead of time.
+//
+//  - NES: both are compile-time constants. `rect` holds the cartesian tile
+//    position; `pos` is the logical nametable address nesNtAddr bakes, which is
+//    mirroring-independent on real hardware (the board's wiring routes the
+//    write AFTER the address, so the address itself never moves). Make() is an
+//    empty stub, emitted purely so a caller never needs a #if around the call.
+//  - A fixed-viewport emu target (GBA/PSP/DS/DSI/3DS/Switch): `rect` is still
+//    `constexpr` -- viewport_tx()/ty() are real constexpr literals there, so a
+//    VIEWPORT_*-driven expression folds -- but `pos` is NOT, because the emu
+//    backend's own CartesianToAddress (src/emu/ppu.cpp's xy_to_nt_addr) folds
+//    the runtime ::mirroring flag into the offset it returns. So Make() resolves
+//    just the address.
+//  - A runtime-viewport target (kRuntimePosTargets): neither is knowable ahead
+//    of time, so both are mutable storage and Make() fills both.
+//
+// `atomic` on the mutable forms, same reasoning as the `<name>_pos` this
+// replaces: it is non-local mutable memory an aggressively-LTO'd target could
+// otherwise cache or reorder across Make()'s write and a reader elsewhere.
+// `atomic` is `volatile` on every C++ build (technology.hpp), which an implicit
+// copy constructor/assignment operator is not viable on -- ::Rect carries its
+// own volatile-qualified pair for exactly that (pnes/extras/ui/types.hpp), so
+// Make() builds a plain local and stores that in one go rather than writing
+// through the volatile object field by field.
+QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
+                                bool runtimePos, QTreeWidgetItem* rootItem, const QString& target,
+                                const QString& region, const QString& ntOffXExpr, const QString& ntOffYExpr) {
+    const int x = item->data(0, kPosXRole).toInt() + ntOffX;
+    const int y = item->data(0, kPosYRole).toInt() + ntOffY;
+    const int w = std::clamp(item->data(0, kSizeWRole).toInt(), 1, 255);
+    const int h = std::clamp(item->data(0, kSizeHRole).toInt(), 1, 255);
+
+    // The anchor as C++: a baked literal on a fixed panel, or the node's own
+    // VIEWPORT_*-aware expression on a variadic one (see emitPosComponent).
+    // ntOffXExpr/ntOffYExpr rather than the fixed ntOffX/ntOffY ints for the
+    // quadrant term, same reason every other variadic emission here uses them.
+    QString xCpp = QString::number(x);
+    QString yCpp = QString::number(y);
+    if (variadic) {
+        xCpp = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
+        yCpp = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
+        if (ntOffXExpr != QLatin1String("0")) xCpp = QString("(%1 + %2)").arg(xCpp, ntOffXExpr);
+        if (ntOffYExpr != QLatin1String("0")) yCpp = QString("(%1 + %2)").arg(yCpp, ntOffYExpr);
+        xCpp = QString("static_cast<u16>(%1)").arg(xCpp);
+        yCpp = QString("static_cast<u16>(%1)").arg(yCpp);
+    }
+    const QString rectLiteral = QString("Rect{{%1, %2}, {%3, %4}}").arg(xCpp, yCpp).arg(w).arg(h);
+
+    // This node's own Make() drives its children's too, every time -- see
+    // childNamespaceNames for why they are made unconditionally. Own geometry
+    // is resolved first: a child's placement expression that names this node is
+    // spliced in textually (emitPosComponent), never read back out of `rect`,
+    // but ordering it this way means a child Make() that ever did read the
+    // parent reads a resolved one.
+    QStringList childMakes;
+    for (const QString& kid : childNamespaceNames(item, target, region)) {
+        childMakes << QString("    %1::Make();").arg(kid);
+    }
+    const QString childTail = childMakes.isEmpty() ? QString() : ("\n" + childMakes.join("\n"));
+
+    QStringList lines;
+    if (runtimePos) {
+        lines << QString("inline atomic Rect rect;");
+        lines << QString("inline atomic u16 pos;");
+        lines << QString("inline AI void Make() {\n"
+                          "    const Rect r = %1;\n"
+                          "    rect = r;\n"
+                          "    pos = ppu::CartesianToAddress(r.pos);%2\n"
+                          "}")
+                     .arg(rectLiteral, childTail);
+        return lines;
+    }
+
+    lines << QString("inline constexpr Rect rect = %1;").arg(rectLiteral);
+    if (isNes) {
+        lines << QString("inline constexpr u16 pos = 0x%1;")
+                     .arg(static_cast<uint>(nesNtAddr(x, y)), 4, 16, QLatin1Char('0'));
+        // Nothing of its own left to resolve -- emitted anyway so every target
+        // exposes the same call, and no caller needs a #if to decide whether it
+        // exists. It still makes the children, whose own Make()s are equally
+        // empty here; the whole chain inlines away to nothing.
+        lines << (childMakes.isEmpty() ? QString("inline AI void Make() {}")
+                                        : QString("inline AI void Make() {\n%1\n}").arg(childMakes.join("\n")));
+    } else {
+        lines << QString("inline atomic u16 pos;");
+        lines << (childMakes.isEmpty()
+                      ? QString("inline AI void Make() { pos = ppu::CartesianToAddress(rect.pos); }")
+                      : QString("inline AI void Make() {\n"
+                                 "    pos = ppu::CartesianToAddress(rect.pos);\n%1\n}")
+                            .arg(childMakes.join("\n")));
+    }
+    return lines;
+}
+
+// Emits one SingleChoice node's own declarations: the runtime-indexable
+// `options` anchor table, the `option`/`nOptions` variables, and the Make()/
+// Pass() functions that initialize/step them. Its members' own namespaces are
+// emitted separately, immediately BEFORE this, by emitNodeNamespace -- which is
+// what lets Draw() below name them. Everything lives header-only (`inline`),
 // same reasoning as rtTextBox's own wrapper: it has to be safely includable
 // from more than one TU. Returns empty for a SingleChoice with no (visible)
 // options -- nothing to construct.
 //
-// `bssPrefixTok` is already empty on every target but NES (see
-// generateCode) -- it places the instance's own mutable storage, and, on a
-// variadic target, its mutable options array.
+// `options` duplicates what each member's own `rect` already holds, and does so
+// deliberately: a member's rect is reachable only by name, and placing the
+// selection indicator means indexing by a value (`option`) that isn't known
+// until runtime. So this is the indexable VIEW over those rects, built from
+// them rather than from a second copy of the placement math -- on a fixed
+// target it is a constexpr aggregate of the members' own constexpr rects, and
+// on a runtime-viewport one Make() copies each across after making it.
+//
+// `bssPrefixTok` is already empty on every target but NES (see generateCode) --
+// it places the instance's own mutable storage, and, on a runtime-viewport
+// target, its mutable options array.
 QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, const QString& target,
                              const QString& region, const QString& bssPrefixTok, const QString& dataPrefixTok,
-                             const QString& ntOffXExpr, const QString& ntOffYExpr) {
+                             bool runtimePos) {
     const QVector<QTreeWidgetItem*> members = singleChoiceMembers(scItem, target, region);
     if (members.isEmpty()) {
         return QString();
     }
-    const QString name = bareName(scItem);
     const int nOptions = members.size();
     const int defaultOption = std::clamp(scItem->data(0, kDefaultOptionRole).toInt(), 0, nOptions - 1);
-    const bool variadic = kVariadicTargets.contains(target);
 
     QStringList lines;
-    lines << QString("// SingleChoice: %1").arg(name);
 
-    if (variadic) {
-        // Mutable, populated by Make_ below -- the viewport size (and
-        // therefore every member's resolved position) isn't known until the
-        // game is actually running. On a fixed panel there's nothing to
-        // store here at all: each member's position is already baked
-        // straight into its own Draw_<Name> (see genCtTextBoxBody), so a
-        // second copy of the same PPU address in an `_options` array would
-        // just be redundant data.
+    if (runtimePos) {
+        // Mutable, populated by Make() below -- the viewport size (and
+        // therefore every member's resolved rect) isn't known until the game
+        // is actually running.
         //
         // `atomic` (technology.hpp: volatile on NES, true atomic elsewhere)
         // because this is non-local mutable memory an aggressively-LTO'd,
         // multithreaded target could otherwise cache/reorder/tear across
-        // Make_'s writes and a reader elsewhere -- unlike `<name>_option`
-        // below (already atomic itself), nothing else protects this array.
-        lines << QString("%1inline atomic vec2<u16> %2_options[%3];").arg(bssPrefixTok, name).arg(nOptions);
+        // Make()'s writes and a reader elsewhere -- unlike `option` below
+        // (already atomic itself), nothing else protects this array.
+        lines << QString("%1inline atomic Rect options[%2];").arg(bssPrefixTok).arg(nOptions);
     } else {
-        // Fixed panel: every member's position is a design-time constant, so
-        // `_options` is a plain constexpr table (ROM, under `dataPrefixTok`
-        // on NES) rather than mutable storage Make_ has to populate -- but it
-        // is still emitted, under the same name and element type as the
-        // variadic array, because the caller needs each option's anchor to
-        // place its selection indicator regardless of target. Draw_<Member>
-        // already bakes the same position into its own body; this is the one
-        // extra copy the indicator's placement needs. ntOffXExpr/ntOffYExpr
-        // are plain integer literals here (see generateCode).
-        const int ntOffX = ntOffXExpr.toInt();
-        const int ntOffY = ntOffYExpr.toInt();
+        // Fixed panel: every member's rect is already a compile-time constant,
+        // so this is a plain constexpr table (ROM, under `dataPrefixTok` on
+        // NES) built straight out of them -- no second copy of the placement
+        // math, and nothing for Make() to populate.
         QStringList entries;
         for (QTreeWidgetItem* member : members) {
-            entries << QString("vec2<u16>{%1, %2}")
-                            .arg(member->data(0, kPosXRole).toInt() + ntOffX)
-                            .arg(member->data(0, kPosYRole).toInt() + ntOffY);
+            entries << QString("%1::rect").arg(bareName(member));
         }
-        lines << QString("%1inline constexpr vec2<u16> %2_options[%3] = {%4};")
-                     .arg(dataPrefixTok, name)
+        lines << QString("%1inline constexpr Rect options[%2] = {%3};")
+                     .arg(dataPrefixTok)
                      .arg(nOptions)
                      .arg(entries.join(", "));
     }
 
     // The running option index -- `atomic` (technology.hpp: volatile on NES,
     // true atomic elsewhere) because it's read from wherever the caller's
-    // Pass_ result matters (often a draw path outside the code that last
-    // called Pass_ itself), same reasoning as the mutable `_options` array
+    // Pass() result matters (often a draw path outside the code that last
+    // called Pass() itself), same reasoning as the mutable `options` array
     // above. `nOptions` never changes once generated, so it's a plain
     // compile-time constant instead.
-    lines << QString("%1inline atomic u8 %2_option = %3;").arg(bssPrefixTok, name).arg(defaultOption);
-    lines << QString("inline constexpr u8 %1_nOptions = %2;").arg(name).arg(nOptions);
+    lines << QString("%1inline atomic u8 option = %2;").arg(bssPrefixTok).arg(defaultOption);
+    lines << QString("inline constexpr u8 nOptions = %1;").arg(nOptions);
 
+    // Make() makes every child namespace this node holds first -- its options,
+    // plus anything else nested under it -- then snapshots the options' rects.
+    // It makes them
+    // itself rather than assuming someone else already did, because a caller is
+    // expected to be able to reach for just this menu's Make() (the demo's
+    // title.cpp does exactly that), and `options` would otherwise copy rects
+    // nothing had filled in yet on a runtime-viewport target. The scene-level
+    // Make() also lists the members, so on a whole-scene make each one is made
+    // twice -- a parent always makes its children, and repeating a few stores
+    // beats tracking what has already been made (see generateCode).
     QStringList makeBody;
-    if (variadic) {
+    for (const QString& kid : childNamespaceNames(scItem, target, region)) {
+        makeBody << QString("    %1::Make();").arg(kid);
+    }
+    if (runtimePos) {
         for (int i = 0; i < members.size(); ++i) {
-            QTreeWidgetItem* member = members[i];
-            const QString xCpp =
-                emitPosComponent(member, kPosXExprRole, kPosXRole, true, rootItem, target, region);
-            const QString yCpp =
-                emitPosComponent(member, kPosYExprRole, kPosYRole, true, rootItem, target, region);
-            // ntOffXExpr/ntOffYExpr, not the fixed ntOffX/ntOffY ints -- see
-            // generateCode's own comment on why a variadic target's
-            // nametable-quadrant term has to stay runtime-resolved too.
-            const QString xFinal =
-                ntOffXExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(xCpp, ntOffXExpr) : xCpp;
-            const QString yFinal =
-                ntOffYExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(yCpp, ntOffYExpr) : yCpp;
-            makeBody << QString("    %1_options[%2] = vec2<u16>{static_cast<u16>(%3), static_cast<u16>(%4)};")
-                            .arg(name)
-                            .arg(i)
-                            .arg(xFinal, yFinal);
+            // Whole-Rect load out of the member's own atomic before storing
+            // it into this one, through ::Rect's volatile-qualified copy
+            // constructor and assignment operator (see types.hpp).
+            makeBody << QString("    { const Rect r = %1::rect; options[%2] = r; }")
+                            .arg(bareName(members[i]))
+                            .arg(i);
         }
     }
-    makeBody << QString("    %1_option = %2;").arg(name).arg(defaultOption);
+    makeBody << QString("    option = %1;").arg(defaultOption);
 
-    lines << QString("inline AI void Make_%1() {\n%2\n}").arg(name, makeBody.join("\n"));
+    lines << QString("inline AI void Make() {\n%1\n}").arg(makeBody.join("\n"));
 
-    // Clamps `<name>_option` against input::UP/DOWN -- same clamp logic
+    // Clamps `option` against input::UP/DOWN -- same clamp logic
     // ui::choice::SingleChoice::Pass used to carry as a template member;
     // there's nothing here left to specialize on vertical vs. horizontal
     // (both directions moved the option the same way), so it's just one
     // plain function.
     lines << QString(
-                 "inline AI void Pass_%1(const u8 inputs) {\n"
-                 "    if      (inputs & input::UP)   { if (%1_option != 0) %1_option -= 1; }\n"
-                 "    else if (inputs & input::DOWN) { if (%1_option != %1_nOptions - 1) %1_option += 1; }\n"
-                 "}")
-                 .arg(name);
+                 "inline AI void Pass(const u8 inputs) {\n"
+                 "    if      (inputs & input::UP)   { if (option != 0) option -= 1; }\n"
+                 "    else if (inputs & input::DOWN) { if (option != nOptions - 1) option += 1; }\n"
+                 "}");
 
-    // Draw_<Name>/Erase_<Name>: the whole option list's labels in one call.
-    // Each member's own Draw_/Erase_ only exists on the targets that don't
-    // hide it (see generateCode), so a caller wanting "every option this
-    // target shows" would otherwise need a per-target #if ladder that just
-    // restates the scene's hide lists -- exactly the drift this scene format
-    // exists to remove. This is labels only: the selection indicator and the
-    // call order relative to anything else in the scene stay the caller's job.
-    // Emitted only when every member is a ctTextBox (an rtTextBox has no
-    // Draw_), and Erase_ only when every member also opted into Provide
-    // Erasing -- a partial Erase_ would silently leave stale tiles behind, so
-    // its absence (a compile error at the call site) is the safer failure.
+    // Draw()/Erase(): the whole option list's labels in one call. Each member's
+    // own Draw()/Erase() only exists on the targets that don't hide it (see
+    // generateCode), so a caller wanting "every option this target shows" would
+    // otherwise need a per-target #if ladder that just restates the scene's
+    // hide lists -- exactly the drift this scene format exists to remove. This
+    // is labels only: the selection indicator and the call order relative to
+    // anything else in the scene stay the caller's job. Emitted only when every
+    // member is a ctTextBox (an rtTextBox has no Draw), and Erase() only when
+    // every member also opted into Provide Erasing -- a partial Erase() would
+    // silently leave stale tiles behind, so its absence (a compile error at the
+    // call site) is the safer failure.
     bool allDrawable = true;
     bool allErasable = true;
     for (QTreeWidgetItem* member : members) {
@@ -1601,182 +1732,185 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
         QStringList drawBody;
         QStringList eraseBody;
         for (QTreeWidgetItem* member : members) {
-            drawBody << QString("    Draw_%1();").arg(bareName(member));
-            eraseBody << QString("    Erase_%1();").arg(bareName(member));
+            drawBody << QString("    %1::Draw();").arg(bareName(member));
+            eraseBody << QString("    %1::Erase();").arg(bareName(member));
         }
-        lines << QString("inline AI void Draw_%1() {\n%2\n}").arg(name, drawBody.join("\n"));
+        lines << QString("inline AI void Draw() {\n%1\n}").arg(drawBody.join("\n"));
         if (allErasable) {
-            lines << QString("inline AI void Erase_%1() {\n%2\n}").arg(name, eraseBody.join("\n"));
+            lines << QString("inline AI void Erase() {\n%1\n}").arg(eraseBody.join("\n"));
         }
     }
 
     return lines.join("\n") + "\n";
 }
 
-// Emits one Button node's declarations: its `<name>_pos` (plus `<name>_box`,
-// if the node opted into one -- see kButtonHasBoxRole), and the Enable_/
-// Disable_ (and, if opted in, bool-returning Toggle_) functions plus
-// Draw_<name> that read/write its enabled bit. uitk provides no appearance
-// of its own for a button -- only the forced-to-define DrawEnabled_<name>()/
-// DrawDisabled_<name>() hooks hand-written code must supply, dispatched by
-// Draw_<name>: a button could look like anything from a 1x1 tickbox to a
-// sprite, so there's no one appearance uitk could bake that would suit all
-// of them, and no selected/unselected state of its own either -- enabled or
-// disabled, dispatched purely off its own box pos/size, is all the memory
-// this toolkit offers. Leaving DrawEnabled_/DrawDisabled_ undefined is only
-// ever caught at link time, and only once something actually calls the
-// function (directly, or transitively via Draw_<name>) that needed it -- the
-// closest thing to "forced by compile" this toolchain's codegen can offer
-// without inventing a wholly new enforcement mechanism (see the uitk research
-// notes on this: no existing node kind emits a declaration-only function).
+
+// Emits one Button node's declarations: its geometry (see genGeometryStorage)
+// and the Enable()/Disable() (and, if opted in, bool-returning Toggle())
+// functions plus Draw() and Pass() that read/write its enabled bit. uitk
+// provides no appearance of its own for a button -- only the forced-to-define
+// DrawEnabled()/DrawDisabled() hooks hand-written code must supply, dispatched
+// by Draw() (and reached directly by Pass(), see below): a button could look like anything from a 1x1 tickbox to a sprite,
+// so there's no one appearance uitk could bake that would suit all of them, and
+// no selected/unselected state of its own either -- enabled or disabled,
+// dispatched purely off its own rect, is all the memory this toolkit offers.
+// Leaving DrawEnabled()/DrawDisabled() undefined is only ever caught at link
+// time, and only once something actually calls the function (directly, or
+// transitively via Draw()) that needed it -- the closest thing to "forced by
+// compile" this toolchain's codegen can offer without inventing a wholly new
+// enforcement mechanism (see the uitk research notes on this: no existing node
+// kind emits a declaration-only function).
 //
-// `<name>_pos` takes the exact same shape genCtTextBoxBody's own placement
-// does, per target, rather than a single type for every target:
-//  - NES: a precomputed `u16` VRAM address (nesNtAddr) -- there's exactly one
-//    page-aware address for a fixed tile position, same as any other
-//    constant NES placement.
-//  - A fixed-panel target (GBA/PSP) or a variadic one run with a known
-//    viewport (never -- see below): a plain compile-time `vec2<u16>`.
-//  - A variadic-viewport target (GCN onward, see kVariadicTargets):
-//    VIEWPORT_TX/TY aren't known until the game is actually running, so
-//    `<name>_pos` is mutable storage instead, populated by a generated
-//    Make_<name>() -- the same reason SingleChoice's own `_options` needs
-//    one (see genSingleChoiceDecl). Hand-written code must call Make_<name>()
-//    once at runtime, before anything reads <name>_pos, the same contract
-//    SingleChoice's Make_ already has.
+// Everything here lands inside this node's own `namespace <name>`, so the verbs
+// carry no `_<name>` suffix: `gen::options::reduceFlashesButton::Draw()`, not
+// `gen::options::Draw_reduceFlashesButton()`. See emitNodeNamespace.
+//
+// kButtonHasBoxRole no longer gates anything in codegen: a Rect carries its
+// footprint inseparably from its anchor, so size is always present now. The
+// role is left on the node for the editor's own use.
 //
 // A button's enabled/disabled bit is never its own standalone variable --
 // every button in the scene shares one `button_state` byte array (see
 // generateCode, which sizes it to exactly fit however many buttons the
 // scene actually has and assigns each one a fixed bit index before calling
 // this), so `bitIndex`/`stateArrayName` say which byte and bit within that
-// shared array belong to this particular button. One bool per button used
-// to cost one whole byte (`atomic bool` is never smaller, and is often
-// padded further); eight buttons now cost exactly one byte between them.
+// shared array belong to this particular button. That array lives at the
+// scene's own namespace scope, one level up from (or several above) this
+// node's, and is reached by ordinary enclosing-namespace lookup. One bool per
+// button used to cost one whole byte (`atomic bool` is never smaller, and is
+// often padded further); eight buttons now cost exactly one byte between them.
 QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
-                       QTreeWidgetItem* rootItem, const QString& target, const QString& region,
+                       bool runtimePos, QTreeWidgetItem* rootItem, const QString& target, const QString& region,
                        const QString& ntOffXExpr, const QString& ntOffYExpr, int bitIndex,
                        const QString& stateArrayName) {
-    const QString name = bareName(item);
-    const int x = item->data(0, kPosXRole).toInt() + ntOffX;
-    const int y = item->data(0, kPosYRole).toInt() + ntOffY;
-    const int w = std::clamp(item->data(0, kSizeWRole).toInt(), 1, 255);
-    const int h = std::clamp(item->data(0, kSizeHRole).toInt(), 1, 255);
     const bool toggleable = item->data(0, kButtonToggleableRole).toBool();
-    const bool hasBox = item->data(0, kButtonHasBoxRole).toBool();
     const int byteIndex = bitIndex / 8;
     const int bitInByte = bitIndex % 8;
     const QString byteExpr = QString("%1[%2]").arg(stateArrayName).arg(byteIndex);
     const QString maskExpr = QString("(1u << %1)").arg(bitInByte);
 
-    QStringList lines;
-    lines << QString("// Button: %1").arg(name);
-
-    if (isNes) {
-        lines << QString("inline constexpr u16 %1_pos = 0x%2;")
-                     .arg(name)
-                     .arg(static_cast<uint>(nesNtAddr(x, y)), 4, 16, QLatin1Char('0'));
-    } else if (variadic) {
-        lines << QString("inline atomic vec2<u16> %1_pos;").arg(name);
-    } else {
-        lines << QString("inline constexpr vec2<u16> %1_pos = {%2, %3};").arg(name).arg(x).arg(y);
-    }
-
-    if (hasBox) {
-        lines << QString("inline constexpr vec2<u8> %1_box = {%2, %3};").arg(name).arg(w).arg(h);
-    }
+    QStringList lines =
+        genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
+                            ntOffXExpr, ntOffYExpr);
 
     // Forced-to-define: no body here, deliberately -- see the doc comment
     // above. Hand-written game code must define these somewhere linked into
     // the final binary.
-    lines << QString("void DrawEnabled_%1();").arg(name);
-    lines << QString("void DrawDisabled_%1();").arg(name);
+    lines << QString("void DrawEnabled();");
+    lines << QString("void DrawDisabled();");
 
-    if (!isNes && variadic) {
-        const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
-        const QString yExpr = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
-        const QString xFinal =
-            ntOffXExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(xExpr, ntOffXExpr) : xExpr;
-        const QString yFinal =
-            ntOffYExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(yExpr, ntOffYExpr) : yExpr;
-        lines << QString("inline AI void Make_%1() {\n"
-                          "    %1_pos = vec2<u16>{static_cast<u16>(%2), static_cast<u16>(%3)};\n"
-                          "}")
-                     .arg(name, xFinal, yFinal);
-    }
-
-    lines << QString("inline AI void Enable_%1() { %2 |= %3; }").arg(name, byteExpr, maskExpr);
-    lines << QString("inline AI void Disable_%1() { %2 &= static_cast<u8>(~%3); }").arg(name, byteExpr, maskExpr);
+    lines << QString("inline AI void Enable() { %1 |= %2; }").arg(byteExpr, maskExpr);
+    lines << QString("inline AI void Disable() { %1 &= static_cast<u8>(~%2); }").arg(byteExpr, maskExpr);
     if (toggleable) {
-        lines << QString("inline AI bool Toggle_%1() { return (%2 ^= %3) & %3; }").arg(name, byteExpr, maskExpr);
+        // Not `return (state ^= mask) & mask;` -- reading the value of an
+        // assignment whose left operand is volatile (`atomic` is `volatile` on
+        // every C++ target, see technology.hpp) is deprecated in C++20 and
+        // warns under -Wvolatile. The flipped value goes through a local
+        // instead, which is the same two accesses to the state byte in the same
+        // order, just without using the assignment's result.
+        lines << QString("inline AI bool Toggle() {\n"
+                          "    const u8 next = static_cast<u8>(%1 ^ %2);\n"
+                          "    %1 = next;\n"
+                          "    return next & %2;\n"
+                          "}")
+                     .arg(byteExpr, maskExpr);
     }
-    lines << QString("inline AI void Draw_%1() { (%2 & %3) ? DrawEnabled_%1() : DrawDisabled_%1(); }")
-                 .arg(name, byteExpr, maskExpr);
+    lines << QString("inline AI void Draw() { (%1 & %2) ? DrawEnabled() : DrawDisabled(); }")
+                 .arg(byteExpr, maskExpr);
+
+    // The input hook, and the reason the mutators above exist: one Pass(u8)
+    // per interactive node, so a menu loop can hand the frame's input to
+    // whichever component has focus without a per-kind call signature to
+    // remember -- a SingleChoice's Pass(u8) (see genSingleChoiceDecl), a
+    // slider's (genSliderDecl), and this.
+    //
+    // Generated, body and all, unlike the draw hooks above: a toggleable
+    // button has exactly one thing it can do to the only state uitk owns for
+    // it (that one bit), so there is nothing here left for hand-written code
+    // to decide. What the press MEANS is still entirely hand-written -- it
+    // lands in the DrawEnabled()/DrawDisabled() this calls.
+    //
+    // Emitted ONLY for a toggleable button, alongside Toggle() itself. Press
+    // is a flip and nothing else: a button that can't flip has no press this
+    // tool could define for it -- "apply" (Enable() and leave it there) is a
+    // guess about what the scene wants, and generating a plausible-looking
+    // Pass() that turns out to be the wrong half of the setting is worse than
+    // not having one. Calling Pass() on a non-toggleable button is therefore
+    // a compile error naming the button, and driving it stays a matter of the
+    // Enable()/Disable()/Draw() above.
+    //
+    // `payload` is the frame's input mask (input::Buttons, see
+    // pnes/input.hpp), the newly-pressed bits rather than the held ones --
+    // the same thing a scene already passes to a SingleChoice's Pass(). The
+    // d-pad bits are masked off and a frame carrying only those returns
+    // without doing anything: direction moves the focus BETWEEN components,
+    // so a frame that only moved the cursor must not also press the button it
+    // landed on. Everything else counts as a press -- A, B, START, SELECT --
+    // because which of them a scene actually polls is the scene's business,
+    // and a button that only answered to A would quietly break any menu
+    // driven by another one.
+    //
+    // Then it acts, straight into the forced-to-define hooks, without going
+    // through Draw(): the new state is already known here, so dispatching off
+    // the bit again would re-read storage that is `atomic` (volatile on NES)
+    // to reach a branch this already took.
+    if (toggleable) {
+        // Toggle() returns the bit's NEW value, so the press and the repaint
+        // share one read-modify-write of the shared state byte.
+        lines << QString("inline AI void Pass(const u8 payload) {\n"
+                          "    const u8 wanted = payload & static_cast<u8>(~(input::UP | input::DOWN |\n"
+                          "        input::LEFT | input::RIGHT\n"
+                          "    ));\n"
+                          "\n"
+                          "    if (!wanted) return;\n"
+                          "    Toggle() ? DrawEnabled() : DrawDisabled();\n"
+                          "}");
+    }
 
     return lines.join("\n") + "\n";
 }
 
-// Emits one Slider node's declarations: `<name>_pos`, `<name>_box`, the
-// `<name>_amount` byte holding its current value, and the two
-// forced-to-define hooks that render it: Draw_<Name>(u8 defaultAmt) for the
-// initial placement and DrawChange_<Name>(u8 amt) for moving a slider that
-// is already on screen.
+
+// Emits one Slider node's declarations: its geometry (see genGeometryStorage),
+// the `amount` byte holding its current value, the two forced-to-define hooks
+// that render it -- Draw() for the initial placement (at whatever `amount`
+// already holds) and DrawChange(u8 amt) for moving a slider that is already on
+// screen -- and the generated Pass(u8 payload) that turns a frame's input into
+// a DrawChange() call.
 //
-// Unlike a Button there is no Enable_/Disable_/Toggle_ and no
+// Everything lands inside this node's own `namespace <name>`, so these read as
+// `gen::options::musicSlider::Draw(...)` / `::amount`. See emitNodeNamespace.
+//
+// Unlike a Button there is no Enable()/Disable()/Toggle() and no
 // enabled/disabled pair of draw hooks -- a slider isn't a two-state thing,
 // so there is nothing for a generated mutator to do that wouldn't be wrong
-// for some slider. `<name>_amount` is storage and nothing else: uitk
-// allocates it (prefixed, see `bssPrefixTok`) and never generates code that
-// reads or writes it, since a slider's range, step, and clamping are
-// properties of what it controls rather than of the scene.
+// for some slider. `amount` is storage and nothing else: uitk allocates it
+// (prefixed, see `bssPrefixTok`) and never generates code that reads or writes
+// it, since a slider's range, step, and clamping are properties of what it
+// controls rather than of the scene.
 //
-// `bssPrefixTok` is already empty on every target but NES (see
-// generateCode) -- it places `<name>_amount`, the only real storage a slider
-// has on a fixed-viewport target. A variadic target's `<name>_pos` is
-// mutable too, but it follows a Button's lead and goes unprefixed.
+// `bssPrefixTok` is already empty on every target but NES (see generateCode) --
+// it places `amount`, which is the only storage a slider has that
+// genGeometryStorage doesn't already own.
 //
-// `<name>_box` is NOT optional the way a Button's is (kButtonHasBoxRole):
-// a button's DrawEnabled_ can plausibly be a fixed-size sprite that never
-// consults its own footprint, but a slider's track length IS its range --
-// DrawSliderBody/UpdateSlider in demo/ui/impl/sliders.hpp both need the
-// width to know how far the handle can travel -- so there is no slider worth
-// emitting that doesn't want it.
-//
-// Position follows exactly the same three-way split as a Button's (see
-// genButtonDecl): a baked PPU nametable address on NES, a baked cartesian
-// vec2 on a fixed non-NES panel, and runtime-assigned storage plus a Make_
-// on a variadic-viewport target, where VIEWPORT_*-driven placement can't be
-// collapsed to a constant until the game is actually running.
+// A slider's footprint is never optional the way a Button's `hasBox` used to
+// be: a slider's track length IS its range -- DrawSliderBody lays that many
+// cells down, and the hooks clamp against the same width to know how far the
+// handle can travel (demo/ui/impl/sliders.hpp) -- and a Rect carries it
+// inseparably from the anchor regardless.
 QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
-                       QTreeWidgetItem* rootItem, const QString& target, const QString& region,
+                       bool runtimePos, QTreeWidgetItem* rootItem, const QString& target, const QString& region,
                        const QString& bssPrefixTok, const QString& ntOffXExpr, const QString& ntOffYExpr) {
-    const QString name = bareName(item);
-    const int x = item->data(0, kPosXRole).toInt() + ntOffX;
-    const int y = item->data(0, kPosYRole).toInt() + ntOffY;
-    const int w = std::clamp(item->data(0, kSizeWRole).toInt(), 1, 255);
-    const int h = std::clamp(item->data(0, kSizeHRole).toInt(), 1, 255);
-
-    QStringList lines;
-    lines << QString("// Slider: %1").arg(name);
-
-    if (isNes) {
-        lines << QString("inline constexpr u16 %1_pos = 0x%2;")
-                     .arg(name)
-                     .arg(static_cast<uint>(nesNtAddr(x, y)), 4, 16, QLatin1Char('0'));
-    } else if (variadic) {
-        lines << QString("inline atomic vec2<u16> %1_pos;").arg(name);
-    } else {
-        lines << QString("inline constexpr vec2<u16> %1_pos = {%2, %3};").arg(name).arg(x).arg(y);
-    }
-
-    lines << QString("inline constexpr vec2<u8> %1_box = {%2, %3};").arg(name).arg(w).arg(h);
+    QStringList lines =
+        genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
+                            ntOffXExpr, ntOffYExpr);
 
     // The slider's holding value -- the one piece of state uitk does own for
     // one. `atomic` (technology.hpp: volatile on NES, a true atomic
-    // elsewhere) for the same reason a SingleChoice's `_option` is: whatever
+    // elsewhere) for the same reason a SingleChoice's `option` is: whatever
     // moves it is rarely the same code that later reads it back to draw.
     // Carries bssPrefixTok so it lands in the scene's declared RAM section,
-    // exactly like that `_option`.
+    // exactly like that `option`.
     //
     // uitk deliberately emits nothing else around it -- no range, no step,
     // no clamping, no setter. A slider's bounds are a property of what it is
@@ -1784,58 +1918,85 @@ QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     // byte), which the scene has no way to know, so the only thing that
     // would be right for every slider is the storage itself. Writing and
     // bounding it is the caller's job.
-    lines << QString("%1inline atomic u8 %2_amount = 0;").arg(bssPrefixTok, name);
+    lines << QString("%1inline atomic u8 amount = 0;").arg(bssPrefixTok);
 
-    // Forced-to-define, same as a Button's DrawEnabled_/DrawDisabled_ --
+    // Forced-to-define, same as a Button's DrawEnabled()/DrawDisabled() --
     // hand-written game code must define both of these somewhere linked
     // into the final binary. They're split because putting a slider on
     // screen and moving one already on screen are different amounts of
-    // work, not two cases of one operation: Draw_ lays down the whole
-    // track (both end caps and every cell between them, the full
-    // `<name>_box` footprint) and then puts the handle at `defaultAmt`,
-    // whereas DrawChange_ touches exactly two cells -- it restores the one
-    // the handle is leaving and marks the one it's arriving at. That's the
-    // DrawSliderBody/UpdateSlider split in demo/ui/impl/sliders.hpp, and
-    // the reason a scene can't just call Draw_ again on every nudge: a full
+    // work, not two cases of one operation: Draw() lays down the whole
+    // track (both end caps and every cell between them, the full `rect.size`
+    // footprint) and then puts the handle at `amount`, whereas
+    // DrawChange() touches exactly two cells -- it restores the one the
+    // handle is leaving and marks the one it's arriving at. That's the
+    // DrawSliderBody/DrawSliderHandle split in demo/ui/impl/sliders.hpp, and
+    // the reason a scene can't just call Draw() again on every nudge: a full
     // redraw per frame is a whole row of PPU writes where two would do.
     //
-    // Each takes only the amount it couldn't otherwise know.  Draw_ takes
-    // `defaultAmt` because it runs before anything has established a value,
-    // which also makes it the natural place to seed `<name>_amount`.
-    // DrawChange_ takes just the amount being moved TO: the amount being
-    // moved from is whatever `<name>_amount` still holds at the point of
-    // the call, since nothing uitk generates ever writes that byte. So the
-    // hook reads the old value out of it, repaints the two cells, and
-    // stores the new one -- a second parameter would only be the caller
-    // handing back a number it had just read from there itself.
-    lines << QString("void Draw_%1(u8 defaultAmt);").arg(name);
-    lines << QString("void DrawChange_%1(u8 amt);").arg(name);
+    // Only DrawChange() takes anything, and only the amount being moved TO.
+    // Draw() takes nothing: `amount` is already the byte uitk allocated for
+    // this slider, so a starting position is something the caller writes
+    // there (it is zero-initialised otherwise) rather than hands in -- same
+    // arrangement a Button has, where Draw() dispatches off the state uitk
+    // owns instead of being told it. That also means a scene can repaint a
+    // slider it has lost the tiles for (a nametable reload, a mode re-entry)
+    // without having kept the value itself.
+    //
+    // DrawChange()'s one parameter is the new value because moving a handle
+    // needs both cells and only one of them is in storage: the hook reads the
+    // old position out of `amount`, clears that cell, stores the new value,
+    // and draws the cell it now names (Clear/assign/Draw -- see
+    // demo/ui/impl/sliders.hpp). Dropping the parameter too would cost a
+    // second byte to remember the last-painted position, which is why the
+    // value being moved to stays an argument.
+    lines << QString("void Draw();");
+    lines << QString("void DrawChange(u8 amt);");
 
-    if (!isNes && variadic) {
-        const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
-        const QString yExpr = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
-        const QString xFinal =
-            ntOffXExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(xExpr, ntOffXExpr) : xExpr;
-        const QString yFinal =
-            ntOffYExpr != QLatin1String("0") ? QString("(%1 + %2)").arg(yExpr, ntOffYExpr) : yExpr;
-        lines << QString("inline AI void Make_%1() {\n"
-                          "    %1_pos = vec2<u16>{static_cast<u16>(%2), static_cast<u16>(%3)};\n"
-                          "}")
-                     .arg(name, xFinal, yFinal);
-    }
+    // The input hook -- the same uniform entry point a Button and a
+    // SingleChoice get (see genButtonDecl), so a menu loop can route the
+    // frame's input to whatever has focus without a per-kind signature to
+    // remember.
+    //
+    // Generated, body and all, unlike the two draw hooks above. The step is
+    // one cell per press and isn't configurable, because a slider's track
+    // length IS its range (see the `amount` comment above): the handle can
+    // only ever sit on a cell, so one cell is the only step that both moves
+    // it and lands somewhere it can be drawn. A control wanting 0..255 out of
+    // a 16-cell track scales what it reads out of `amount`, rather than
+    // stepping it by 16 and skipping fifteen handle positions.
+    //
+    // No clamping here either: DrawChange() already rejects anything past the
+    // track, and u8 arithmetic can only leave the range by one in each
+    // direction (0 - 1 wraps to 255, size.x + 1 is one past the end), so both
+    // ends land in the guard it has to apply anyway. That also means the ends
+    // behave the same whether a nudge came through here or straight from a
+    // caller's own DrawChange().
+    //
+    // `payload` is the frame's input mask (input::Buttons, see
+    // pnes/input.hpp), the newly-pressed bits. Horizontal only: UP/DOWN move
+    // the focus between a menu's rows, and a slider has no second axis to
+    // spend them on. `amount` is read once into a local -- it is `atomic`
+    // (volatile on NES), and DrawChange() reads it again itself.
+    lines << QString("inline AI void Pass(const u8 payload) {\n"
+                      "    const u8 cur = amount;\n"
+                      "\n"
+                      "    if      (payload & input::RIGHT) DrawChange(static_cast<u8>(cur + 1));\n"
+                      "    else if (payload & input::LEFT)  DrawChange(static_cast<u8>(cur - 1));\n"
+                      "}");
 
     return lines.join("\n") + "\n";
 }
+
 
 // Builds the target-specific .hpp/.cpp pair for `rootItem`'s whole scene.
 // Components hidden on `target`/`region` (or under a hidden ancestor -- see
 // isEffectivelyHidden) are skipped entirely, so an export never emits a
 // function for something the scene itself says shouldn't exist there.
-GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, const QString& region, int nametable,
+GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, const QString& region, int quadrant,
                              const QString& linkerPrefix, const QString& bssPrefix, const QString& dataPrefix,
                              const QString& charmap, const QString& sceneName) {
-    const int ntOffX = (nametable & 1) * kNametableQuadW;
-    const int ntOffY = ((nametable >> 1) & 1) * kNametableQuadH;
+    const int ntOffX = (quadrant & 1) * kNametableQuadW;
+    const int ntOffY = ((quadrant >> 1) & 1) * kNametableQuadH;
     // bss_prefix/data_prefix are placement attributes -- a bank or section a
     // linker script maps to a real region of ROM/RAM. Off NES that concept
     // doesn't exist (CREATE_SEGMENT_KEYWORD-built macros already expand to
@@ -1850,6 +2011,11 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     // anymore.
     const bool isNes = (target == QLatin1String("NES"));
     const bool variadic = kVariadicTargets.contains(target);
+    // Whether this target's Rect can be `constexpr` storage at all -- see
+    // kRuntimePosTargets. Strictly narrower than `variadic`: DS/DSI/3DS/Switch
+    // emit runtime VIEWPORT_* expressions like any variadic target, but those
+    // expressions fold, so their Rect is still a compile-time constant.
+    const bool runtimePos = kRuntimePosTargets.contains(target);
     // Runtime counterpart of ntOffX/ntOffY, for a variadic target's own
     // Draw_/Erase_/Make_ bodies (genCtTextBoxBody/genCtTextBoxEraseBody/
     // genSingleChoiceDecl): on a variadic target one nametable quadrant is
@@ -1863,11 +2029,11 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     // generated expression is exactly the "assumes 32 tiles" bug this
     // exists to avoid -- see title.cpp's own kMenuNT for the hand-written
     // version of the identical fix. "0" (not emitted as a call at all) when
-    // this scene's nametable index doesn't need an offset on that axis.
-    const QString ntOffXExpr = !(nametable & 1)             ? QStringLiteral("0")
+    // this scene's quadrant index doesn't need an offset on that axis.
+    const QString ntOffXExpr = !(quadrant & 1)             ? QStringLiteral("0")
                                 : variadic                    ? QStringLiteral("(video::viewport_tx() < 32 ? 32 : video::viewport_tx())")
                                                                : QString::number(kNametableQuadW);
-    const QString ntOffYExpr = !((nametable >> 1) & 1)      ? QStringLiteral("0")
+    const QString ntOffYExpr = !((quadrant >> 1) & 1)      ? QStringLiteral("0")
                                 : variadic                    ? QStringLiteral("(video::viewport_ty() < 30 ? 30 : video::viewport_ty())")
                                                                : QString::number(kNametableQuadH);
     const QString bssPrefixTok = (isNes && !bssPrefix.trimmed().isEmpty()) ? (bssPrefix.trimmed() + " ") : QString();
@@ -1891,7 +2057,9 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
 
     QStringList hppDecls;
     QStringList cppDefs;
-    bool usesSingleChoice = false;
+    // Whether anything in this scene has a generated Pass() -- i.e. whether
+    // the emitted header names input:: at all, and so needs pnes/input.hpp.
+    bool usesInput = false;
     // Every charmap_ function actually referenced by this export (default
     // and/or per-node overrides), so the in-scope note below (charmapNote)
     // covers all of them, not just the scene default.
@@ -1932,102 +2100,169 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                         .arg(byteLiterals.join(", "));
     }
 
-    for (QTreeWidgetItem* item : collectComponentItems(rootItem)) {
-        if (isNegSpaceItem(item)) continue;  // negative-space carries no code
-        if (isEffectivelyHidden(item, target, region)) continue;
-
-        if (isButtonItem(item)) {
-            hppDecls << genButtonDecl(item, ntOffX, ntOffY, isNes, variadic, rootItem, target, region, ntOffXExpr,
-                                        ntOffYExpr, buttonBitIndex.value(item), kButtonStateArrayName);
-            continue;
-        }
-
-        if (isSliderItem(item)) {
-            hppDecls << genSliderDecl(item, ntOffX, ntOffY, isNes, variadic, rootItem, target, region,
-                                        bssPrefixTok, ntOffXExpr, ntOffYExpr);
-            continue;
-        }
-
-        const QString name = bareName(item);
-        const QString charmapFn = nodeCharmapFn(item);
-        if (!charmapFn.isEmpty()) usedCharmapFns.insert(charmapFn);
-
-        if (isCtTextBoxItem(item)) {
-            // Actually draws (bakes the ppu::WriteFromBufferToNameTable calls
-            // itself), unlike rtTextBox's wrapper below -- named Draw_<Name>
-            // so a scene's generated API reads the same way SingleChoice's
-            // own Make_<Name> does: the verb up front says what calling it
-            // does. AI, like every other generated wrapper here -- body
-            // merged into the .hpp declaration, not split into a .cpp
-            // definition, because AI itself requires that (see ::AI's own
-            // comment in technology.hpp: a force-inlined function's body has
-            // to be visible in every TU that calls it, which a separate .cpp
-            // definition can never guarantee). No linkerPrefixTok (bank
-            // placement) either, for the same reason every other AI-tagged
-            // function here skips it: AI's own doc comment says it doesn't
-            // compose with a placement attribute -- once a body gets
-            // duplicated into every caller, there's no single out-of-line
-            // copy left for a section attribute to pin anywhere.
-            const CtTextBoxGen gen = genCtTextBoxBody(item, name, ntOffX, ntOffY, isNes, variadic, rootItem, target,
-                                                        region, dataPrefixTok, charmapFn, ntOffXExpr, ntOffYExpr);
-            if (!gen.rootDecls.isEmpty()) {
-                hppDecls << gen.rootDecls;
+    // One recursive walk, emitting a nested `namespace <nodeName>` per node so a
+    // generated symbol's qualified name retraces the scene tree that produced
+    // it: gen::options::reduceFlashesButton::reduceFlashesText::Draw(). Plain
+    // branch nodes (kind "branch") are transparent -- they carry no prefix, so
+    // their names were never validated as C++ identifiers and can't safely
+    // become namespaces; their children are emitted at the branch's own level.
+    //
+    // Children are emitted BEFORE their parent's own declarations, because a
+    // parent can name them (a SingleChoice's Draw() calls each member's Draw())
+    // while the reverse never happens -- a child's placement expression that
+    // references its parent is spliced in textually by emitPosComponent, not
+    // resolved through a symbol.
+    //
+    // `makeAll` collects the qualified name of every node the scene-level
+    // Make() should drive, in document order -- every node, with no exceptions.
+    // A SingleChoice's members are listed here even though its own Make() makes
+    // them too (see genSingleChoiceDecl), so they are made twice. That is
+    // deliberate: a parent's Make() always calls its children's, unconditionally.
+    // Making geometry twice is a handful of stores; the alternative -- a
+    // made/not-made flag per node -- costs permanent storage, a branch on every
+    // Make(), and a state that can go stale if a caller makes a subtree
+    // directly. Redundant work is the cheaper and the safer of the two.
+    QStringList makeAll;
+    std::function<QStringList(QTreeWidgetItem*, const QString&)> emitNodeNamespace =
+        [&](QTreeWidgetItem* node, const QString& qualPrefix) -> QStringList {
+        QStringList emitted;
+        for (int i = 0; i < node->childCount(); ++i) {
+            QTreeWidgetItem* child = node->child(i);
+            if (!isPrefixedItem(child)) {
+                emitted += emitNodeNamespace(child, qualPrefix);  // transparent branch
+                continue;
             }
-            hppDecls << QString("inline AI void Draw_%1() {\n%2\n}\n").arg(name, gen.body);
+            if (isEffectivelyHidden(child, target, region)) continue;
 
-            if (item->data(0, kProvideErasingRole).toBool()) {
-                const QString eraseBody = genCtTextBoxEraseBody(item, ntOffX, ntOffY, isNes, variadic, rootItem,
-                                                                  target, region, charmapFn, ntOffXExpr, ntOffYExpr);
-                hppDecls << QString("inline AI void Erase_%1() {\n%2\n}\n").arg(name, eraseBody);
+            const QString name = bareName(child);
+            const QString qual = qualPrefix.isEmpty() ? name : (qualPrefix + "::" + name);
+
+            QStringList body = emitNodeNamespace(child, qual);
+
+            if (isButtonItem(child)) {
+                body << genButtonDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
+                                       ntOffXExpr, ntOffYExpr, buttonBitIndex.value(child), kButtonStateArrayName);
+                // Only a toggleable button gets a Pass(), and so only one of
+                // those puts input:: in the header -- see genButtonDecl.
+                if (child->data(0, kButtonToggleableRole).toBool()) usesInput = true;
+                makeAll << qual;
+            } else if (isSliderItem(child)) {
+                body << genSliderDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
+                                       bssPrefixTok, ntOffXExpr, ntOffYExpr);
+                usesInput = true;
+                makeAll << qual;
+            } else if (isSingleChoiceItem(child)) {
+                const QString decl =
+                    genSingleChoiceDecl(child, rootItem, target, region, bssPrefixTok, dataPrefixTok, runtimePos);
+                if (decl.isEmpty()) continue;  // no visible options -- nothing to construct
+                body << decl;
+                usesInput = true;
+                makeAll << qual;
+            } else {
+                // Every remaining prefixed kind is a geometry node -- ctTextBox,
+                // rtTextBox, negative space -- and each now carries the same
+                // rect/pos/Make() the placeable kinds above do.
+                QStringList own = genGeometryStorage(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem,
+                                                      target, region, ntOffXExpr, ntOffYExpr);
+                makeAll << qual;
+
+                const QString charmapFn = nodeCharmapFn(child);
+                if (!charmapFn.isEmpty() && isComponentItem(child)) usedCharmapFns.insert(charmapFn);
+
+                if (isCtTextBoxItem(child)) {
+                    // Actually draws (bakes the ppu::WriteFromBufferToNameTable
+                    // calls itself), unlike rtTextBox's wrapper below. AI, like
+                    // every other generated wrapper here -- body merged into the
+                    // .hpp declaration, not split into a .cpp definition, because
+                    // AI itself requires that (see ::AI's own comment in
+                    // technology.hpp: a force-inlined function's body has to be
+                    // visible in every TU that calls it, which a separate .cpp
+                    // definition can never guarantee). No linkerPrefixTok (bank
+                    // placement) either, for the same reason every other
+                    // AI-tagged function here skips it: AI's own doc comment says
+                    // it doesn't compose with a placement attribute -- once a body
+                    // gets duplicated into every caller, there's no single
+                    // out-of-line copy left for a section attribute to pin.
+                    const CtTextBoxGen gen = genCtTextBoxBody(child, ntOffX, ntOffY, isNes, variadic, rootItem,
+                                                                target, region, dataPrefixTok, charmapFn,
+                                                                ntOffXExpr, ntOffYExpr);
+                    if (!gen.rootDecls.isEmpty()) own << gen.rootDecls;
+                    own << QString("inline AI void Draw() {\n%1\n}").arg(gen.body);
+
+                    if (child->data(0, kProvideErasingRole).toBool()) {
+                        const QString eraseBody = genCtTextBoxEraseBody(child, ntOffX, ntOffY, isNes, variadic,
+                                                                          rootItem, target, region, charmapFn,
+                                                                          ntOffXExpr, ntOffYExpr);
+                        own << QString("inline AI void Erase() {\n%1\n}").arg(eraseBody);
+                    }
+                } else if (isRtTextBoxItem(child)) {
+                    const int w = std::max(1, child->data(0, kSizeWRole).toInt());
+                    const int h = std::max(1, child->data(0, kSizeHRole).toInt());
+                    const QString splitterStr = child->data(0, kSplitterRole).toString();
+                    const QChar splitter = splitterStr.isEmpty() ? QLatin1Char(' ') : splitterStr.at(0);
+                    // Text isn't known until runtime, so there's nothing here to
+                    // charmap-encode -- but whatever buffer the caller eventually
+                    // passes in IS expected to already be charmap-encoded (it's
+                    // handed straight to ui::text::Make, same raw bytes ppu writes
+                    // land untranslated), so the splitter byte Make compares each
+                    // character against has to be encoded through the very same
+                    // charmap too, not left as a raw ASCII literal that would never
+                    // match an encoded space/boundary byte. Same for the terminator
+                    // Make scans for to find the buffer's end, which is why there is
+                    // no length parameter here.
+                    //
+                    // Make takes the charmap itself and lifts both bytes out of it,
+                    // and takes it as a template parameter so it stays compile-time
+                    // only (see text.hpp) -- the splitter travels as a `char` NTTP for
+                    // the same reason, so the charmap never gets called at runtime.
+                    // With no charmap set, a scene's buffers hold untranslated bytes,
+                    // which is exactly ui::text::ascii -- the identity charmap, whose
+                    // splitter is the raw ASCII character and whose terminator is a
+                    // plain 0x00. There is no second, byte-taking Make to reach for.
+                    //
+                    // Named MakeText, not Make: this node's geometry already owns
+                    // Make() (see genGeometryStorage), and two unrelated operations
+                    // sharing a verb by overload would read as one.
+                    const QString mapExpr = charmapFn.isEmpty() ? QStringLiteral("ui::text::ascii") : charmapFn;
+                    const QString callExpr = QString("ui::text::Make<%1, '%2'>(buff, vec2<u8>{%3, %4})")
+                                                 .arg(mapExpr, cCharEscape(splitter)).arg(w).arg(h);
+                    own << QString("inline AI ui::text::textBuffer* MakeText(const u8* buff) {\n"
+                                    "    return %1;\n"
+                                    "}")
+                                 .arg(callExpr);
+                }
+                body << own.join("\n\n");
             }
-        } else {  // rtTextBox
-            const int w = std::max(1, item->data(0, kSizeWRole).toInt());
-            const int h = std::max(1, item->data(0, kSizeHRole).toInt());
-            const QString splitterStr = item->data(0, kSplitterRole).toString();
-            const QChar splitter = splitterStr.isEmpty() ? QLatin1Char(' ') : splitterStr.at(0);
-            // Text isn't known until runtime, so there's nothing here to
-            // charmap-encode -- but whatever buffer the caller eventually
-            // passes in IS expected to already be charmap-encoded (it's
-            // handed straight to ui::text::Make, same raw bytes ppu writes
-            // land untranslated), so the splitter byte Make compares each
-            // character against has to be encoded through the very same
-            // charmap too, not left as a raw ASCII literal that would never
-            // match an encoded space/boundary byte. Same for the terminator
-            // Make scans for to find the buffer's end, which is why there is
-            // no length parameter here.
-            //
-            // Make takes the charmap itself and lifts both bytes out of it,
-            // and takes it as a template parameter so it stays compile-time
-            // only (see text.hpp) -- the splitter travels as a `char` NTTP for
-            // the same reason, so the charmap never gets called at runtime.
-            // With no charmap set, a scene's buffers hold untranslated bytes,
-            // which is exactly ui::text::ascii -- the identity charmap, whose
-            // splitter is the raw ASCII character and whose terminator is a
-            // plain 0x00. There is no second, byte-taking Make to reach for.
-            const QString mapExpr = charmapFn.isEmpty() ? QStringLiteral("ui::text::ascii") : charmapFn;
-            const QString callExpr = QString("ui::text::Make<%1, '%2'>(buff, vec2<u8>{%3, %4})")
-                                         .arg(mapExpr, cCharEscape(splitter)).arg(w).arg(h);
-            hppDecls << QString("inline AI ui::text::textBuffer* %1(const u8* buff) {\n"
-                                 "    return %2;\n"
-                                 "}\n")
-                             .arg(name, callExpr);
-        }
-    }
 
-    for (QTreeWidgetItem* scItem : collectSingleChoiceItems(rootItem)) {
-        if (isEffectivelyHidden(scItem, target, region)) continue;
-        const QString decl =
-            genSingleChoiceDecl(scItem, rootItem, target, region, bssPrefixTok, dataPrefixTok, ntOffXExpr, ntOffYExpr);
-        if (!decl.isEmpty()) {
-            hppDecls << decl;
-            usesSingleChoice = true;
+            emitted << QString("namespace %1 {\n\n%2\n}  // namespace %1\n").arg(name, body.join("\n\n"));
         }
+        return emitted;
+    };
+
+    hppDecls += emitNodeNamespace(rootItem, QString());
+
+    // One call that makes the whole scene. Every node now carries geometry, so
+    // without this a caller would have to name each one individually just to
+    // get its rect/pos resolved -- and would silently miss any node added to
+    // the scene later. Document order, which is also the order the namespaces
+    // above were emitted in.
+    if (!makeAll.isEmpty()) {
+        QStringList callLines;
+        for (const QString& qual : makeAll) callLines << QString("    %1::Make();").arg(qual);
+        hppDecls << QString("// Resolves every node's geometry and seeds every menu's running state.\n"
+                             "// On a runtime-viewport target nothing may read a node's rect/pos until\n"
+                             "// this (or that node's own Make()) has run; on a fixed one it is still\n"
+                             "// emitted, so no call site needs a #if to decide whether it exists.\n"
+                             "inline AI void Make() {\n%1\n}")
+                        .arg(callLines.join("\n"));
     }
 
     QStringList hppIncludes{"#include <intsh>", "#include <pnes/types.hpp>", "#include <pnes/video.hpp>",
-                             "#include <pnes/extras/ui/text.hpp>"};
-    if (usesSingleChoice) {
-        hppIncludes << "#include <pnes/input.hpp>";  // input::UP / input::DOWN, for Pass_
+                             "#include <pnes/extras/ui/text.hpp>", "#include <pnes/extras/ui/types.hpp>"};
+    if (usesInput) {
+        // input::UP/DOWN/LEFT/RIGHT, for the generated Pass() of every
+        // interactive node kind -- SingleChoice, Button, Slider.
+        hppIncludes << "#include <pnes/input.hpp>";
     }
 
     QString charmapNote;
@@ -2540,19 +2775,28 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         item->setData(0, kLastValidNameRole, text);
     });
 
-    // Which physical NES nametable ($2000/$2400/$2800/$2C00) the whole
-    // scene's tile positions resolve into in-game -- a scene-wide setting,
-    // not a per-node one, since the PPU only ever fetches a tile from one of
-    // four 32x30 quadrants at a time (see ppu::CartesianToAddress /
-    // xy_to_nt_addr, src/nes/video.cpp: nt_h from x>>5, nt_v from y/30) and
-    // this whole UI lives in one such quadrant. Created here, ahead of the
-    // File menu below, so Save/Open can already capture it; it's laid out
-    // alongside the viewport size fields further down.
-    auto* nametableCombo = new QComboBox(content);
-    nametableCombo->addItems({"0 ($2000)", "1 ($2400)", "2 ($2800)", "3 ($2C00)"});
-    nametableCombo->setToolTip("Which physical NES nametable the whole scene's tile positions "
-                                "resolve into in-game -- the same $2000/$2400/$2800/$2C00 quadrant "
-                                "ppu::CartesianToAddress selects from a tile coordinate.");
+    // Which quadrant of the 2x2 world grid -- UL, UR, BL or BR -- the whole
+    // scene's tile positions resolve into in-game: a scene-wide setting, not a
+    // per-node one, since a UI lives in one quadrant. UR shifts every position
+    // one viewport width right, BL one viewport height down, BR both.
+    //
+    // This names a position in the world, NOT a physical nametable. It used to
+    // read "0 ($2000)".."3 ($2C00)", which implied uitk knew which chip the
+    // write would land in -- it doesn't, and can't: off-NES the emu backend
+    // folds the runtime ::mirroring flag into the offset CartesianToAddress
+    // returns, and on hardware the board's wiring routes the write after the
+    // address. Making sure the game's actual VRAM/mirroring state matches what
+    // a scene was authored against is the caller's job, not this tool's.
+    //
+    // Created here, ahead of the File menu below, so Save/Open can already
+    // capture it; it's laid out alongside the viewport size fields further
+    // down.
+    auto* quadrantCombo = new QComboBox(content);
+    quadrantCombo->addItems({"UL", "UR", "BL", "BR"});
+    quadrantCombo->setToolTip("Which quadrant of the 2x2 world grid the whole scene's tile positions "
+                                "resolve into in-game: UR shifts every position one viewport width "
+                                "right, BL one viewport height down, BR both. Ensuring the game's "
+                                "VRAM and mirroring state matches is the caller's job.");
 
     // Which pnes backend the whole scene targets -- also scene-wide,
     // for the same reason: a scene isn't a mix of platforms, it's authored
@@ -2720,7 +2964,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         }
     });
 
-    auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, nametableCombo, targetCombo, regionCombo,
+    auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, quadrantCombo, targetCombo, regionCombo,
                      linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, showTileGridCheck,
                      tileGridWSpin, tileGridHSpin]() {
         QString path = QFileDialog::getSaveFileName(window, "Save Scene", QString(), "UI Scene (*.uis)");
@@ -2730,7 +2974,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         if (!path.endsWith(".uis", Qt::CaseInsensitive)) {
             path += ".uis";
         }
-        if (!writeUisFile(path, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
+        if (!writeUisFile(path, rootItem, quadrantCombo->currentIndex(), targetCombo->currentText(),
                            regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text(),
                            dataPrefixEdit->text(), charmapEdit->text(), showTileGridCheck->isChecked(),
                            tileGridWSpin->value(), tileGridHSpin->value())) {
@@ -2743,13 +2987,13 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         return true;
     };
 
-    auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window, nametableCombo, targetCombo,
+    auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window, quadrantCombo, targetCombo,
                    regionCombo, linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, showTileGridCheck,
                    tileGridWSpin, tileGridHSpin]() {
         if (currentPath->isEmpty()) {
             return doSaveAs();
         }
-        if (!writeUisFile(*currentPath, rootItem, nametableCombo->currentIndex(), targetCombo->currentText(),
+        if (!writeUisFile(*currentPath, rootItem, quadrantCombo->currentIndex(), targetCombo->currentText(),
                            regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text(),
                            dataPrefixEdit->text(), charmapEdit->text(), showTileGridCheck->isChecked(),
                            tileGridWSpin->value(), tileGridHSpin->value())) {
@@ -2784,13 +3028,13 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // runCliExport) can load a scene the exact same way without going
     // through a file-picker dialog or the unsaved-changes prompt.
     auto loadSceneFromFile = [tree, rootItem, currentPath, dirty, loading, updateTitle, resolveAllPtr,
-                               nametableCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit,
+                               quadrantCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit,
                                dataPrefixEdit, charmapEdit, showTileGridCheck, tileGridWSpin,
                                tileGridHSpin](const QString& path) -> bool {
         // Parse before touching the tree, so a corrupt/unreadable file never
         // wipes out whatever scene was already open.
         QJsonArray nodes;
-        int nametable = 0;
+        int quadrant = 0;
         QString target;
         QString region;
         QString linkerPrefix;
@@ -2800,7 +3044,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         bool showTileGrid = false;
         int tileGridW = 8;
         int tileGridH = 8;
-        if (!parseUisFile(path, nodes, nametable, target, region, linkerPrefix, bssPrefix, dataPrefix, charmap,
+        if (!parseUisFile(path, nodes, quadrant, target, region, linkerPrefix, bssPrefix, dataPrefix, charmap,
                            showTileGrid, tileGridW, tileGridH)) {
             return false;
         }
@@ -2814,7 +3058,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         for (const QJsonValue& node : nodes) {
             deserializeNode(rootItem, node.toObject());
         }
-        nametableCombo->setCurrentIndex(nametable);
+        quadrantCombo->setCurrentIndex(quadrant);
         targetCombo->setCurrentIndex(targetIndex);
         regionCombo->setCurrentIndex(regionIndex);
         linkerPrefixEdit->setText(linkerPrefix);
@@ -2874,13 +3118,13 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // Writes one target's generated .hpp/.cpp pair into `dir`/<target-lower>/,
     // matching the gen/<target>/... layout the #include STRCAT(...) convention
     // (technology.hpp) expects on the consuming side.
-    auto exportOneTarget = [window, rootItem, regionCombo, nametableCombo, linkerPrefixEdit, bssPrefixEdit,
+    auto exportOneTarget = [window, rootItem, regionCombo, quadrantCombo, linkerPrefixEdit, bssPrefixEdit,
                              dataPrefixEdit, charmapEdit, sceneName,
                              writeIfChanged](const QString& dir, const QString& target) -> bool {
         const QString targetDir = dir + "/" + target.toLower();
         if (!QDir().mkpath(targetDir)) return false;
         const GeneratedFiles files = generateCode(rootItem, target, regionCombo->currentText(),
-                                                    nametableCombo->currentIndex(), linkerPrefixEdit->text(),
+                                                    quadrantCombo->currentIndex(), linkerPrefixEdit->text(),
                                                     bssPrefixEdit->text(), dataPrefixEdit->text(),
                                                     charmapEdit->text(), sceneName());
         const bool hppOk = writeIfChanged(targetDir + "/" + sceneName() + ".hpp", files.hpp);
@@ -2915,7 +3159,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             updateTitle();
         }
     };
-    QObject::connect(nametableCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+    QObject::connect(quadrantCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                       [markDirtyFromCombo](int) { markDirtyFromCombo(); });
     QObject::connect(targetCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                       [markDirtyFromCombo](int) { markDirtyFromCombo(); });
@@ -3895,13 +4139,13 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     layout->addWidget(globalGroup);
 
     // "Scene" holds everything that's a property of *this* scene's export
-    // (placement attributes + the nametable it targets) rather than of the
+    // (placement attributes + the quadrant it targets) rather than of the
     // viewport/Target/Region concepts above -- split out now, ahead of any
     // actual need, so a later per-scene field has an obvious home instead of
     // getting wedged into Global alongside Viewport/Target/Region.
     auto* sceneGroup = new QGroupBox("Scene", content);
     auto* sceneForm = new QFormLayout(sceneGroup);
-    sceneForm->addRow("Nametable:", nametableCombo);
+    sceneForm->addRow("Quadrant:", quadrantCombo);
     sceneForm->addRow("Linker Prefix:", linkerPrefixEdit);
     sceneForm->addRow("BSS Prefix:", bssPrefixEdit);
     sceneForm->addRow("Data Prefix:", dataPrefixEdit);
