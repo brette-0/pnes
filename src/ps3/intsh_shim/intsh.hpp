@@ -14,10 +14,10 @@
  * the ambiguity would break PSL1GHT's own headers, not just this project's.
  *
  * So this shim provides ONLY what ppu-types.h lacks: intsh's signed i8/i16/
- * i32/i64 (PSL1GHT spells its signed names s8/s16/s32/s64 instead; ::DeltaScroll
- * in video.hpp / src/emu/ppu.cpp is the one place the engine writes a real
- * type as `i8`). u8..u64/s8..s64 and the fast/least variants are deliberately
- * left out.
+ * i32/i64 (PSL1GHT spells its signed names s8/s16/s32/s64 instead; the engine
+ * writes real types as `i16` -- src/3ds/video.cpp's Cell/BandRec, and the
+ * sample buffers in every audio backend). u8..u64/s8..s64 and the fast/least
+ * variants are deliberately left out.
  *
  * Note PSL1GHT also typedefs f32/f64 and the volatile v* family, which intsh
  * does not declare at all -- so those need nothing here either way.

@@ -256,14 +256,30 @@ namespace ppu {
 
 #ifdef TARGET_NES
     /**
-     * @brief Platform-specific scroll encoding (NES: packed PPU registers).
+     * @brief Platform-specific scroll encoding (NES: the four-write sequence,
+     *        pre-packed).
+     *
+     * One byte per write of the $2006/$2005/$2005/$2006 sequence
+     * ::ppu::SetScroll performs, in that order -- ::WRITE_SCROLL just stores
+     * them. The point is that every shift and mask happens in
+     * ::ppu::CartesianToScroll, ahead of the raster window, leaving the write
+     * itself four unconditional stores.
      *
      * Layout:
-     * - `data[0]` = ::PPUCTRL byte, nametable select already merged in.
-     * - `data[1]` = fine X scroll (`px & 0xFF`).
-     * - `data[2]` = fine Y scroll (`py % 240` after nametable wrap).
+     * - `data[0]` -> `$2006`: nametable select, `nt << 2`.
+     * - `data[1]` -> `$2005`: Y, low byte (coarse + fine) after nametable wrap.
+     * - `data[2]` -> `$2005`: X, low byte (coarse + fine).
+     * - `data[3]` -> `$2006`: t's low byte, `(Y & 0xF8) << 2 | (X & 0xFF) >> 3`,
+     *   whose write is what copies t into v and makes the scroll land now.
+     *
+     * @note Carries no ::PPUCTRL byte. `data[0]` used to be one, because the
+     *       nametable select travelled via $2000; it goes through $2006 now.
+     *       A caller that latches these directly is therefore NOT updating the
+     *       PPUCTRL shadow's select bits the way ::ppu::SetScroll does, so a
+     *       later PPUCTRL write can re-assert a stale select -- see that
+     *       function (src/nes/video.cpp) for the mechanism.
      */
-    typedef struct { u8 data[3]; } scroll_t;
+    typedef struct { u8 data[4]; } scroll_t;
 #else
     /** @brief Platform-specific scroll encoding (desktop: plain XY pixels). */
     typedef vec2<u16> scroll_t;
@@ -904,10 +920,6 @@ namespace ogc {
 extern u8* VideoRAM;
 /** @brief Desktop shadow of the PPU palette RAM. */
 extern u8* paletteRAM;
-/** @brief Current horizontal scroll (pixels). */
-extern u16 xScroll;
-/** @brief Current vertical scroll (pixels). */
-extern u16 yScroll;
 /**
  * @brief Desktop shadow of MMC3's $A000 mirroring bit: false = vertical,
  *        true = horizontal. There's no hardware register to poke off-NES, so
@@ -921,16 +933,34 @@ extern bool mirroring;
 #ifdef TARGET_NES
   /**
    * @brief Latches a ::scroll_t into the PPU scroll registers (NES).
+   *
+   * The four-write sequence with every value precomputed -- see ::scroll_t for
+   * the byte order and ::ppu::SetScroll (src/nes/video.cpp) for why the order
+   * is what it is. Reads `$2002` first to reset the write toggle, which this
+   * sequence depends on: it is positional, and entering at `w == 1` makes the
+   * leading `$2006` latch a bogus v immediately.
+   *
    * @param s A ::scroll_t produced by ::ppu::CartesianToScroll.
    */
   #define WRITE_SCROLL(s) do { \
-      (*(volatile u8*)PPUCTRL)   = (s).data[0]; \
-      (*(volatile u8*)PPUSCROLL) = (s).data[1]; \
-      (*(volatile u8*)PPUSCROLL) = (s).data[2]; \
+      (void)tech::peek(ppu::raw::PPUSTATUS); \
+      tech::poke(ppu::raw::PPUADDR,   (s).data[0]); \
+      tech::poke(ppu::raw::PPUSCROLL, (s).data[1]); \
+      tech::poke(ppu::raw::PPUSCROLL, (s).data[2]); \
+      tech::poke(ppu::raw::PPUADDR,   (s).data[3]); \
   } while(0)
 #else
-  /** @brief Writes a ::scroll_t into the desktop scroll globals. */
-  #define WRITE_SCROLL(s) do { xScroll = (s).x; yScroll = (s).y; } while(0)
+  /**
+   * @brief Latches a ::scroll_t off-NES.
+   *
+   * ::scroll_t is a plain pixel pair on these targets, so this is just
+   * ::ppu::SetScroll -- the emulated PPU's scroll is internal to that core
+   * (::emu::scrollX / ::emu::scrollY, src/emu/emu.hpp) rather than a pair of
+   * public globals, so there is nothing here to poke directly. Routing through
+   * the setter is also what keeps ::emu::scrollWritten correct, which the
+   * emu's mid-frame Y re-anchor depends on.
+   */
+  #define WRITE_SCROLL(s) do { ppu::SetScroll(s); } while(0)
 #endif
 
 namespace video {
@@ -954,8 +984,10 @@ namespace ppu {
     /**
      * @brief Converts a pixel position into the platform ::scroll_t representation.
      *
-     * NES builds encode nametable select plus fine X/Y into the 3-byte
-     * PPU format. Desktop builds just store the pixel coordinates.
+     * NES builds pack the four-write sequence (see ::scroll_t). Desktop builds
+     * just store the pixel coordinates. Call this off the raster-critical path
+     * -- the whole point is that ::ppu::StageScroll / ::ppu::LatchScroll then
+     * do no arithmetic.
      *
      * @param pos Pixel position.
      * @return   Encoded scroll value.
@@ -964,15 +996,54 @@ namespace ppu {
 
     /**
      * @brief Sets the absolute scroll of the screen.
+     *
+     * Performs the whole sequence back to back. For a raster split that has to
+     * land on an exact dot, prefer ::ppu::StageScroll + ::ppu::LatchScroll,
+     * which let the delay sit between the two halves.
+     *
      * @param pos New scroll, in pixels.
      */
     void SetScroll(vec2<u16> pos);
 
     /**
-     * @brief Adds a signed delta to the current scroll.
-     * @param delta Signed delta, in pixels.
+     * @brief Loads the PPU's `t` register from a precomputed ::scroll_t,
+     *        without moving the screen.
+     *
+     * The first three writes of the four-write sequence ($2006/$2005/$2005),
+     * plus the `$2002` read that resets the write toggle. These only stage
+     * `t`, and the PPU renders from `v`, never from `t` -- so NOTHING here is
+     * visible and the timing of this call does not matter. That is the whole
+     * reason the pair exists: the arithmetic and three of the four writes get
+     * to happen early, and only ::ppu::LatchScroll has to hit the dot.
+     *
+     * Also keeps the ::PPUCTRL shadow's nametable-select bits in step, derived
+     * from the staged value, for the reason given in ::ppu::SetScroll
+     * (src/nes/video.cpp): a later PPUCTRL write would otherwise re-assert a
+     * stale select.
+     *
+     * Off-NES there is no `t`, so this does nothing at all and
+     * ::ppu::LatchScroll performs the whole move.
+     *
+     * @param s A ::scroll_t produced by ::ppu::CartesianToScroll.
      */
-    void DeltaScroll(vec2<i8> delta);
+    void StageScroll(scroll_t s);
+
+    /**
+     * @brief Commits a staged ::scroll_t to the screen: `v = t`.
+     *
+     * The fourth and final write ($2006). This is the raster-critical one --
+     * the scroll changes at the exact dot this store lands on -- and it is a
+     * single store of a precomputed byte, so the critical window is as narrow
+     * as the 6502 allows. Put the split's cycle delay BEFORE this call and
+     * after ::ppu::StageScroll.
+     *
+     * Must be paired with a ::ppu::StageScroll of the same value, which is
+     * what left the other three quarters of the scroll in `t`; on its own this
+     * commits whatever `t` happens to hold.
+     *
+     * @param s The same ::scroll_t that was staged.
+     */
+    void LatchScroll(scroll_t s);
 
     /**
      * @brief Writes an array of bytes into nametable memory with a stride.

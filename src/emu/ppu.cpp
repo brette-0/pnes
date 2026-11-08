@@ -25,8 +25,6 @@
 // are platform-independent (plain RAM shadows of the PPU), so they live here
 // and are referenced by every backend.
 // ---------------------------------------------------------------------------
-u16 xScroll;
-u16 yScroll;
 u8 *paletteRAM;
 u8 *VideoRAM;
 int quit;
@@ -123,44 +121,56 @@ __asm__(
  * only appear on the next frame -- exactly as on hardware. */
 static struct oam::sprite_t oamShadow[OAM_SPRITES];
 
-/* Set by ppu::SetScroll/DeltaScroll, consumed by GenerateBands -- see its use
- * there for why a write flag and not a value comparison. */
-namespace emu { bool scrollWritten; }
+/* The emulated PPU's scroll position, in world pixels, as ppu::SetScroll last
+ * left it. Internal to this core: off-NES there is no PPUSCROLL register to
+ * poke, so this IS the scroll the frame walkers below render from -- which
+ * makes it an implementation detail of the emulated PPU, not public API. It is
+ * therefore declared in emu.hpp rather than pnes/video.hpp, where it used to
+ * sit as the public globals ::xScroll / ::yScroll. A game moves the scroll
+ * through ppu::SetScroll on every target, NES included.
+ *
+ * The walkers deliberately do NOT treat X and Y symmetrically; see
+ * GenerateFrame's own doc comment for the hardware behaviour that reproduces.
+ *
+ * scrollWritten is set by ppu::SetScroll, consumed by GenerateBands -- see its
+ * use there for why a write flag and not a value comparison. */
+namespace emu {
+u16 scrollX;
+u16 scrollY;
+bool scrollWritten;
+}   // namespace emu
 
 #pragma region PPU_EMU
 
 /* Per-pixel NES PPU emulator.
  *
- * Scroll model (matches real PPU v/t-register behaviour -- deliberately
- * ASYMMETRIC between X and Y, not a simplification):
+ * Scroll model: a mid-frame write of EITHER axis lands immediately, because
+ * that is what ::ppu::SetScroll now does on hardware.
  *
- *   On real hardware, the PPU's internal v register only re-latches its
- *   HORIZONTAL bits from t once per scanline (at dot 257); the VERTICAL bits
- *   are only re-latched from t once per FRAME, during the pre-render
- *   scanline (dots 280-304). A mid-frame $2005/$2006 write updates t
- *   immediately, but a change to the Y portion never reaches v -- and so
- *   never affects what's on screen -- until the following frame's
- *   pre-render line. This is exactly why real NES status-bar Y-splits use
- *   the $2006-double-write trick instead of a plain $2005 Y write: an
- *   ordinary mid-frame Y write is supposed to be a no-op for the rest of
- *   that frame. X has no such restriction, which is what makes mid-frame
- *   horizontal splits (this engine's own MMC3 HUD/menu splits) work at all.
+ *   On real hardware the PPU's v register re-latches its HORIZONTAL bits from
+ *   t once per scanline (dot 257), but its VERTICAL bits only once per FRAME,
+ *   at the pre-render scanline (dots 280-304). So a plain $2005 Y write
+ *   stages t and never reaches v within the frame, while an X write is picked
+ *   up on the next line. That asymmetry is a property of the $2005 write
+ *   PAIR, though -- NOT of the hardware's limits.
  *
- *   xScroll is read fresh every segment (see wx0 below) -- any write takes
- *   effect on the very next pixel, matching the real per-scanline reload.
- *   yScroll instead only seeds ppu_y once, here at the top of the frame;
- *   ppu_y then free-runs (auto-incrementing once per scanline) for the rest
- *   of the frame regardless of any further yScroll writes an IRQ handler
- *   makes -- those are only picked up the NEXT time GenerateFrame runs,
- *   same as real hardware only picking up a new Y at the next pre-render
- *   line. A handler that wants an on-screen Y split within one frame still
- *   needs the same trick a real NES program would.
+ *   The NES backend's ::ppu::SetScroll uses the four-write sequence instead
+ *   ($2006/$2005/$2005/$2006, see src/nes/video.cpp), whose final $2006 write
+ *   copies t into v on the spot. Both axes therefore take effect mid-frame on
+ *   a real NES, so both do here: a Y split within one frame needs no trick,
+ *   it is just what SetScroll does.
+ *
+ *   scrollX is read fresh every segment (see wx0 below), so an X write is
+ *   live on the next pixel. scrollY seeds ppu_y at the top of the frame and
+ *   then free-runs, auto-incrementing once per scanline -- but an IRQ handler
+ *   that writes a scroll RE-ANCHORS ppu_y to the new scrollY at the scanline
+ *   it fired on, and the frame carries on free-running from there. ppu_y is
+ *   derived once per segment, which is exactly the granularity that needs.
  *
  * IRQ dispatch: each scanline is split at the px of the next queued IRQ.
  * The handler fires before the pixel at its (px, py) renders, so it can
- * mutate xScroll, ppu::PPUCTRL, palette -- anything -- and the very next
- * pixel sees the new X/palette/etc state; a yScroll write there is stored
- * but, per above, not visible until next frame.
+ * mutate scrollX, scrollY, ppu::PPUCTRL, palette -- anything -- and the very
+ * next pixel sees it.
  *
  * The finished frame is written into the caller's ARGB8888 surface (@p fb,
  * @p stride pixels per row); the backend presents it. */
@@ -173,7 +183,7 @@ void GenerateFrame(u32 *fb, const int stride) {
     /* Nametable/attribute geometry for the linked board: ::ppu::nametableCount
      * physical, viewport-sized nametables, gridded by mirroring -- see
      * ::emu::ComputeNtGeometry's own doc comment (emu.hpp). Folding ppu_y/
-     * xScroll through geo.worldH/geo.worldW instead of a hardcoded 240/256 is
+     * scrollX through geo.worldH/geo.worldW instead of a hardcoded 240/256 is
      * what lets the background walk reach every nametable the linked board
      * actually provides, exactly the way real mirroring wiring would alias
      * an out-of-range logical address back onto real storage, instead of
@@ -186,10 +196,10 @@ void GenerateFrame(u32 *fb, const int stride) {
     const int spr_h    = (ppu::PPUCTRL & ppu::ctrl::SPRITE_SIZE) ? 16 : 8;
 
     /* PPU Y counter: the absolute VRAM row currently being sourced. Seeded
-     * from yScroll once, here -- NOT re-read from yScroll again for the rest
-     * of this frame, even if an IRQ handler below writes it (see this
-     * function's own doc comment for why that matches real hardware). */
-    int ppu_y = (int)yScroll;
+     * from scrollY here, then free-running one row per scanline -- and
+     * re-anchored whenever an IRQ handler writes a scroll (see the re-anchor
+     * at the handler call below, and this function's own doc comment). */
+    int ppu_y = (int)scrollY;
 
     for (int py = 0; py < vph; py++) {
         /* Sprites use screen-space Y -- they don't scroll with the background. */
@@ -225,7 +235,7 @@ void GenerateFrame(u32 *fb, const int stride) {
 
             /* Derive Y source from ppu_y (the PPU's current absolute row).
              * This is computed once per segment: ppu_y only changes at IRQ
-             * boundaries, so it is constant within a segment. xScroll is
+             * boundaries, so it is constant within a segment. scrollX is
              * added to px inside the loop for the horizontal scan offset. */
             const int wy        = ppu_y % world_h;
             const int tile_row  = wy / 8;
@@ -249,7 +259,7 @@ void GenerateFrame(u32 *fb, const int stride) {
             const int  ntrow_b  = nt_row * geo.gridW;
             const int  chr_tbl  = (ppu::PPUCTRL & ppu::ctrl::BG_ADDR) ? 0x1000 : 0;
 
-            const int  wx0      = (static_cast<int>(xScroll) + seg_start) % world_w;
+            const int  wx0      = (static_cast<int>(scrollX) + seg_start) % world_w;
             const int  tcol0    = wx0 >> 3;
             int        fine_x   = wx0 & 7;
             int        local_col = tcol0 % geo.tileW;
@@ -352,18 +362,27 @@ void GenerateFrame(u32 *fb, const int stride) {
                 }
             }
 
-            /* Fire the IRQ. A yScroll write inside the handler is NOT
-             * applied to ppu_y here -- real hardware doesn't reload v's
-             * vertical bits until the next frame's pre-render line, so
-             * neither does this. ppu_y keeps free-running (see the ppu_y++
-             * below); xScroll, unlike yScroll, is simply re-read fresh by
-             * the next segment's wx0, so an X change the handler made is
-             * already picked up with no bookkeeping needed here. */
+            /* Fire the IRQ. A scroll write inside the handler lands on this
+             * frame, both axes -- SetScroll's four-write sequence copies t
+             * into v immediately (see this function's doc comment). X needs
+             * no bookkeeping: the next segment's wx0 re-reads scrollX. Y does,
+             * because ppu_y free-runs -- re-anchor it so the world row sourced
+             * at THIS scanline is the handler's scrollY, and the rest of the
+             * frame counts on from there.
+             *
+             * Keyed on scrollWritten, not on a before/after comparison of the
+             * value: re-pointing a later band at the SAME row is a real write
+             * that restarts the row counter, and comparing values drops it.
+             * Mirrors GenerateBands, which shares this machinery. */
             if (fire) {
                 /* Clear before calling so a re-arm from inside the handler
                  * (a new irqPosition for the next hunk) survives the call. */
                 irq::irqPendingValid = false;
+                /* Cleared immediately before the call so only a write from
+                 * INSIDE the handler re-anchors. */
+                scrollWritten = false;
                 if (irq::irqHandler) irq::irqHandler();
+                if (scrollWritten) ppu_y = static_cast<int>(scrollY);
             }
 
             seg_start = seg_end;
@@ -380,33 +399,30 @@ void InitMemory(const unsigned vram_bytes) {
     VideoRAM   = static_cast<u8 *>(malloc(vram_bytes));
 }
 
-/* Raster-timeline walk for the GX backend. Same IRQ-dispatch logic as
- * GenerateFrame's outer loop -- including the same real-hardware asymmetry
- * between X and Y (see that function's own doc comment) -- but with no inner
- * pixel loop: it splits the frame into scanline bands at IRQ boundaries,
- * fires each handler (running game logic, which may move the scroll), and
- * hands each band's scroll to the backend to render as a tilemap. See
- * emu.hpp for the band semantics. */
-void GenerateBands(const band_emit_fn emit, const bool honorHandlerY) {
+/* Raster-timeline walk for the GX backend. Same IRQ-dispatch logic and the
+ * same scroll model as GenerateFrame's outer loop (see that function's own
+ * doc comment) -- but with no inner pixel loop: it splits the frame into
+ * scanline bands at IRQ boundaries, fires each handler (running game logic,
+ * which may move the scroll), and hands each band's scroll to the backend to
+ * render as a tilemap. See emu.hpp for the band semantics. */
+void GenerateBands(const band_emit_fn emit) {
     const int vph = video::viewport_py();
 
     int  band_start = 0;
-    u16  cur_xs = xScroll;
-    // Latched once, here, for the whole frame -- a handler's yScroll write
-    // below is not picked up until the NEXT GenerateBands call, matching
-    // real hardware only reloading v's vertical bits at the pre-render line.
-    // Each band is handed `fixed_ys + band_start`, not fixed_ys itself: the
+    u16  cur_xs = scrollX;
+    // Each band is handed `ys_base + band_start`, not ys_base itself: the
     // PPU's Y counter free-runs one row per scanline (see GenerateFrame's
     // ppu_y), so the world row sourced at a band's first scanline is the
-    // frame's Y plus that scanline. Passing fixed_ys alone restarted every
+    // frame's Y plus that scanline. Passing ys_base alone restarted every
     // band after the first from the frame's top row.
     //
-    // ys_base is the offset such that world row = ys_base + scanline. It starts
-    // at the frame's latched Y and only ever moves when honorHandlerY is set
-    // (see emu.hpp): a backend whose game genuinely needs a handler's Y write
-    // to land mid-frame (the DS/GBA follow camera) re-anchors it to the
-    // handler's own Y at the scanline the handler fired on.
-    int ys_base = yScroll;
+    // ys_base is the offset such that world row = ys_base + scanline. It
+    // starts at the frame's Y and is re-anchored by any handler that writes a
+    // scroll, unconditionally -- SetScroll's four-write sequence lands a Y
+    // change mid-frame on real hardware, so every backend gets that here. It
+    // used to be gated behind a honorHandlerY parameter that only the DS
+    // passed, back when a plain $2005 Y write could not take effect mid-frame.
+    int ys_base = scrollY;
 
     for (int py = 0; py < vph; py++) {
         /* Fire the pending IRQ when its scanline is reached. We band at
@@ -438,11 +454,11 @@ void GenerateBands(const band_emit_fn emit, const bool honorHandlerY) {
                  * to run on from the previous anchor and wrap. */
                 scrollWritten = false;
                 if (irq::irqHandler) irq::irqHandler();
-                if (honorHandlerY && scrollWritten)
-                    ys_base = static_cast<int>(yScroll) - py;
+                if (scrollWritten)
+                    ys_base = static_cast<int>(scrollY) - py;
                 // X, unlike Y, reloads every scanline on real hardware --
                 // simply re-read fresh, no "did it change" bookkeeping needed.
-                cur_xs = xScroll;
+                cur_xs = scrollX;
             }
         }
     }
@@ -642,14 +658,17 @@ void WriteSingleToNameTable(const u16 address, u8 value) {
 }
 
 void SetScroll(const vec2<u16> pos) {
-    xScroll = pos.x; yScroll = pos.y;
+    emu::scrollX = pos.x; emu::scrollY = pos.y;
     emu::scrollWritten = true;
 }
 
-void DeltaScroll(const vec2<i8> delta) {
-    xScroll = static_cast<u16>(xScroll + delta.x);
-    yScroll = static_cast<u16>(yScroll + delta.y);
-    emu::scrollWritten = true;
+// No t/v split off-NES: there is no staging register to load, so the whole
+// move belongs to the latch. Deliberately empty rather than absent, so split
+// handlers can be written once against the staged pair on every target.
+void StageScroll(const scroll_t) {}
+
+void LatchScroll(const scroll_t s) {
+    SetScroll(s);
 }
 
 template <typename Idx>

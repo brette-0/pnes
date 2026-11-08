@@ -34,8 +34,6 @@ const u16 video::PatternTables = 0;
 constexpr u16 NameTables       = 0x2000;
 constexpr u16 PaletteTables    = 0x3f00;
 constexpr u16 nVideoRam        = 0x800;
-atomic u16 xScroll = 0;
-atomic u16 yScroll = 0;
 namespace ppu {
 tech::wo_register<raw::PPUCTRL>   PPUCTRL;
 tech::wo_register<raw::PPUMASK>   PPUMASK;
@@ -122,13 +120,12 @@ VIDEO_BANK void Flush(const u8 nt, const u8 at) {
     }
 }
 
-// Pinned: a raster split writes PPUSCROLL at an exact dot, so anything added in
-// front of these writes moves the split.
+// Pinned: a raster split writes the scroll at an exact dot, so anything added
+// in front of these writes moves the split.
 __attribute__((hot))
 AI void SetScroll(const vec2<u16> pos) {
     const u16 x = pos.x;
     u16 y = pos.y;
-    xScroll = x; yScroll = y;
 
     // Wraps y Past one nametable's height (240) into the next one, tagging
     // bit 0x100 so the nt-bit derivation below picks it up (y >> 7 & 0x02
@@ -147,14 +144,57 @@ AI void SetScroll(const vec2<u16> pos) {
     const auto nt = x >> 8 & 0x01
                | y >> 7 & 0x02;
 
+    // Kept in step even though the nametable select now travels to the PPU via
+    // $2006 below, not $2000: a $2000 write copies its low 2 bits into t's
+    // nametable field, so any LATER PPUCTRL write (the POLARITY flip in the
+    // nametable writers, a sprite-size change) would otherwise re-assert a
+    // STALE select over the one this call just latched.
     PPUCTRL = PPUCTRL & 0xFC | nt;
 
-    tech::poke(raw::PPUSCROLL, static_cast<u8>(x & 0xFF));
-    tech::poke(raw::PPUSCROLL, static_cast<u8>(y & 0xFF));
-}
+    // The four-write sequence ($2006/$2005/$2005/$2006), which sets the whole
+    // scroll -- X AND Y -- and has it take effect immediately, mid-frame.
+    //
+    // The plain two-$2005 form this replaced could not do Y: $2005 only stages
+    // t, and t's vertical bits do not reach v until the next frame's pre-render
+    // line (dots 280-304), so a mid-frame Y write was a no-op for the rest of
+    // that frame. X was unaffected, which is why X-only splits worked. The ONLY
+    // write that copies t into v is the SECOND $2006 write -- and it carries
+    // just t's low byte, so the high bits (fine Y, nametable select, coarse Y's
+    // top 2 bits) must be staged first and the low byte must land last. Hence
+    // four writes, in this order and no other.
+    //
+    // Resets the write toggle first. The sequence is positional -- it depends
+    // on w being 0 on entry -- and unlike the old form, entering at w == 1 does
+    // not merely scramble the scroll until the next call: the leading $2006
+    // would be taken as a SECOND write and latch a bogus v on the spot.
+    tech::peek(raw::PPUSTATUS);
 
-AI void DeltaScroll(const vec2<i8> delta) {
-    SetScroll({static_cast<u16>(xScroll + delta.x), static_cast<u16>(yScroll + delta.y)});
+    // 1. $2006: nametable select into t's NN field, and zero fine Y and coarse
+    //    Y's high 2 bits -- all three are re-supplied by write 2.
+    tech::poke(raw::PPUADDR, static_cast<u8>(nt << 2));
+
+    // 2. $2005 with w == 1, so this is the SECOND scroll write: fine Y
+    //    (y & 7) and coarse Y (y >> 3).
+    tech::poke(raw::PPUSCROLL, static_cast<u8>(y & 0xFF));
+
+    // 3. $2005 with w == 0, so this is the FIRST scroll write: coarse X
+    //    (x >> 3), plus fine X into the separate x register -- the only write
+    //    that can set fine X at all.
+    tech::poke(raw::PPUSCROLL, static_cast<u8>(x & 0xFF));
+
+    // 4. $2006, SECOND write: t's low byte -- coarse Y's low 3 bits in 7:5,
+    //    coarse X in 4:0 -- and then v = t, which is what makes the whole
+    //    thing land now rather than next frame.
+    //
+    //    Not redundant with writes 2 and 3; it is the same coarse X/Y
+    //    re-expressed in t's low byte, which is all this write can reach. The
+    //    cast is load-bearing: (y & 0xF8) << 2 is only equal to coarse Y's low
+    //    3 bits in 7:5 AFTER truncation to 8 bits (y's bits 5-7 shift out), and
+    //    C++ promotes the u16 operand instead of wrapping it. The two halves
+    //    cannot collide -- << 2 of a value with its low 3 bits clear leaves
+    //    bits 0-4 clear, exactly where coarse X goes.
+    tech::poke(raw::PPUADDR,
+               static_cast<u8>((y & 0xF8) << 2 | (x & 0xFF) >> 3));
 }
 
 __attribute__((hot))
@@ -359,15 +399,53 @@ VIDEO_BANK u16 CartesianToAddress(const vec2<u16>& pos) {
     return xy_to_nt_addr(pos.x, pos.y);
 }
 
+// Precomputes the four bytes ::WRITE_SCROLL stores, so the raster-critical
+// window pays only the stores. Same encoding ::SetScroll performs inline --
+// see its comments for why the sequence is ordered the way it is.
 AI scroll_t CartesianToScroll(const vec2<u16> pos) {
     const u16 px = pos.x;
     auto y = pos.y;
+
+    // Single wrap, matching ::SetScroll. This used to run twice: the first
+    // pass's 0x100 tag makes y >= 240 true again by itself, so the second copy
+    // fired whenever the first did, re-subtracting 240 and clearing the tag
+    // back off -- y=240 came out as 16 with no vertical select instead of 0
+    // with it set.
     if (y >= 240) { y -= 240; y ^= 0x100; }
-    if (y >= 240) { y -= 240; y ^= 0x100; }
+
     const auto nt = static_cast<u8>(px >> 8 & 0x01 | y >> 7 & 0x02);
-    return (scroll_t){{ static_cast<u8>(PPUCTRL & 0xFC | nt),
-        static_cast<u8>(px & 0xFF), static_cast<u8>(y & 0xFF) }
-    };
+
+    return (scroll_t){{
+        static_cast<u8>(nt << 2),                               // 1. $2006
+        static_cast<u8>(y & 0xFF),                              // 2. $2005 (Y)
+        static_cast<u8>(px & 0xFF),                             // 3. $2005 (X)
+        static_cast<u8>((y & 0xF8) << 2 | (px & 0xFF) >> 3),    // 4. $2006
+    }};
+}
+
+// Writes 1-3: load t only. The PPU renders from v, so none of this shows and
+// none of it is raster-critical -- which is exactly why it is separable from
+// the latch below. Pinned (::AI) all the same: a split handler calls it.
+__attribute__((hot))
+AI void StageScroll(const scroll_t s) {
+    // Derived from data[0] (which is nt << 2) rather than carried separately,
+    // so ::scroll_t stays four bytes of pure write sequence. Same purpose as
+    // the equivalent line in ::SetScroll: keep the shadow's select bits in
+    // step so a later PPUCTRL write cannot re-assert a stale one.
+    PPUCTRL = PPUCTRL & 0xFC | s.data[0] >> 2;
+
+    tech::peek(raw::PPUSTATUS);   // reset w; the sequence is positional
+    tech::poke(raw::PPUADDR,   s.data[0]);
+    tech::poke(raw::PPUSCROLL, s.data[1]);
+    tech::poke(raw::PPUSCROLL, s.data[2]);
+}
+
+// Write 4: v = t. THE raster-critical store -- the scroll moves at the dot
+// this lands on, so this must stay a lone store of a precomputed byte. Do not
+// add anything to this function.
+__attribute__((hot))
+AI void LatchScroll(const scroll_t s) {
+    tech::poke(raw::PPUADDR, s.data[3]);
 }
 
 __attribute__((hot))

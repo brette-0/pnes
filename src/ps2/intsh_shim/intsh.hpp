@@ -20,8 +20,9 @@
  *
  * So this shim provides ONLY the names tamtypes.h does NOT already have --
  * intsh's signed i8/i16/i32/i64 (tamtypes.h's own signed names are spelled
- * s8/s16/s32/s64 instead; ::DeltaScroll in video.hpp / src/emu/ppu.cpp is the
- * one place the engine actually spells a real type with `i8`) -- and
+ * s8/s16/s32/s64 instead; the engine actually spells real types with `i16` --
+ * src/3ds/video.cpp's Cell/BandRec, and the sample buffers in every audio
+ * backend) -- and
  * deliberately leaves out u8/u16/u32/u64/s8/s16/s32/s64 and the fast/least
  * variants (if8.../uf8.../il8.../ul8...), none of which the engine uses
  * beyond what tamtypes.h already covers.

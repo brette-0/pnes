@@ -232,10 +232,10 @@ namespace title {
         return PreviewScrollYFor(SplitRow());
     }
 
-    constexpr u8 kSplitDelay = REGION ? 90 : 0;
+    constexpr u8 kSplitDelay = REGION ? 90 : 100;
     static void ApplySplit();
 
-    constexpr u8 kSplitLatency = REGION ? 4 : 3;
+    constexpr u8 kSplitLatency = REGION ? 5 : 4;
 
     // Same reload-from-row math ::ArmSplitIRQ uses, parametrized so
     // ::nmi_handler_lockAnim can re-arm against its own shrinking split row
@@ -264,10 +264,24 @@ namespace title {
 
     // Same row->absolute-Y math ::ApplySplit uses, parametrized for the same
     // reason as ::ArmSplitIRQFor above.
+    // The ABSOLUTE Y the split band starts at: the frame's own preview scroll
+    // plus the split's scanline, because the PPU's Y counter has free-run that
+    // far by the time the handler fires. On a 240-row plane scrolled to
+    // ::PreviewScrollYForPixels (48 on a full-height target, = 240 - 192) a
+    // split at scanline 192 therefore wants 48 + 192 = 240, which wraps to row
+    // 0 of the next plane -- where the menu lives.
+    //
+    // This used to return a bare splitPixelRow unless the panel was short
+    // (DS/GBA). That was only ever safe because a mid-frame Y write did not
+    // land: on NES ::ppu::SetScroll wrote the plain $2005 pair, whose vertical
+    // half never reaches v within the frame, and the emulated backends
+    // defaulted to ignoring a handler's Y too -- so on every target but the DS
+    // the value was discarded and v simply wrapped to the menu plane on its
+    // own. Now that SetScroll latches Y mid-frame (the four-write sequence),
+    // the shortcut landed the band on row 24 of the preview plane instead,
+    // which is blank, and the title UI vanished.
     static u16 SplitYForPixels(const u16 splitPixelRow) {
-        return video::panel_ty(0) < 30
-            ? static_cast<u16>(PreviewScrollYForPixels(splitPixelRow) + splitPixelRow)
-            : splitPixelRow;
+        return static_cast<u16>(PreviewScrollYForPixels(splitPixelRow) + splitPixelRow);
     }
 
     static u16 SplitYFor(const u8 splitRow) {

@@ -716,7 +716,7 @@ void WaitForPresent() {
     // sprite-0 split) and record each band's scroll AND its CHR window bases.
     // Done even when BG is off so the handlers still run -- exactly like the
     // GX/3DS backends.
-    emu::GenerateBands(bg ? band_emit : band_noop, true);
+    emu::GenerateBands(bg ? band_emit : band_noop);
 
     // The tilemap is built AFTER the walk, not before: resolving a cell needs
     // the bank state of the scanlines that display it, and those are only all

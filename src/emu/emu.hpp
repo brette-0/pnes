@@ -110,7 +110,7 @@ inline NtGeometry ComputeNtGeometry() {
  * @brief Renders one full PPU frame into a caller-provided ARGB8888 surface.
  *
  * Reads the shared PPU state (::VideoRAM, ::paletteRAM, ::patternTable,
- * ::ppu::PPUCTRL/PPUMASK, ::xScroll/::yScroll, the OAM snapshot and the queued
+ * ::ppu::PPUCTRL/PPUMASK, ::emu::scrollX/::emu::scrollY, the OAM snapshot and the queued
  * scanline IRQs) and writes one 32-bit pixel per cell. The backend owns the
  * buffer and its presentation; the core never touches the display.
  *
@@ -137,10 +137,10 @@ void InitMemory(unsigned vram_bytes);
  *
  * Invoked once per contiguous run of scanlines [@p y0, @p y1) that share a
  * constant scroll. @p xscroll / @p yscroll are the absolute PPU scroll in
- * effect at @p y0 -- for Y that is the frame's latched Y plus @p y0, since the
- * PPU's Y counter auto-increments once per scanline and a mid-frame Y write is
- * not applied until the next frame. Within the band, screen row @c sy sources
- * world row `yscroll + (sy - y0)`.
+ * effect at @p y0 -- for Y that is the frame's current anchor plus @p y0,
+ * since the PPU's Y counter auto-increments once per scanline. A handler that
+ * writes a scroll moves that anchor from its own scanline onward. Within the
+ * band, screen row @c sy sources world row `yscroll + (sy - y0)`.
  */
 using band_emit_fn = void (*)(int y0, int y1, u16 xscroll, u16 yscroll);
 
@@ -156,19 +156,18 @@ using band_emit_fn = void (*)(int y0, int y1, u16 xscroll, u16 yscroll);
  * scroll), and calls @p emit for every band of scanlines between IRQs with the
  * scroll that band should render with. It performs no rendering itself.
  *
- * Shares the scroll / sprite-zero / yScroll-written machinery with
+ * Shares the scroll / sprite-zero / scroll-written machinery with
  * ::emu::GenerateFrame, so the two stay byte-for-byte consistent on the split.
+ * That includes the mid-frame Y re-anchor: a handler that writes a scroll
+ * moves the Y anchor to its own scanline, so every later band follows it.
+ * This is unconditional, matching ::ppu::SetScroll's four-write sequence,
+ * which lands a Y change mid-frame on real hardware. It used to be opt-in via
+ * a @c honorHandlerY parameter that only the DS backend passed, back when the
+ * NES path's plain $2005 Y write could not take effect until the next frame.
  *
  * @param emit Backend band renderer (see ::emu::band_emit_fn).
- * @param honorHandlerY When false (the default -- what real NES hardware and
- *        the GX/3DS backends do), a Y write made inside an IRQ handler is
- *        ignored for the rest of the frame and the Y counter just keeps
- *        free-running. When true, a handler that changes ::yScroll re-anchors
- *        the Y counter to that value at the scanline it fired on, so every later
- *        band's @c yscroll follows it. Only for a backend whose game needs a
- *        mid-frame Y change to actually land (the DS/GBA follow camera).
  */
-void GenerateBands(band_emit_fn emit, bool honorHandlerY = false);
+void GenerateBands(band_emit_fn emit);
 
 /**
  * @brief Pointer to the PPU-side OAM snapshot the renderer draws sprites from.
@@ -177,7 +176,24 @@ void GenerateBands(band_emit_fn emit, bool honorHandlerY = false);
  * ::oam::RefreshSprites, the OAMDMA analogue). The GX backend reads it directly
  * to emit sprite quads. Always ::OAM_SPRITES entries.
  */
-/** @brief Set by ::ppu::SetScroll / ::ppu::DeltaScroll, consumed and cleared by
+/**
+ * @brief The emulated PPU's scroll position in world pixels, as
+ *        ::ppu::SetScroll last left it.
+ *
+ * Off-NES there is no PPUSCROLL register to poke, so this is the authoritative
+ * scroll the frame walkers render from -- an implementation detail of this
+ * core, which is why it lives here and not in pnes/video.hpp (where it was
+ * previously exposed as the public globals ::xScroll / ::yScroll). Backends
+ * that drive bands themselves may read it; games set it via ::ppu::SetScroll.
+ *
+ * ::emu::GenerateFrame and ::emu::GenerateBands consume X and Y differently --
+ * X reloads every scanline, Y is latched for the frame. See GenerateFrame's
+ * doc comment (src/emu/ppu.cpp) for the hardware behaviour behind that.
+ */
+extern u16 scrollX;
+extern u16 scrollY;
+
+/** @brief Set by ::ppu::SetScroll, consumed and cleared by
  *         ::emu::GenerateBands around each IRQ handler call: whether the handler
  *         wrote a scroll at all. See GenerateBands (src/emu/ppu.cpp) for why
  *         that, and not a before/after value comparison, is the question. */

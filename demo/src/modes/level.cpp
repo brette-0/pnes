@@ -32,9 +32,9 @@ namespace level {
 
     constexpr u8 kHudSplitRow   = 16;
     constexpr u8 kHudSplitMMC3  = 16 - (
-            REGION ? 4 : 3
+            REGION ? 5 : 4
     );
-    constexpr u8 kHUDSplitDelay = REGION ? 90 : 0;
+    constexpr u8 kHUDSplitDelay = REGION ? 90 : 85;
 
 #ifdef TARGET_NDS
     // --- lower-panel blanking -----------------------------------------------
@@ -128,6 +128,23 @@ namespace level {
     u16 cameraX;
 
     static atomic u16 rasterCameraX;
+
+    // The HUD split's scroll, packed in the NMI (::nmi_handler) and consumed by
+    // the scanline IRQ one frame later, exactly like ::rasterCameraX -- which
+    // is what it is packed from, so it inherits that latch's timing contract.
+    //
+    // Precomputed because the split is dot-precise: ::ppu::LatchScroll moves
+    // the screen on the cycle its single store lands, so every shift and mask
+    // has to be out of the handler. Letting ::ppu::SetScroll compute inline
+    // put ~12 cycles of arithmetic BETWEEN the PPU writes and stretched the
+    // critical region to ~28 cycles -- an entire HBlank (85 dots / 28.3 CPU
+    // cycles), with nothing left for drift.
+    //
+    // Not ::atomic, unlike ::rasterCameraX: the NMI is the only writer, the IRQ
+    // the only reader, and they cannot overlap (the HUD IRQ fires around
+    // scanline 13, the NMI at 241). Keeping it plain lets the compiler hold
+    // data[3] in a register across ::tech::SpinWait.
+    static ppu::scroll_t hudScroll;
 #ifdef PNES_WINDOWED_PANEL
     // Same latch for the vertical follow on a windowed panel: the bump is derived
     // from P1's sprite Y, which has to be the Y the OAM DMA just shipped.
@@ -381,6 +398,10 @@ namespace level {
         rasterCameraX = cameraX;
 #ifdef PNES_WINDOWED_PANEL
         rasterPlayerY = player1.actor.screen.y;
+        hudScroll = ppu::CartesianToScroll(
+            {rasterCameraX, static_cast<u16>(kHudSplitRow + VerticalWindow(rasterPlayerY))});
+#else
+        hudScroll = ppu::CartesianToScroll({rasterCameraX, kHudSplitRow});
 #endif
 
         using enum eLevelStreamCommands;
@@ -441,12 +462,19 @@ namespace level {
     // directly, which is therefore ::FIXED too.
     FIXED void irq_handler() {
         mmc3::AcknowledgeScanlineIRQ();
-        tech::SpinWait(kHUDSplitDelay);
 #ifdef TARGET_NDS
         // The frame's splits in raster order: the HUD split first (nextBlankRow
         // is 0 at the top of every frame), then one or more lower-panel bands,
         // each armed by the one before it.
-        if (nextBlankRow) { ApplyLowerPanelBlank(); return; }
+        //
+        // Keeps the old shape -- delay, then the whole scroll -- because this
+        // one is DS-only and the DS renders in bands, so it has no dot to hit.
+        // Only ::ApplyHudSplit needs the staged form.
+        if (nextBlankRow) {
+            tech::SpinWait(kHUDSplitDelay);
+            ApplyLowerPanelBlank();
+            return;
+        }
 #endif
         ApplyHudSplit();
     }
@@ -489,18 +517,18 @@ namespace level {
     }
 
     static FIXED void ApplyHudSplit() {
-        #ifdef PNES_WINDOWED_PANEL
-            // The background half of the follow camera: on a target whose panel
-            // is shorter than the 240-row frame this game draws into (GBA 160,
-            // the DS's gameplay panel 192), the panel is a window onto that frame
-            // and this scroll is which rows it shows. ::VerticalWindow (main.hpp)
-            // owns the clamp; ::SpriteY shifts sprites by the same call, off the
-            // same latched player Y, which is what keeps them glued to this.
-            ppu::SetScroll({rasterCameraX,
-                            static_cast<u16>(kHudSplitRow + VerticalWindow(rasterPlayerY))});
-        #else
-            ppu::SetScroll({rasterCameraX, kHudSplitRow});
-        #endif
+        // ::hudScroll was packed in the NMI -- including, on a windowed panel,
+        // the background half of the follow camera (::VerticalWindow owns the
+        // clamp; ::SpriteY shifts sprites by the same call off the same latched
+        // player Y, which is what keeps them glued to this).
+        //
+        // Split around the delay on purpose: staging only loads the PPU's t
+        // register, which nothing renders from, so those three writes are free
+        // to happen before the wait. The latch is the one store that moves the
+        // screen, so it is all that the delay has to position.
+        ppu::StageScroll(hudScroll);
+        tech::SpinWait(kHUDSplitDelay);
+        ppu::LatchScroll(hudScroll);
 
         mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
 
