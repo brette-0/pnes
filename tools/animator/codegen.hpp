@@ -5,12 +5,16 @@
  * The export side of the designer: one header per metasprite, holding nothing
  * but PATTERN BYTES -- a frame is the metasprite's slots, row-major, each the
  * byte OAM takes for the sprite stamped there. That is the sheet's tile id with
- * the pattern-table half its blobman entry's VMA puts the art in folded into
+ * the pattern-table half of the chr::Frame the sprite draws from folded into
  * bit 0 when the slot is 8x16, which is where the hardware reads it from. The
- * manifest is the only thing that knows that half, so emitting the bare id
- * would hand every consumer a byte it has to repair by hand -- and one that
- * silently draws whatever lives at the same index in the other table if it
- * does not. What is deliberately NOT in there:
+ * frame is the only thing that knows that half, so emitting the bare id would
+ * hand every consumer a byte it has to repair by hand -- and one that silently
+ * draws whatever lives at the same index in the other table if it does not.
+ *
+ * That fold is also why these bytes are only valid for the frame they were
+ * exported against: bit 0 is frozen here, so banking the art into a window of
+ * a frame in the other pattern table needs a re-export, not just a different
+ * CHR switch at runtime. What is deliberately NOT in there:
  *
  *  * the palette, which is a per-metasprite editor attribute but an OAM
  *    attribute byte and a PPU palette write on the console -- not frame data;

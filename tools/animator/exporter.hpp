@@ -17,7 +17,7 @@
  *
  * Pattern bytes are RE-RESOLVED against the blobman manifest here rather than
  * taken from the .msprite files: the manifest is what knows which
- * pattern-table half an entry's VMA banks the art into, so re-reading it is
+ * pattern-table half of the frame a sprite draws through, so re-reading it is
  * what makes a CHR layout change show up in the generated headers at all. It
  * is also exactly what the GUI does on load (every placed sprite is rebuilt
  * from the manifest's cell), so a headless export and a File > Export All of

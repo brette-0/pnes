@@ -23,7 +23,6 @@ An example of a config toml file
     # all root objects must be tables, but no requirements to their name
     [sprites]
     LMA         = 0x0000    # refers to the position in Character ROM, gaps are permitted
-    VMA         = 0x1000    # refers to the base address used for generating the index symbols
     size        = 0x1000    # refers to the size of the entry, may be a Character ROM Window
     [includes]
         asset1 = "path/to/file1"
@@ -34,26 +33,24 @@ The resulting members will be generated:
 
 .. code-block:: cpp
 
-    blob::sprites::asset1;   // will be 0x00
-    blob::sprites::asset2;
-    blob::sprites::asset3;
-    blob::sprites::__LMA;    // will be 0x1000
+    blob::sprites::lma::asset1;   // tile index in Character ROM; will be 0x00
+    blob::sprites::lma::asset2;
+    blob::sprites::lma::asset3;
+    blob::sprites::__lma;         // byte offset of the entry; will be 0x0000
+    blob::sprites::__size;
 
-Note that with this, its incredibly easy to get the offset of a singular tile with:
-
-.. code-block:: cpp
-
-    #define CharacterROMAddrOf(nameSpace, member) \
-        (nameSpace::__LMA + (nameSpace::member << 5))
-
-This can be followed by:
+Every tile symbol is an index into Character ROM, never into a pattern table. Where the PPU sees a tile is not a
+property of how it was packed, so the manifest does not say: whatever banks the entry in decides that, and a
+``ppu::ChrWindow`` is what turns a Character ROM tile index into the index the hardware reads.
 
 .. code-block:: cpp
 
-    #define PPUSpaceAddrOf(nameSpace, member) \
-        (nameSpace::__VMA + (nameSpace::member << 5))
+    // the set is packed at __lma and banked in at PPU $0400, i.e. tile 0x40
+    constexpr ppu::ChrWindow window{blob::sprites::__lma / 16, 0x40};
 
-Then the values this returns can given to a mapper functions ``BankCharactersWith()`` method with the size being ``0``
-to bank in what is needed.
+    const u8 tile = window + blob::sprites::lma::asset1;
+
+``__lma`` in bytes is what a mapper banks by -- ``mmc3::BankOf<blob::sprites::__lma>()`` -- while the tile indices
+under ``lma::`` are in tiles, since a CHR tile is 16 bytes and no sub-tile value means anything.
 
 Nothing prevents the active Character Window from loading information

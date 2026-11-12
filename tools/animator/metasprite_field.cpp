@@ -26,6 +26,11 @@ const QColor kGridColour(0x30, 0x30, 0x30);
 const QColor kBorderColour(0x60, 0x60, 0x60);
 
 QString formatId(int id, int patternByte, int heightTiles) {
+    // Nothing placeable is unnumbered -- an unnumbered cell is refused at the
+    // pick -- but a field rebuilt against a manifest whose frames have since
+    // moved can hold one, and showing it is better than printing $ffffffff.
+    if (id == chr::kNoId) return QString("unnumbered");
+
     // An 8x16 sprite occupies the even id and the next one, and the byte that
     // selects the pair carries the pattern-table half on top of that -- all
     // three are worth showing, since the id pair is the art and the OAM byte is
@@ -84,10 +89,22 @@ void MetaspriteField::setBrush(const chr::Cell* cell, const QString& entry) {
     brush_ = Brush{cell->id,
                    cell->patternByte,
                    cell->heightTiles,
+                   QString::fromStdString(cell->frame),
                    entry,
                    QString::fromStdString(cell->include),
                    cell->tileInInclude,
                    cellImage(*cell, table_)};
+}
+
+int MetaspriteField::renameFrame(const QString& from, const QString& to) {
+    int moved = 0;
+    for (PlacedSprite& sprite : sprites_) {
+        if (sprite.frame != from) continue;
+        sprite.frame = to;
+        ++moved;
+    }
+    // Nothing is redrawn: a frame name is provenance, not pixels.
+    return moved;
 }
 
 bool MetaspriteField::addSprite(const chr::Cell& cell, const QString& entry,
@@ -101,6 +118,7 @@ bool MetaspriteField::addSprite(const chr::Cell& cell, const QString& entry,
     sprite.patternByte = cell.patternByte;
     sprite.heightTiles = cell.heightTiles;
     sprite.mirror      = mirror;
+    sprite.frame       = QString::fromStdString(cell.frame);
     sprite.entry       = entry;
     sprite.include     = QString::fromStdString(cell.include);
     sprite.tile        = cell.tileInInclude;
@@ -363,6 +381,7 @@ void MetaspriteField::mousePressEvent(QMouseEvent* event) {
     sprite.id          = brush_->id;
     sprite.patternByte = brush_->patternByte;
     sprite.heightTiles = brush_->heightTiles;
+    sprite.frame       = brush_->frame;
     sprite.entry       = brush_->entry;
     sprite.include     = brush_->include;
     sprite.tile        = brush_->tile;

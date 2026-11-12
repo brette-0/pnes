@@ -33,7 +33,6 @@ namespace {
     struct entry {
         std::string_view            name;         // must be a real string
         int                         LMA{};        // pos in chr rom
-        int                         VMA{};        // used for rt accessing
         int                         size{};       // size of entry
         char*                       data{};       // temp of buffer data
         std::string_view*           includes{};   // includes for tile naming
@@ -58,9 +57,6 @@ namespace {
 
     // chr tiles are 16 bytes, so a byte offset divides down into a tile index
     constexpr int tileSize = 16;
-
-    // a pattern table holds 256 tiles, which is the range of a tile index
-    constexpr int patternTableSize = tileSize * 256;
 }
 
 static toml::table              config;
@@ -367,28 +363,9 @@ bool ProcessConfig() {
         entries[i].LMA = LMA;
 
 
-        const int VMA = (*entry)["VMA"].value_or(-1);
-        if (VMA < 0) {
-            std::cout << "positive integer member 'VMA' missing from entry: " << key.str() << '\n';
-            return false;
-        }
-        if (VMA % tileSize) {
-            std::cout << "VMA for entry: " << key.str() << " is not on a tile boundary\n";
-            return false;
-        }
-        entries[i].VMA = VMA;
-
         const int size = (*entry)["size"].value_or(-1);
         if (size <= 0) {
             std::cout << "positive non-zero integer member 'size' missing from entry: " << key.str() << '\n';
-            return false;
-        }
-
-        // tile indices are a byte, so an entry has to stay inside the one
-        // pattern table its VMA lands in
-        if (VMA / patternTableSize != (VMA + size - 1) / patternTableSize) {
-            std::cout << "entry: " << key.str()
-                      << " straddles a pattern table boundary at its VMA\n";
             return false;
         }
         if (static_cast<size_t>(LMA) + static_cast<size_t>(size) > bufferSize) {
@@ -529,16 +506,20 @@ static std::string Hex(const unsigned long value, const int width) {
     return hex.str();
 }
 
-// one namespace per entry, one tile index per include, plus the entry's load
-// address (for BankOf()), ppu address and size
+// one namespace per entry: a nested `lma` namespace giving every include's
+// tile index in character rom, plus the entry's load address (for BankOf())
+// and size. Nothing here says where the ppu sees an entry -- that is not a
+// property of how it was packed, and whatever banks the entry in is what
+// decides it.
 bool GenerateHeader() {
     static constexpr std::string_view lmaSymbol  = "__lma";
-    static constexpr std::string_view vmaSymbol  = "__vma";
     static constexpr std::string_view sizeSymbol = "__size";
 
-    // function-like macro packing the three above into one argument list, so
-    // a call site names an entry once instead of spelling all three out
-    static constexpr std::string_view macroName = "GetCharacterEntryInformation";
+    // Nested namespace holding every include's tile index in CHARACTER ROM.
+    // Nested rather than sitting directly in the entry so a call site says
+    // which space it means, which matters where the index is then translated
+    // into one the ppu reads (ppu::ChrWindow).
+    static constexpr std::string_view lmaNamespace = "lma";
 
     std::ostringstream header;
     header << "#pragma once\n\n"
@@ -546,19 +527,7 @@ bool GenerateHeader() {
     if (manifestPath) header << " from " << manifestPath;
     header << " -- do not edit\n\n";
 
-    // the three placement constants below are only ever wanted together, and
-    // always in this order -- a mapper's CHR bankswitch takes exactly them.
-    // Guarded rather than bare: two generated headers in one translation unit
-    // would otherwise redefine it, and both spellings are identical anyway.
-    header << "// Expands one entry below into its three placement constants,\n"
-              "// in the order a CHR bankswitch takes them:\n"
-              "//\n"
-              "//     mmc3::SwitchCharactersBy<" << macroName << "(blob::ui)>();\n"
-              "#ifndef " << macroName << "\n"
-              "#define " << macroName << "(entry) entry::" << lmaSymbol
-           << ", entry::" << vmaSymbol << ", entry::" << sizeSymbol << "\n"
-              "#endif\n\n"
-              "namespace blob {\n";
+    header << "namespace blob {\n";
 
     for (size_t i = 0; i < entryCount; i++) {
         const entry& e = entries[i];
@@ -572,13 +541,13 @@ bool GenerateHeader() {
         // resolve every symbol first so the '=' column can be padded to match
         struct genSymbol {
             std::string         name;   // folded identifier
-            int                 tile{}; // tile index it resolves to
+            int                 rom{};  // character rom tile index it resolves to
             const blobInclude*  from{}; // include that produced it
         };
 
         std::vector<genSymbol> symbols;
         symbols.reserve(e.files.size());
-        size_t widest = std::max({ lmaSymbol.size(), vmaSymbol.size(), sizeSymbol.size() });
+        size_t widest = std::max(lmaSymbol.size(), sizeSymbol.size());
 
         for (const blobInclude& f : e.files) {
             const std::string symbol = MakeIdentifier(f.name);
@@ -588,7 +557,7 @@ bool GenerateHeader() {
                 return false;
             }
 
-            if (symbol == lmaSymbol || symbol == vmaSymbol || symbol == sizeSymbol) {
+            if (symbol == lmaSymbol || symbol == sizeSymbol || symbol == lmaNamespace) {
                 std::cout << "include symbol collides with " << symbol << ": " << f.name
                           << ", in entry: " << e.name << '\n';
                 return false;
@@ -611,32 +580,42 @@ bool GenerateHeader() {
                 return false;
             }
 
-            // VMA is a ppu byte address, so it divides down into the tile index
-            // the hardware sees inside whichever pattern table it selects
-            const int tile = (e.VMA + f.offset) / tileSize & 0xFF;
+            // LMA is a byte offset into the character rom image, so it divides
+            // down the same way -- but into an index of the whole image rather
+            // than of a 256-tile pattern table, so there is nothing to mask: a
+            // 16 KiB blob alone is 1024 tiles.
+            const int rom = (e.LMA + f.offset) / tileSize;
 
-            symbols.push_back({ symbol, tile, &f });
+            symbols.push_back({ symbol, rom, &f });
             widest = std::max(widest, symbol.size());
         }
 
         header << "\n    // " << e.name << " entry\n"
                   "    namespace " << entryName << " {\n";
 
-        for (const genSymbol& s : symbols) {
-            header << "        constexpr unsigned char " << std::left << std::setw(static_cast<int>(widest))
-                   << s.name << " = " << Hex(static_cast<unsigned long>(s.tile), 2) << ";\n";
-        }
-
         header << "        constexpr unsigned long " << std::left << std::setw(static_cast<int>(widest))
                << lmaSymbol << " = " << Hex(static_cast<unsigned long>(e.LMA), 4)
                << "; // used for BankOf()\n"
                   "        constexpr unsigned long " << std::left << std::setw(static_cast<int>(widest))
-               << vmaSymbol << " = " << Hex(static_cast<unsigned long>(e.VMA), 4)
-               << "; // where the ppu sees the entry\n"
-                  "        constexpr unsigned long " << std::left << std::setw(static_cast<int>(widest))
                << sizeSymbol << " = " << Hex(static_cast<unsigned long>(e.size), 4)
-               << "; // bytes the entry occupies\n"
-                  "    }\n";
+               << "; // bytes the entry occupies\n";
+
+        // Every include, as a tile index into the character rom image.
+        // unsigned short, not char: this indexes the whole image, which passes
+        // 0xff inside the first 16 KiB -- unlike a ppu tile index, which is a
+        // byte because that is all the hardware reads.
+        if (!symbols.empty()) {
+            header << "\n        // every include, as a tile index into character rom\n"
+                      "        namespace " << lmaNamespace << " {\n";
+            for (const genSymbol& s : symbols) {
+                header << "            constexpr unsigned short " << std::left
+                       << std::setw(static_cast<int>(widest)) << s.name << " = "
+                       << Hex(static_cast<unsigned long>(s.rom), 4) << ";\n";
+            }
+            header << "        }\n";
+        }
+
+        header << "    }\n";
     }
 
     header << "}\n";

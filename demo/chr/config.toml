@@ -3,7 +3,6 @@ size            = 0x4000    # 16KiB CHR
 
 [normalSprites]
 LMA             = 0x0000    # begin
-VMA             = 0x1000    # sprite begin
 size            = 0x0800    # 2KiB sprite hunk
 includes        = [
     "./assets/sprites/enemies/mushlet/mushlet_standing.chr",
@@ -17,7 +16,6 @@ includes        = [
 
 [dynamicLevelTiles]
 LMA             = 0x1000    # dynamic tiles begin
-VMA             = 0x0000    # dynamic tiles
 size            = 0x0400    # 1KiB tile hunk
 includes        = [
     "./assets/tiles/dynamic/box.chr",
@@ -27,7 +25,6 @@ includes        = [
 
 [staticLevelTiles]
 LMA             = 0x1400    # static tiles begin
-VMA             = 0x0400    # static tiles
 size            = 0x0400    # 1KiB tile hunk
 includes        = [
     "./assets/tiles/static/air.chr",
@@ -40,7 +37,6 @@ includes        = [
 
 [ui]
 LMA             = 0x1800    # ui begin
-VMA             = 0x400     # ui tiles
 size            = 0x0400    # 1KiB tile hunk
 includes        = [
     "./assets/tiles/static/ui/arrow.chr",

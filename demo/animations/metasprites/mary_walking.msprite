@@ -11,8 +11,8 @@ name  = "frame_1"
 timer = 8
 public = true    # name this frame's bytes in the generated header
 sprites = [
-    { col = 0, row = 0, id = 0x08, pattern = 0x09, entry = "normalSprites", include = "player_walking1", tile = 0, flip_h = false, flip_v = false },
-    { col = 1, row = 0, id = 0x0a, pattern = 0x0b, entry = "normalSprites", include = "player_walking1", tile = 2, flip_h = false, flip_v = false },
+    { col = 0, row = 0, id = 0x08, pattern = 0x09, frame = "sprites", entry = "normalSprites", include = "player_walking1", tile = 0, flip_h = false, flip_v = false },
+    { col = 1, row = 0, id = 0x0a, pattern = 0x0b, frame = "sprites", entry = "normalSprites", include = "player_walking1", tile = 2, flip_h = false, flip_v = false },
 ]
 
 [[frame]]
@@ -20,8 +20,8 @@ name  = "frame_2"
 timer = 8
 public = true    # name this frame's bytes in the generated header
 sprites = [
-    { col = 0, row = 0, id = 0x0c, pattern = 0x0d, entry = "normalSprites", include = "player_walking2", tile = 0, flip_h = false, flip_v = false },
-    { col = 1, row = 0, id = 0x0e, pattern = 0x0f, entry = "normalSprites", include = "player_walking2", tile = 2, flip_h = false, flip_v = false },
+    { col = 0, row = 0, id = 0x0c, pattern = 0x0d, frame = "sprites", entry = "normalSprites", include = "player_walking2", tile = 0, flip_h = false, flip_v = false },
+    { col = 1, row = 0, id = 0x0e, pattern = 0x0f, frame = "sprites", entry = "normalSprites", include = "player_walking2", tile = 2, flip_h = false, flip_v = false },
 ]
 
 [[frame]]
@@ -29,6 +29,6 @@ name  = "frame_3"
 timer = 8
 public = true    # name this frame's bytes in the generated header
 sprites = [
-    { col = 0, row = 0, id = 0x10, pattern = 0x11, entry = "normalSprites", include = "player_walking3", tile = 0, flip_h = false, flip_v = false },
-    { col = 1, row = 0, id = 0x12, pattern = 0x13, entry = "normalSprites", include = "player_walking3", tile = 2, flip_h = false, flip_v = false },
+    { col = 0, row = 0, id = 0x10, pattern = 0x11, frame = "sprites", entry = "normalSprites", include = "player_walking3", tile = 0, flip_h = false, flip_v = false },
+    { col = 1, row = 0, id = 0x12, pattern = 0x13, frame = "sprites", entry = "normalSprites", include = "player_walking3", tile = 2, flip_h = false, flip_v = false },
 ]

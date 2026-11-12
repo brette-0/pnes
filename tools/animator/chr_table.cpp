@@ -98,7 +98,32 @@ bool readInclude(const std::filesystem::path& manifestDir,
 
 } // namespace
 
-std::optional<Table> loadManifest(const std::filesystem::path& path, TileMode mode, std::string& error) {
+namespace {
+
+/// Where one entry's tiles take their ids from. An entry reached through two
+/// frames has two of these, and is decoded once per frame -- the same pixels
+/// under two different ids, which is what being banked in two arrangements
+/// means.
+struct Placement {
+    std::size_t frame = 0;       ///< Index into Table::frames; meaningless unless ::numbered.
+    bool        numbered = false;///< False for a frameless load: the tiles get no id at all.
+    int         baseId = 0;      ///< Id of the entry's first tile, i.e. the window's base.
+    int         half = 0;        ///< Pattern table the ids live in, as bit 0 of an 8x16 pattern byte.
+    int         window = -1;     ///< Window within the frame.
+};
+
+} // namespace
+
+std::optional<Table> loadManifest(const std::filesystem::path& path, TileMode mode,
+                                  std::string& error) {
+    // A frameless load is the browsing case, not a separate format -- so it is
+    // the same function with nothing to reach the tiles through.
+    static const std::vector<Frame> none;
+    return loadManifest(path, mode, none, error);
+}
+
+std::optional<Table> loadManifest(const std::filesystem::path& path, TileMode mode,
+                                  const std::vector<Frame>& frames, std::string& error) {
     toml::table config;
     try {
         config = toml::parse_file(path.string());
@@ -154,28 +179,15 @@ std::optional<Table> loadManifest(const std::filesystem::path& path, TileMode mo
             return std::nullopt;
         }
 
-        const std::int64_t vma = (*entryTable)["VMA"].value_or<std::int64_t>(-1);
-        if (vma < 0) {
-            error = "positive integer member 'VMA' missing from entry: " + name;
-            return std::nullopt;
-        }
-        if (vma % kTileBytes) {
-            error = "VMA for entry: " + name + " is not on a tile boundary";
-            return std::nullopt;
-        }
-
         const std::int64_t size = (*entryTable)["size"].value_or<std::int64_t>(-1);
         if (size <= 0) {
             error = "positive non-zero integer member 'size' missing from entry: " + name;
             return std::nullopt;
         }
 
-        // Tile ids are a single byte, so an entry has to stay inside the one
-        // pattern table its VMA lands in -- blobman rejects this too.
-        if (vma / kPatternTableBytes != (vma + size - 1) / kPatternTableBytes) {
-            error = "entry: " + name + " straddles a pattern table boundary at its VMA";
-            return std::nullopt;
-        }
+        // Nothing here checks where the PPU would see the entry: an entry does
+        // not claim a PPU address any more, so there is no straddle question
+        // to ask. A window's fit inside its frame is where that now lands.
         if (lma + size > blobSize) {
             error = "entry: " + name + " does not fit inside the blob";
             return std::nullopt;
@@ -184,7 +196,6 @@ std::optional<Table> loadManifest(const std::filesystem::path& path, TileMode mo
         Entry entry;
         entry.name = name;
         entry.lma  = static_cast<std::uint32_t>(lma);
-        entry.vma  = static_cast<std::uint32_t>(vma);
         entry.size = static_cast<std::uint32_t>(size);
 
         std::vector<Include> includes;
@@ -263,60 +274,190 @@ std::optional<Table> loadManifest(const std::filesystem::path& path, TileMode mo
         }
     }
 
-    // One cell per tile, or per even-aligned tile pair in 8x16 mode.
-    for (std::size_t e = 0; e < table.entries.size(); ++e) {
-        const Entry& entry = table.entries[e];
+    // Frames are the id space every cell below is numbered in, so they are
+    // validated before any cell is given an id out of one. Resolving them to
+    // placements here also means the cell loop never searches: an entry either
+    // has somewhere its tiles are reached from, or it has no cells.
+    table.frames = frames;
 
-        for (const Include& include : entryIncludes[e]) {
-            // Round up: a short final tile is shown zero-padded (warned above).
-            const int tiles = static_cast<int>((include.data.size() + kTileBytes - 1) / kTileBytes);
+    std::vector<std::vector<Placement>> placements(table.entries.size());
 
-            for (int tile = 0; tile < tiles;) {
-                // The VMA is a PPU byte address, so it divides down into the
-                // tile id the hardware sees inside whichever pattern table it
-                // selects -- exactly how blobman derives its symbols.
-                const std::uint32_t tileVma =
-                    entry.vma + include.offset + static_cast<std::uint32_t>(tile) * kTileBytes;
-                const int id = static_cast<int>((tileVma / kTileBytes) & 0xFF);
+    for (std::size_t f = 0; f < frames.size(); ++f) {
+        const Frame& frame = frames[f];
 
-                // Which pattern table that VMA lands in. The mask above drops
-                // it -- an id is an index WITHIN a table, which is what the
-                // sheet shows and what blobman's symbols are -- so it is kept
-                // here and folded into the pattern byte below.
-                const int half = static_cast<int>(tileVma / kPatternTableBytes) & 1;
+        if (frame.name.empty()) {
+            error = "frame " + std::to_string(f) + " has no name";
+            return std::nullopt;
+        }
+        for (std::size_t g = 0; g < f; ++g) {
+            // A sprite names its frame, so two frames with one name would make
+            // which ids it meant a coin toss.
+            if (frames[g].name == frame.name) {
+                error = "two frames are both named: " + frame.name;
+                return std::nullopt;
+            }
+        }
+        if (frame.windows.empty()) {
+            error = "frame: " + frame.name + " declares no windows";
+            return std::nullopt;
+        }
+        // Equally sized is the whole premise -- a count that does not divide
+        // the id range would leave a window shorter than its neighbours and
+        // the base of every window after it would stop being a multiple of
+        // anything.
+        if (kFrameTiles % static_cast<int>(frame.windows.size())) {
+            error = "frame: " + frame.name + " has " + std::to_string(frame.windows.size()) +
+                    " windows, which does not divide the " + std::to_string(kFrameTiles) +
+                    " tiles of a frame";
+            return std::nullopt;
+        }
+        if (frame.patternTable != 0 &&
+            frame.patternTable != static_cast<std::uint32_t>(kPatternTableBytes)) {
+            error = "frame: " + frame.name + " has pattern table " + hex(frame.patternTable) +
+                    ", which is neither 0x0000 nor " + hex(kPatternTableBytes);
+            return std::nullopt;
+        }
 
-                // In 8x16 sprite mode the pattern byte's bit 0 selects the
-                // pattern table and bits 7-1 select the pair, so a pair is
-                // always an EVEN id followed by that id | 1. A pair can
-                // therefore only start on an even tile, and an include whose
-                // tiles do not pair up cleanly gets its odd tile shown on its
-                // own rather than silently mispaired.
-                const bool pairable = mode == TileMode::Size8x16 && (id % 2) == 0 && tile + 1 < tiles;
-                const int height = pairable ? 2 : 1;
+        const int windowTiles = kFrameTiles / static_cast<int>(frame.windows.size());
+        const int windowBytes = windowTiles * kTileBytes;
+        const int half = frame.patternTable ? 1 : 0;
 
-                if (mode == TileMode::Size8x16 && !pairable) {
-                    table.warnings.push_back(
-                        include.name + " tile " + std::to_string(tile) + " (id " + hex(static_cast<std::uint64_t>(id)) +
-                        ") has no 8x16 partner" + ((id % 2) ? " -- it starts on an odd tile id" : " -- odd tile count") +
-                        ", shown as 8x8");
+        for (std::size_t w = 0; w < frame.windows.size(); ++w) {
+            // An unnamed window is deliberate: it reserves its slice of the id
+            // range for whatever the game banks there, which this tool has no
+            // art for and no need to know about.
+            if (frame.windows[w].empty()) continue;
+
+            std::size_t index = table.entries.size();
+            for (std::size_t n = 0; n < table.entries.size(); ++n) {
+                if (table.entries[n].name == frame.windows[w]) {
+                    index = n;
+                    break;
                 }
+            }
+            if (index == table.entries.size()) {
+                error = "frame: " + frame.name + " window " + std::to_string(w) +
+                        " names an entry the manifest does not have: " + frame.windows[w];
+                return std::nullopt;
+            }
 
-                Cell cell;
-                cell.id             = id;
-                // 8x16: bits 7-1 are the pair (always even, per the pairable
-                // test) and bit 0 is the half, so the VMA survives into OAM.
-                // 8x8: PPUCTRL picks the half, so the id goes out as-is.
-                cell.patternByte    = height == 2 ? ((id & 0xFE) | half) : id;
-                cell.entry          = e;
-                cell.include        = include.name;
-                cell.tileInInclude  = tile;
-                cell.heightTiles    = height;
-                cell.pixels         = decodeTiles(include.data,
-                                                  static_cast<std::size_t>(tile) * kTileBytes,
-                                                  height);
-                table.cells.push_back(std::move(cell));
+            for (const Placement& taken : placements[index]) {
+                if (taken.numbered && taken.frame == f) {
+                    error = "frame: " + frame.name + " holds entry " + frame.windows[w] +
+                            " in two windows, so its tiles would have two ids in one frame";
+                    return std::nullopt;
+                }
+            }
 
-                tile += height;
+            const Entry& entry = table.entries[index];
+            if (entry.size > static_cast<std::uint32_t>(windowBytes)) {
+                error = "entry: " + entry.name + " is " + hex(entry.size) +
+                        " bytes, which does not fit the " + hex(windowBytes) +
+                        "-byte windows of frame: " + frame.name;
+                return std::nullopt;
+            }
+            if (entry.size < static_cast<std::uint32_t>(windowBytes)) {
+                table.warnings.push_back(entry.name + " fills " + hex(entry.size) + " of the " +
+                                         hex(windowBytes) + "-byte window " + std::to_string(w) +
+                                         " of frame " + frame.name +
+                                         " -- the ids above it belong to whatever else is banked there");
+            }
+
+            placements[index].push_back({
+                f,
+                true,
+                static_cast<int>(w) * windowTiles,
+                half,
+                static_cast<int>(w),
+            });
+        }
+    }
+
+    // No frames at all: every entry still contributes its art, unnumbered.
+    // There is nothing to number it from -- an id is what a frame makes of a
+    // tile, and there is no frame. See loadManifest's comment.
+    if (frames.empty()) {
+        for (std::size_t e = 0; e < table.entries.size(); ++e) {
+            placements[e].push_back({ 0, false, 0, 0, -1 });
+        }
+    }
+
+    // One cell per tile, or per even-aligned tile pair in 8x16 mode -- once
+    // per placement, so an entry two frames reach appears under both.
+    for (std::size_t e = 0; e < table.entries.size(); ++e) {
+        for (const Placement& placement : placements[e]) {
+            for (const Include& include : entryIncludes[e]) {
+                // Round up: a short final tile is shown zero-padded (warned above).
+                const int tiles = static_cast<int>((include.data.size() + kTileBytes - 1) / kTileBytes);
+
+                for (int tile = 0; tile < tiles;) {
+                    // Where the tile sits in its entry, which is all the manifest
+                    // decides. Everything else about an id comes from the frame.
+                    const std::uint32_t tileInEntry =
+                        (include.offset + static_cast<std::uint32_t>(tile) * kTileBytes) / kTileBytes;
+
+                    // The window's base plus the offset into it. No mask: the
+                    // entry was checked to fit its window, so this cannot leave
+                    // the frame. Unnumbered when no frame reached it at all.
+                    const int id = placement.numbered
+                                       ? placement.baseId + static_cast<int>(tileInEntry)
+                                       : kNoId;
+                    const int half = placement.half;
+
+                    // In 8x16 sprite mode the pattern byte's bit 0 selects the
+                    // pattern table and bits 7-1 select the pair, so a pair is
+                    // always an EVEN id followed by that id | 1. A pair can
+                    // therefore only start on an even tile, and an include whose
+                    // tiles do not pair up cleanly gets its odd tile shown on its
+                    // own rather than silently mispaired.
+                    //
+                    // Tested on the offset into the entry rather than on the id,
+                    // so it holds for an unnumbered cell too -- and it is the
+                    // same test either way: every window base is a multiple of
+                    // the window size, which is never odd, so an id's parity is
+                    // always its tileInEntry's parity.
+                    const bool pairable = mode == TileMode::Size8x16 &&
+                                          (tileInEntry % 2) == 0 && tile + 1 < tiles;
+                    const int height = pairable ? 2 : 1;
+
+                    if (mode == TileMode::Size8x16 && !pairable) {
+                        table.warnings.push_back(
+                            include.name + " tile " + std::to_string(tile) +
+                            (placement.numbered
+                                 ? " (id " + hex(static_cast<std::uint64_t>(id)) + " in frame " +
+                                       table.frames[placement.frame].name + ")"
+                                 : "") +
+                            " has no 8x16 partner" +
+                            ((tileInEntry % 2) ? " -- it starts on an odd tile of its entry"
+                                               : " -- odd tile count") +
+                            ", shown as 8x8");
+                    }
+
+                    Cell cell;
+                    cell.id             = id;
+                    // 8x16: bits 7-1 are the pair (always even, per the pairable
+                    // test) and bit 0 is the half, so which pattern table the
+                    // frame sits in survives into OAM.
+                    // 8x8: PPUCTRL picks the half, so the id goes out as-is.
+                    cell.patternByte    = !placement.numbered ? kNoId
+                                          : height == 2       ? ((id & 0xFE) | half)
+                                                              : id;
+                    cell.entry          = e;
+                    cell.frame          = placement.numbered
+                                              ? table.frames[placement.frame].name
+                                              : std::string();
+                    cell.window         = placement.window;
+                    cell.include        = include.name;
+                    cell.tileInInclude  = tile;
+                    cell.tileInEntry    = static_cast<int>(tileInEntry);
+                    cell.heightTiles    = height;
+                    cell.pixels         = decodeTiles(include.data,
+                                                      static_cast<std::size_t>(tile) * kTileBytes,
+                                                      height);
+                    table.cells.push_back(std::move(cell));
+
+                    tile += height;
+                }
             }
         }
     }

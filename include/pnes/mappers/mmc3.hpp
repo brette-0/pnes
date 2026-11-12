@@ -106,9 +106,8 @@ public:
      *
      * Not a per-chip constant: D7 travels in the bank-select byte, so it is
      * re-sent by every $8000 write and a game may legitimately use different
-     * geometry at different times. ::SwitchBank, ::SwitchCHRBank and
-     * ::SwitchCharactersBy therefore take it as a template parameter,
-     * defaulted to ::kChrMode.
+     * geometry at different times. ::SwitchBank and ::SwitchCHRBank therefore
+     * take it as a template parameter, defaulted to ::kChrMode.
      */
     enum class chrMode : u8 {
         /// Mode 0 (D7 = 0), the chip's own power-on arrangement: R0/R1 are
@@ -456,6 +455,36 @@ public:
     }
 
     /**
+     * @brief ::SwitchCHRBank with the bank known at compile time, which is the
+     *        form that can check it.
+     *
+     * Prefer this wherever the bank is a constant -- which is every ::BankOf
+     * call -- because a 2 KiB window ignores its bank number's low bit (see
+     * ::chr0Control), so an odd bank in R0/R1 quietly maps the 2 KiB-aligned
+     * pair below what was asked for. That is a static_assert here and
+     * undetectable in the overload above, where the bank only exists at run
+     * time.
+     *
+     * R0/R1 are the 2 KiB windows under BOTH ::chrMode values -- D7 moves
+     * which addresses they cover, not their width -- so the check needs no
+     * mode and is correct whatever D7 is asserting.
+     *
+     * The runtime overload stays for a bank a game genuinely computes (CHR
+     * cycled per frame, say); it simply cannot be checked.
+     *
+     * @tparam Bank Target bank in 1 KiB units, usually ::BankOf of a packed
+     *              set's load address.
+     */
+    template <u8 Bank, chrMode Mode = kChrMode, u8 Index>
+    static constexpr void SwitchCHRBank(Register<Index> &reg) {
+        static_assert(Index <= 5, "SwitchCHRBank only valid for chr0Control-chr5Control (R0-R5).");
+        static_assert(Index > 1 || Bank % 2 == 0,
+                      "SwitchCHRBank: R0/R1 are MMC3's 2 KiB windows, which round an odd 1 KiB "
+                      "bank down -- pack the characters 2 KiB-aligned in CHR ROM");
+        reg.set(Bank, Mode);
+    }
+
+    /**
      * @brief Size of one CHR bank as MMC3's CHR registers count them: 1 KiB,
      *        for EVERY CHR register, R0/R1's 2 KiB windows included -- those
      *        just ignore the value's low bit (see ::chr0Control). That is what
@@ -476,8 +505,7 @@ public:
      * packed, so a game banks one in by offset rather than by a hand-counted
      * bank number:
      *
-     *     mmc3::SwitchCHRBank(mmc3::chr4Control,
-     *                         mmc3::BankOf<blob::ui::__lma>());
+     *     mmc3::SwitchCHRBank<mmc3::BankOf<blob::ui::__lma>()>(mmc3::chr4Control);
      *
      * @p Lma is a template parameter, not an argument, so both checks below
      * are compile-time: an offset that is not on a bank boundary cannot be
@@ -506,79 +534,6 @@ public:
      *        pattern tables ($0000-$1FFF).
      */
     static constexpr u32 kChrSpaceSize = 0x2000;
-
-    /**
-     * @brief Banks in one packed character set, writing every CHR register
-     *        whose window its PPU range touches.
-     *
-     * Described BY its three placement numbers, hence the name -- where the
-     * characters were packed, where the PPU sees them, how far they reach --
-     * and nothing else is needed. Those are exactly the three constants
-     * blobman emits per packed set (tools/blobman, `__lma`/`__vma`/`__size`),
-     * though any source of the same three numbers does just as well. All
-     * three are template parameters, so the window-to-register resolution,
-     * the offset arithmetic and every ::BankOf call fold away entirely --
-     * what is left is the bare $8000/$8001 port pokes, one pair per window,
-     * with literal operands:
-     *
-     *     mmc3::SwitchCharactersBy<blob::normalSprites::__lma,
-     *                              blob::normalSprites::__vma,
-     *                              blob::normalSprites::__size>();
-     *
-     * blobman's header also emits a macro packing those three in this
-     * function's own parameter order, which is how a call site usually names
-     * a set -- once, rather than three times:
-     *
-     *     mmc3::SwitchCharactersBy<
-     *         GetCharacterEntryInformation(blob::normalSprites)>();
-     *
-     * That replaces hand-picking the registers a set lands in and hand-adding
-     * the per-window bank offsets -- the error the three static_asserts here
-     * now catch at compile time instead.
-     *
-     * WINDOWS ARE NOT SUBDIVIDED. Each covered window is pointed at the set's
-     * own bank for that window's start, so a window the set does not fill to
-     * the end keeps showing whatever follows it in CHR ROM for the remainder
-     * -- padding, or the next set along if one is packed there. That is
-     * MMC3's granularity, not a choice here: under CHR mode 1 a 1 KiB set at
-     * PPU $1000 can only be banked by R0, which is 2 KiB wide. A set relying
-     * on its neighbour filling the rest of a window still wants its own
-     * assert that the two are packed adjacently -- ::BankOf of both, compared
-     * -- since this call cannot see that intent.
-     *
-     * @tparam Lma  Byte offset into CHR ROM the characters are packed at.
-     * @tparam Vma  PPU address they are seen at; must be the start of one of
-     *              @p Mode's six windows.
-     * @tparam Size Their length in bytes.
-     * @tparam Mode Which ::chrMode to resolve the windows under, and to
-     *              assert in D7 while writing them. Last so the three
-     *              placement numbers stay in blobman's own order; defaulted,
-     *              so naming it is opt-in.
-     */
-    template <u32 Lma, u32 Vma, u32 Size, chrMode Mode = kChrMode>
-    static constexpr void SwitchCharactersBy() {
-        static_assert(Size > 0, "SwitchCharactersBy: character set is empty");
-        static_assert(Vma + Size <= kChrSpaceSize,
-                      "SwitchCharactersBy: character set runs past the 8 KiB "
-                      "of PPU pattern-table space the CHR registers cover");
-        static_assert(Detail::StartsAChrWindow(Mode, Vma),
-                      "SwitchCharactersBy: Vma is not the start of a CHR "
-                      "window under this chrMode -- fineFirst starts windows "
-                      "at PPU $0000, $0400, $0800, $0C00, $1000 and $1800, "
-                      "coarseFirst at $0000, $0800, $1000, $1400, $1800 and "
-                      "$1C00, and no register can point at a window's "
-                      "interior");
-
-        // one line per window rather than a pack fold: six is the whole set,
-        // and each call compiles to nothing at all unless its window is one
-        // the characters actually reach
-        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 0>();
-        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 1>();
-        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 2>();
-        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 3>();
-        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 4>();
-        Detail::SwitchCHRWindow<Mode, Lma, Vma, Size, 5>();
-    }
 
     /**
      * @brief Arms MMC3's scanline IRQ counter to fire after @p scanline more
@@ -858,102 +813,6 @@ private:
         /// comment); MMC3 has no windowIndex-2 register to switch to.
         static constexpr u16 kWindowBase = 0x8000;
         static constexpr u16 kWindowSize = 0x2000;
-
-        /// One CHR window under mode 1: which register points it somewhere,
-        /// where the PPU sees it, and how much PPU space it covers. The
-        /// register index doubles as the $8000 select value (see ::kModeBits).
-        struct chrWindow_t {
-            u8  index;  ///< CHR register R0-R5 backing this window
-            u16 vma;    ///< PPU address the window starts at
-            u16 size;   ///< bytes of PPU space it covers
-        };
-
-        /// How many CHR windows the chip has, in either ::chrMode -- six
-        /// registers, so six windows; only their widths and addresses move.
-        static constexpr u8 kChrWindowCount = 6;
-
-        /// The six windows under ::chrMode::coarseFirst, in PPU order -- the
-        /// table form of that enumerator's own comment.
-        static constexpr chrWindow_t kWindowsCoarseFirst[kChrWindowCount] = {
-            { 0, 0x0000, 0x0800 },
-            { 1, 0x0800, 0x0800 },
-            { 2, 0x1000, 0x0400 },
-            { 3, 0x1400, 0x0400 },
-            { 4, 0x1800, 0x0400 },
-            { 5, 0x1C00, 0x0400 },
-        };
-
-        /// The six windows under ::chrMode::fineFirst, in PPU order. Same
-        /// registers, halves swapped -- which is all D7 does.
-        static constexpr chrWindow_t kWindowsFineFirst[kChrWindowCount] = {
-            { 2, 0x0000, 0x0400 },
-            { 3, 0x0400, 0x0400 },
-            { 4, 0x0800, 0x0400 },
-            { 5, 0x0C00, 0x0400 },
-            { 0, 0x1000, 0x0800 },
-            { 1, 0x1800, 0x0800 },
-        };
-
-        /// Window @p w under @p mode. By value and by index rather than
-        /// handing back one of the two tables, so @p mode can be an ordinary
-        /// argument -- a reference-to-array return would need the mode to be
-        /// a template parameter just to name its type.
-        static constexpr chrWindow_t ChrWindowAt(const chrMode mode, const u8 w) {
-            return mode == chrMode::fineFirst ? kWindowsFineFirst[w]
-                                              : kWindowsCoarseFirst[w];
-        }
-
-        /// True when @p vma is where one of @p mode's windows begins -- the
-        /// only PPU addresses characters can be banked to under that mode.
-        /// See ::SwitchCharactersBy's third static_assert.
-        static constexpr bool StartsAChrWindow(const chrMode mode, const u32 vma) {
-            for (u8 w = 0; w < kChrWindowCount; w++) {
-                if (ChrWindowAt(mode, w).vma == vma) return true;
-            }
-
-            return false;
-        }
-
-        /// The CHR register backing ::kChrWindows[W], as a reference to the
-        /// real object so ::SwitchCHRBank updates the right shadow. Six
-        /// distinct types (Register<0> through Register<5>), so this resolves
-        /// an index to one of them rather than returning a common base.
-        template <u8 Index>
-        static constexpr auto &ChrRegister() {
-            static_assert(Index <= 5, "ChrRegister: MMC3 has CHR registers R0-R5 only.");
-            if      constexpr (Index == 0) return chr0Control;
-            else if constexpr (Index == 1) return chr1Control;
-            else if constexpr (Index == 2) return chr2Control;
-            else if constexpr (Index == 3) return chr3Control;
-            else if constexpr (Index == 4) return chr4Control;
-            else                           return chr5Control;
-        }
-
-        /// Points @p Mode's window @p W at the character set described by
-        /// @p Lma / @p Vma / @p Size, or compiles to nothing when those
-        /// characters do not reach that window. The `if constexpr` is what
-        /// keeps ::BankOf from being instantiated -- and its own
-        /// static_asserts from firing -- for a window they never touch.
-        /// Implementation of ::SwitchCharactersBy; not for direct use.
-        template <chrMode Mode, u32 Lma, u32 Vma, u32 Size, u8 W>
-        static constexpr void SwitchCHRWindow() {
-            constexpr chrWindow_t win = ChrWindowAt(Mode, W);
-
-            if constexpr (win.vma >= Vma && win.vma < Vma + Size) {
-                constexpr u8 bank = BankOf<Lma + (win.vma - Vma)>();
-
-                // a 2 KiB window ignores its bank number's low bit (see
-                // ::chr0Control), so an odd bank there would quietly map the
-                // 2 KiB-aligned pair below it instead of what was asked for
-                static_assert(win.size == kChrBankSize || bank % 2 == 0,
-                              "SwitchCharactersBy: character set lands in one "
-                              "of MMC3's 2 KiB windows (R0/R1) on an odd 1 KiB "
-                              "bank, which hardware rounds down -- pack it "
-                              "2 KiB-aligned in CHR ROM");
-
-                SwitchCHRBank<Mode>(ChrRegister<win.index>(), bank);
-            }
-        }
 
         /**
          * @brief Implementation of ::mmc3::Long / ::CallInSection once the

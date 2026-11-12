@@ -52,11 +52,13 @@ every stamp comes from, so it stays visible whichever metasprite is being
 worked on. `chr_table.hpp` is the read side of blobman: it parses the
 manifest with the same validation blobman applies, loads every include, and
 builds a table of cells -- one per 8x8 tile, or per 8x16 tile pair -- each
-carrying the PPU tile id (`(VMA + offset) / 16 & 0xFF`, exactly how blobman
-derives the symbols in `chr.h`), the byte OAM takes for it (that id with the
-pattern-table half the VMA lands in folded into bit 0, for an 8x16 cell -- see
-*What a header holds*), the entry and include it came from, and its pixels as
-black-RGB palette indices. `tile_canvas.hpp` draws that 16 cells
+carrying the PPU tile id its **frame** gives it (`window base + offset into the
+window`, see *Frames*), the byte OAM takes for it (that id with the
+pattern-table half of the frame folded into bit 0, for an 8x16 cell -- see
+*What a header holds*), the frame and window it was reached through, the entry
+and include it came from, and its pixels as black-RGB palette indices. Only
+tiles a frame reaches become cells at all: a sprite draws from a frame, not
+from the whole of character ROM. `tile_canvas.hpp` draws that 16 cells
 across, scrolling vertically, at an integer zoom derived from the monitor's
 vertical resolution (32px/tile at 1080p, 64px at 4K). Hovering a cell reports
 its entry, include, tile index, id and size; clicking picks it.
@@ -200,7 +202,18 @@ tile_mode   = "8x16"                      # "8x8" or "8x16"
 files       = [
     "player_walk.msprite",
 ]
+
+[[frame]]
+name          = "sprites"
+pattern_table = 0x1000                    # 0x0000 or 0x1000
+windows       = [
+    "normalSprites",                      # window 0 -- ids 0x00-0x7f
+    "",                                   # window 1 -- ids 0x80-0xff, not ours
+]
 ```
+
+Frames can be written by hand like this, or authored in *Window -> Frames...*
+(see *Frames*); the editor writes exactly this shape.
 
 ```toml
 # metasprites/player_walk.msprite
@@ -214,7 +227,7 @@ name  = "walk_1"
 timer = 8
 public = true    # optional; names this frame's bytes in the generated header
 sprites = [
-    { col = 0, row = 0, id = 0x40, entry = "normalSprites", include = "player_standing", tile = 2, flip_h = false, flip_v = false },
+    { col = 0, row = 0, id = 0x40, frame = "sprites", entry = "normalSprites", include = "player_standing", tile = 2, flip_h = false, flip_v = false },
 ]
 ```
 
@@ -224,12 +237,16 @@ Notes on the format:
   move or check out together.
 * Array order is the ordering: `files` is metasprite order, `[[frame]]` order is
   play order, and `sprites` order is placement (draw) order.
-* A sprite names its art by `entry`/`include`/`tile`, not by `id` alone -- an id
-  is ambiguous, since two entries at the same offset into their VMAs share ids
-  (`demo/chr/chr.h` has several). `id` is written anyway because it is what a
-  consumer puts in OAM. On load, `entry`/`include`/`tile` is matched first and
-  the id is the fallback for a manifest reorganised since the save; a sprite
-  matching neither is skipped and counted on stderr.
+* A sprite names its art by `frame`/`entry`/`include`/`tile`, not by `id` alone
+  -- an id is ambiguous, since two entries at the same offset into their windows
+  share ids (`demo/chr/chr.h` has several), and the frame is what turns an offset
+  into an id at all. `id` is written anyway because it is what a consumer puts in
+  OAM. On load, `frame`/`entry`/`include`/`tile` is matched first and the id is
+  the fallback for a manifest reorganised since the save; a sprite matching
+  neither is skipped and counted on stderr. A `.msprite` with no `frame` key
+  predates frames and reads back as the project's first one.
+* Frames live in the `.anim` as `[[frame]]` tables, for the same reason palettes
+  do -- they belong to the project, not to one metasprite. See *Frames*.
 * Palettes live in the `.anim` as `[[palette]]` tables, since they are shared by
   every metasprite; each `.msprite` names the one it uses in `[metasprite]
   palette`. A name, not an index, so adding or removing a palette cannot
@@ -246,6 +263,94 @@ Notes on the format:
   so two metasprites swapping names cannot lose one.
 * Two metasprites whose names fold to the same filename stem are refused rather
   than silently overwriting each other.
+
+### Frames
+
+A **frame** is the tile-id space a sprite draws from: `0x00`-`0xff`, divided
+into *N* equally sized windows whose **order** is what gives a tile its id.
+Window 0 holds the lowest ids, and a window is `256 / N` tiles -- "equally
+sized" is the premise, not a setting, which is why the window count has to
+divide 256.
+
+```
+frame "sprites", pattern_table 0x1000, 2 windows of 128 tiles
+
+  ids 0x00 .. 0x7f   window 0   "normalSprites"
+  ids 0x80 .. 0xff   window 1   ""  -- reserved, not ours
+```
+
+A tile's id is **its offset into the window plus that window's base**. Nothing
+else goes into it: where the art was packed in CHR ROM decides which window it
+can be in, never what the id is.
+
+*Window -> Frames...* opens the frame editor (`frame_window.hpp`): the frame
+list down the left, the selected frame's name, pattern table and window count
+in the middle -- with one row per window showing the ids it holds, a dropdown
+of the manifest's entries, and whether what it names fits -- and down the
+right, **the frame itself**.
+
+That preview is the frame as the PPU addresses it: 256 ids, 16 across, so a
+row is one high nibble of the id. Each window is a band, alternating shade so
+where one starts is visible at a glance, labelled with its first id, and filled
+with the art of whatever entry it names, tile by tile. A window naming nothing
+is left as the bare band -- reserved ids are part of the arrangement, not a
+gap -- and so is the tail of a window its entry does not fill. It redraws as
+the frame is edited, so assigning an entry or re-ordering the windows shows
+what the sprites will be numbered in before *OK* is pressed.
+
+The preview reads the manifest **without frames and in 8x8**, which is
+deliberate twice over: a frame being set up has to show art no frame reaches
+yet, and a frame is 256 tile ids whatever height this project's sprites are.
+The editor is
+**modal**, unlike the palette editor, because changing a frame renumbers the
+sheet -- the id under the brush would move while stamping. Applying it reloads
+the sheet, which drops the pick for the same reason a *Reload* does.
+
+Two things the editor does that are easy to miss. A frame **renamed** there is
+followed by every placed sprite that drew through it, reported on the status
+bar -- a sprite records its frame by name, so a rename it did not follow would
+fail the export. And a window naming an entry **this manifest does not have**
+is kept and labelled rather than quietly reset, since dropping it would be an
+edit nobody asked for; it blocks *OK* until it is resolved.
+
+Frames are stored in the `.anim`, never in the blobman manifest, and the
+reason is worth stating plainly: **a frame is a runtime arrangement**. It is
+which regions of character ROM the game intends to have banked in together,
+and in what order. Character generation neither designs a frame nor enforces
+one -- it only says where the art was packed, with `LMA`. Nothing here reads a
+`VMA`: where the PPU sees an entry is not a property of how it was packed, so a
+frame is the **only** thing that gives a tile an id.
+
+Consequences worth knowing:
+
+* **An entry no frame has a window for yields no cells.** Art nothing intends
+  to bank in is not art a sprite can be given, so a sheet with fewer tiles than
+  the manifest holds is the expected outcome. The demo's background entries are
+  exactly this.
+* **An entry in two frames yields its tiles twice**, with the ids each frame
+  gives them -- the same picture genuinely being two different sprites. This is
+  why a sprite records which frame it drew through: without it, re-resolving
+  would pick whichever came first.
+* **A window may name no entry.** It reserves its slice of the id range for
+  whatever else the game banks there, which this tool has no art for and no
+  need to know about.
+* **An entry smaller than its window is allowed and warned about**; one larger
+  than its window is an error. The ids above a partly filled window belong to
+  whatever else is banked there.
+* The `pattern_table` (`0x0000` or `0x1000`) is only read for an 8x16 sprite,
+  where it becomes bit 0 of the pattern byte. An 8x8 sprite takes its half from
+  PPUCTRL instead.
+
+Opening a bare `manifest.toml` with no project has no frames to go on, so
+every tile loads **unnumbered** (`chr::kNoId`): art and provenance, drawable
+and inspectable, with no id and no pattern byte, because without a frame there
+is none to give. The status bar says so, the id column reads `unnumbered`, and
+picking such a tile is refused with the reason -- a sprite with no pattern byte
+is not one anything could export. So a frameless sheet is for looking at, and
+stamping needs a project or a frame.
+
+An export of a project with no frames fails up front for the same reason,
+rather than reporting one unresolved sprite per sprite.
 
 ### Generated code
 
@@ -317,11 +422,16 @@ What is deliberately **not** in a header:
 
 What a slot's byte *does* carry, for an 8x16 one, is the **pattern-table half**
 in bit 0: the hardware reads the pair as bits 7-1 and the half as bit 0, and
-the half is whichever one the entry's VMA puts the art in. The manifest is the
-only thing that knows that, so it is folded in here rather than left to the
-consumer. A bare id handed to OAM does not merely lose the half -- it addresses
-the same index in the *other* pattern table, and draws whatever happens to be
-banked there.
+the half is the one the sprite's frame sits in. The frame is the only thing
+that knows that, so it is folded in here rather than left to the consumer. A
+bare id handed to OAM does not merely lose the half -- it addresses the same
+index in the *other* pattern table, and draws whatever happens to be banked
+there.
+
+Because bit 0 is frozen at export, these bytes are only valid for the frame
+they were exported against. Banking the art through a frame in the other
+pattern table needs a **re-export**, not just a different CHR switch at
+runtime.
 
 A slot nothing was stamped into holds `kNoTile` (`0xff`). That is a convention
 of this data and not of the hardware -- 0xff is a legal tile -- so a metasprite
@@ -350,11 +460,12 @@ format, the code generator) is deliberately Qt-free, which is what makes that
 possible; the designer runs the identical code, so a headless export and a
 *File -> Export All* of the same project write identical bytes.
 
-**Pattern bytes are re-resolved from the manifest on every export**, not taken
-from the `.msprite` files. A saved sprite names the art it was stamped from --
-its entry, its include and the tile index within that include -- and that is
-what survives a CHR edit: repacking an include or moving an entry's VMA
-renumbers tiles, and the sprite still means the same picture. So the manifest
+**Pattern bytes are re-resolved from the manifest and the frames on every
+export**, not taken from the `.msprite` files. A saved sprite names the art it
+was stamped from -- its frame, its entry, its include and the tile index within
+that include -- and that is what survives a CHR edit: repacking an include, or
+re-ordering a frame's windows, renumbers tiles, and the sprite still means the
+same picture. So the manifest
 is read, each sprite is matched back to its cell, and the cell's pattern byte
 is what gets emitted. A sprite that names art the manifest no longer has
 **fails** the export rather than exporting a hole where a drawn sprite should

@@ -6,12 +6,14 @@
 #include STRCAT(../../gen/title/GEN_TARGET_DIR/title.hpp)
 #include STRCAT(../../gen/gameOptions/GEN_TARGET_DIR/gameOptions.hpp)
 #include "../../ui/impl/buttons.hpp"
+#include "../../ui/impl/sliders.hpp"
 #include "../main.hpp"
 #include "pnes/logger.hpp"
 #include "../banks.hpp"
 #include "../graphics/colours.hpp"
 #include "../graphics/strings.hpp"
 #include "../../chr/chr.h"
+#include "../graphics/windows.hpp"
 #include "../../animations/gen/mary_standing.hpp"
 #include "level.hpp"
 #include "level/levels.hpp"
@@ -317,16 +319,16 @@ namespace title {
     static constexpr u16 kUiBandRow0 = 30;
     static void ClearUiBand() {
         for (u16 r = kUiBandRow0; r < video::viewport_ty(); r++)
-            ppu::WriteRepeatedToNameTable({0, r}, blob::ui::hud_whitespace,
+            ppu::WriteRepeatedToNameTable({0, r}, (windows::ui + blob::ui::lma::hud_whitespace),
                                           static_cast<u8>(kMenuNT), 0);
     }
 
     static void BankPreviewTiles() {
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::staticLevelTiles::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
     }
 
     static void BankMenuTiles() {
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::ui::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
     }
 
 
@@ -339,23 +341,29 @@ namespace title {
         pNMI = nmi_handler;
         log("title::main: pIRQ/pNMI set");
 
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::dynamicLevelTiles)>();
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::normalSprites)>();
+        // One CHR register per packed set. Which register is the game's own
+        // knowledge now: under mmc3::chrMode::fineFirst, R2-R5 are the 1 KiB
+        // windows at PPU $0000/$0400/$0800/$0C00 and R0/R1 the 2 KiB ones at
+        // $1000/$1800, so each set below goes to the register serving the
+        // address it was packed for. Change kChrMode and these move with it --
+        // nothing checks that they did.
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::dynamicLevelTiles::__lma>()>(mmc3::chr2Control);   // R2, PPU $0000
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::staticLevelTiles::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::ui::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::normalSprites::__lma>()>(mmc3::chr0Control);   // R0, PPU $1000, 2 KiB
 
         constexpr u32 padLma = blob::normalSprites::__lma + blob::normalSprites::__size;
         static_assert(padLma + 2 * mmc3::kChrBankSize <= blob::dynamicLevelTiles::__lma,
                       "R5/R1 run past normalSprites into the next entry: give "
                       "PPU $0C00-$0FFF and $1800-$1FFF entries of their own, "
                       "or re-point them");
-        static_assert(mmc3::BankOf<padLma>() % 2 == 0,
-                      "the padding gap must start 2 KiB-aligned: R1 is a 2 KiB "
-                      "window and ignores an odd bank's low bit");
-        mmc3::SwitchCHRBank(mmc3::chr5Control, mmc3::BankOf<padLma>());
-        mmc3::SwitchCHRBank(mmc3::chr1Control, mmc3::BankOf<padLma>());
+        // R1 is a 2 KiB window, so the gap has to start 2 KiB-aligned or
+        // hardware rounds the bank down -- asserted by SwitchCHRBank's
+        // compile-time-bank overload rather than restated here.
+        mmc3::SwitchCHRBank<mmc3::BankOf<padLma>()>(mmc3::chr5Control);
+        mmc3::SwitchCHRBank<mmc3::BankOf<padLma>()>(mmc3::chr1Control);
         mmc3::SetMirroring(false);
-        ppu::Flush(blob::ui::hud_whitespace, 0xff);
+        ppu::Flush((windows::ui + blob::ui::lma::hud_whitespace), 0xff);
         ppu::pal::WriteFromBuffer(13, titleScreenColours, 3);
 
         log("title::main: before DrawLevelPreview");
@@ -485,7 +493,7 @@ namespace title {
     // hole in it), swap the two menus' labels, then draw the arrow fresh --
     // QueueSelectorDraw's clear-then-arrow onto one tile.
     static void nmi_handler_drawPlayMode() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::lma::hud_whitespace));
         gen::title::TitleOptions::Erase();
         gen::gameOptions::gameOptions::Draw();
         QueueSelectorDraw(PlayModeArrowAddr());
@@ -498,7 +506,7 @@ namespace title {
     }
 
     static void nmi_handler_drawMenu() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::lma::hud_whitespace));
         gen::gameOptions::gameOptions::Erase();
         gen::title::TitleOptions::Draw();
         QueueSelectorDraw(TitleArrowAddr());
@@ -596,7 +604,7 @@ namespace title {
     }
 
     static void nmi_handler_lockOptions() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), blob::ui::hud_whitespace);
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::lma::hud_whitespace));
         gen::title::TitleOptions::Erase();
         mmc3::AcknowledgeScanlineIRQ();
         oam::RefreshSprites(OAMBuffer);
@@ -805,7 +813,7 @@ namespace title {
         CallLevelGraphics([] {
             ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - ::tech::nes_str::length(msg_mary)), 0}, SIZED_STR(msg_mary), 0);
         });
-        constexpr u8 coinUI[] = {blob::ui::hud_coin, blob::ui::font + 0, blob::ui::font + 0};
+        constexpr u8 coinUI[] = {windows::ui + blob::ui::lma::hud_coin, windows::ui + (blob::ui::lma::font + 0), windows::ui + (blob::ui::lma::font + 0)};
         ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(coinUI)), 1}, SIZED_OBJ(coinUI), 0);
 
         // Metatile columns needed to cover the panel, ROUNDED UP: a viewport
@@ -869,8 +877,8 @@ namespace title {
 
         const u16 clearAddr  = scratchpad[1] | (scratchpad[2] << 8);
         const u16 arrowAddr  = scratchpad[3] | (scratchpad[4] << 8);
-        ppu::WriteSingleToNameTable(clearAddr, blob::ui::hud_whitespace);
-        ppu::WriteSingleToNameTable(arrowAddr, blob::ui::arrow);
+        ppu::WriteSingleToNameTable(clearAddr, (windows::ui + blob::ui::lma::hud_whitespace));
+        ppu::WriteSingleToNameTable(arrowAddr, (windows::ui + blob::ui::lma::arrow));
         scratchpad[0] = 0;  // clear update flag, update is done
     }
 }

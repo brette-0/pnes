@@ -5,9 +5,9 @@
 //
 // Pattern bytes only: one row below per animation frame, holding this
 // metasprite's slots row-major, each byte ready for OAM as it stands. An 8x16
-// slot's bit 0 is the pattern-table half the blobman entry's VMA banks the art
-// into, folded in here because the manifest is the only thing that knows it;
-// an 8x8 slot has no such bit, PPUCTRL picking the half instead. The palette
+// slot's bit 0 is the pattern-table half of the frame the sprite draws from,
+// folded in here because the frame is the only thing that knows it; an
+// 8x8 slot has no such bit, PPUCTRL picking the half instead. The palette
 // and the mirroring are deliberately not here. A slot nothing was stamped into
 // holds ::kNoTile.
 

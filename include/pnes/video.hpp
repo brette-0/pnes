@@ -213,6 +213,115 @@ namespace ppu {
      */
     extern const unsigned chrRomBytes;
 
+    /**
+     * @brief One region of character ROM, recognised at the CHR window it is
+     *        banked in at: translates a tile's index in character ROM space
+     *        into the index the PPU sees that same tile at.
+     *
+     * A tile has two numbers, and only one of them is a property of the tile.
+     * Where it sits in the CHR ROM image is fixed by whatever packed it (for
+     * this project, blobman -- see tools/blobman). Which index the PPU reads
+     * it as depends entirely on the window the region holding it is banked
+     * into, and so changes whenever the region is banked somewhere else. This
+     * turns the first into the second, so the only tile numbers that need
+     * naming anywhere are the packer's own, with the placement named once
+     * here rather than folded into every constant.
+     *
+     * Deliberately knows nothing about any mapper. It holds no register, no
+     * bank number and no notion of what is currently switched in -- a result
+     * is the PPU index of that tile FOR AS LONG AS the region really is
+     * banked at ::origin, which is the caller's business to arrange (on NES,
+     * through whatever the linked mapper's own CHR switch is). Two regions
+     * naming the same ::origin is the ordinary case, not a conflict: they are
+     * alternatives for one window, and whichever was switched in last is the
+     * one a translation is true of.
+     *
+     * Costs nothing in ROM, RAM or cycles: a window is a literal type, so an
+     * instance that is @c constexpr (or a @c constexpr non-type template
+     * argument -- it is a structural type, so it can be one) is never
+     * materialised, and ::Get over a constant tile folds to the single byte
+     * it returns. Both conditions are about how an instance is spelled at the
+     * point of use: give a window automatic storage and hand its address to
+     * something, and it becomes three real bytes like any other object.
+     */
+    class ChrWindow {
+    public:
+        /**
+         * @brief Index, in character ROM space, of the first tile of the
+         *        region this window describes -- the tile ::origin itself
+         *        names. Subtracted back out by ::Get, so what reaches the PPU
+         *        side is an offset into the region rather than an absolute
+         *        position in the image.
+         *
+         * A tile index, not a byte offset: CHR tiles are 16 bytes, so a
+         * region's byte position in the image divides down into this exactly,
+         * and no sub-tile value is representable to be got wrong.
+         */
+        const u16 chr;
+
+        /**
+         * @brief Base index, in PPU space, the region is seen at -- the index
+         *        of its first tile once banked in, and what ::Get counts
+         *        forward from.
+         *
+         * One byte, because that is the whole of what the hardware reads: the
+         * pattern table a fetch comes from is not part of a tile index at all
+         * (::ppu::ctrl::BG_ADDR / ::ppu::ctrl::SPRITE_ADDR select it, and in
+         * 8x16 mode ::oam::sprite_t::tile bit 0 does). PPU $0400 and $1400
+         * are therefore the same @c origin of @c 0x40, differing only in a
+         * control bit this class plays no part in.
+         */
+        const u8 origin;
+
+        /**
+         * @brief Describes a region packed at @p chrOrigin as banked in at
+         *        @p ppuOrigin.
+         *
+         * @param chrOrigin Index of the region's first tile in character ROM
+         *                  space; see ::chr.
+         * @param ppuOrigin Index that tile is seen at once banked in; see
+         *                  ::origin.
+         */
+        constexpr ChrWindow(const u16 chrOrigin, const u8 ppuOrigin)
+            : chr{chrOrigin}, origin{ppuOrigin} {}
+
+        /**
+         * @brief The index @p tile is seen at by the PPU while this region is
+         *        banked in at ::origin.
+         *
+         * @param tile A tile's index in character ROM space. Expected to be
+         *             one of this region's own -- a tile from elsewhere in
+         *             the image still translates arithmetically, to the index
+         *             of whatever is actually that far into this window.
+         * @return     That tile's PPU index.
+         */
+        constexpr u8 Get(const u16 tile) const {
+            return static_cast<u8>(origin + (tile - chr));
+        }
+
+        /**
+         * @brief Infix spelling of ::Get -- @c window+tile is that tile's PPU
+         *        index, identical in every respect to @c window.Get(tile).
+         *
+         * Reads as the offsetting it is at a call site naming one tile out of
+         * a region (@c ppu::WriteSingleToNameTable(addr, ui + blob::ui::font)),
+         * where the method spelling buries the tile behind the call. Delegates
+         * rather than repeating the arithmetic, so there is still one
+         * definition of what a translation is.
+         *
+         * Note the asymmetry with ordinary addition this is NOT: the result is
+         * a tile index in a different space from @p tile, not a window moved
+         * along, so adding a window to a window, or a window to its own
+         * result, means nothing and does not compile.
+         *
+         * @param tile A tile's index in character ROM space; see ::Get.
+         * @return     That tile's PPU index.
+         */
+        constexpr u8 operator+(const u16 tile) const {
+            return Get(tile);
+        }
+    };
+
     namespace raw {
         enum PPU {
             PPUCTRL     = 0x2000, /**< Base nametable, VRAM increment, NMI enable. */

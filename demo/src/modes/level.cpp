@@ -9,6 +9,7 @@
 #include "../graphics/colours.hpp"
 #include "../graphics/strings.hpp"
 #include "../../chr/chr.h"
+#include "../graphics/windows.hpp"
 #include "../graphics/metatiles.hpp"
 
 #include "level/levels.hpp"
@@ -30,6 +31,8 @@ namespace level {
     u8 lastPort1;
     u8 lastPort2;
 
+
+    // TODO rewrite to use pre calced addr and then remove vec2 based scrolling from lib
     constexpr u8 kHudSplitRow   = 16;
     constexpr u8 kHudSplitMMC3  = 16 - (
             REGION ? 5 : 4
@@ -180,21 +183,27 @@ namespace level {
 
         video::WaitForPresent();
 
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::dynamicLevelTiles)>();
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::normalSprites)>();
+        // One CHR register per packed set. Which register is the game's own
+        // knowledge now: under mmc3::chrMode::fineFirst, R2-R5 are the 1 KiB
+        // windows at PPU $0000/$0400/$0800/$0C00 and R0/R1 the 2 KiB ones at
+        // $1000/$1800, so each set below goes to the register serving the
+        // address it was packed for. Change kChrMode and these move with it --
+        // nothing checks that they did.
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::dynamicLevelTiles::__lma>()>(mmc3::chr2Control);   // R2, PPU $0000
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::staticLevelTiles::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::ui::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::normalSprites::__lma>()>(mmc3::chr0Control);   // R0, PPU $1000, 2 KiB
 
         constexpr u32 padLma = blob::normalSprites::__lma + blob::normalSprites::__size;
         static_assert(padLma + 2 * mmc3::kChrBankSize <= blob::dynamicLevelTiles::__lma,
                       "R5/R1 run past normalSprites into the next entry: give "
                       "PPU $0C00-$0FFF and $1800-$1FFF entries of their own, "
                       "or re-point them");
-        static_assert(mmc3::BankOf<padLma>() % 2 == 0,
-                      "the padding gap must start 2 KiB-aligned: R1 is a 2 KiB "
-                      "window and ignores an odd bank's low bit");
-        mmc3::SwitchCHRBank(mmc3::chr5Control, mmc3::BankOf<padLma>());
-        mmc3::SwitchCHRBank(mmc3::chr1Control, mmc3::BankOf<padLma>());
+        // R1 is a 2 KiB window, so the gap has to start 2 KiB-aligned or
+        // hardware rounds the bank down -- asserted by SwitchCHRBank's
+        // compile-time-bank overload rather than restated here.
+        mmc3::SwitchCHRBank<mmc3::BankOf<padLma>()>(mmc3::chr5Control);
+        mmc3::SwitchCHRBank<mmc3::BankOf<padLma>()>(mmc3::chr1Control);
         mmc3::SetMirroring(false);
 
         const bool levelLoaded = mmc3::CallInBlock<level_code_tag>([] {
@@ -204,7 +213,7 @@ namespace level {
             irq::reset();    // spin reset on NES, exit on SDL3
         }
 
-        ppu::Flush(blob::ui::hud_whitespace, 0xff);
+        ppu::Flush((windows::ui + blob::ui::lma::hud_whitespace), 0xff);
 
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);
 
@@ -230,7 +239,7 @@ namespace level {
             ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - ::tech::nes_str::length(msg_mary)), 0}, SIZED_STR(msg_mary), 0);
         });
 
-        constexpr u8 coinUI[] = {blob::ui::hud_coin, blob::ui::font + 0, blob::ui::font + 0};
+        constexpr u8 coinUI[] = {windows::ui + blob::ui::lma::hud_coin, windows::ui + (blob::ui::lma::font + 0), windows::ui + (blob::ui::lma::font + 0)};
         ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(coinUI)), 1}, SIZED_OBJ(coinUI), 0);
 
         mmc3::CallInBlock<level_code_tag>([] {
@@ -445,7 +454,7 @@ namespace level {
         if (levelStreamCommand & STREAM_LEVEL_DONE) {
             levelStreamCommand = {};
         }
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::ui::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
 
 #ifdef TARGET_NDS
         // The split chain always starts at the HUD split, whatever last frame
@@ -530,7 +539,7 @@ namespace level {
         tech::SpinWait(kHUDSplitDelay);
         ppu::LatchScroll(hudScroll);
 
-        mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::staticLevelTiles)>();
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::staticLevelTiles::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
 
 #ifdef TARGET_NDS
         // Arm the first lower-panel band. Last in this handler, after the

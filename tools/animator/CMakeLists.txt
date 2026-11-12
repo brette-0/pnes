@@ -107,6 +107,7 @@ if(QT_FOUND)
     add_executable(animator
             main.cpp
             animation_preview.cpp
+            frame_window.cpp
             palette_store.cpp
             palette_window.cpp
             metasprite_field.cpp

@@ -73,7 +73,6 @@ header of symbolic tile ids:
 
     [normalSprites]
     LMA             = 0x0000    # where it is packed in the blob
-    VMA             = 0x1000    # where the PPU sees it
     size            = 0x0800
     includes        = [
         "./assets/sprites/enemies/mushlet/mushlet_standing.chr",
@@ -84,27 +83,41 @@ header of symbolic tile ids:
 
     namespace blob {
         namespace normalSprites {
-            constexpr unsigned char mushlet_standing = 0x00;
-            constexpr unsigned char wand             = 0x0c;
             constexpr unsigned long __lma            = 0x0000; // used for BankOf()
-            constexpr unsigned long __vma            = 0x1000; // where the ppu sees the entry
             constexpr unsigned long __size           = 0x0800; // bytes the entry occupies
+
+            // every include, as a tile index into character rom
+            namespace lma {
+                constexpr unsigned short mushlet_standing = 0x0000;
+                constexpr unsigned short wand             = 0x0018;
+            }
         }
     }
 
-Those ids are ordinary ``constexpr`` constants, so they work in compile time tables. Alongside them each entry
-carries its own placement -- ``__lma`` where it was packed, ``__vma`` where the PPU sees it, ``__size`` how far
-it reaches -- which is everything a mapper needs to bank it in. The generated header also defines
-``GetCharacterEntryInformation(entry)``, packing those three in the order ``SwitchCharactersBy`` takes them, so
-banking an entry names it once:
+Those indices are ordinary ``constexpr`` constants, so they work in compile time tables. They are indices into
+CHARACTER ROM, not into a pattern table: where the PPU sees a tile is not a property of how it was packed, so a
+``ppu::ChrWindow`` -- the set's Character ROM origin, and the tile index it is banked in at -- is what translates
+one into the index the hardware reads.
 
 .. code-block:: cp
 
-    mmc3::SwitchCharactersBy<GetCharacterEntryInformation(blob::ui)>();
+    constexpr ppu::ChrWindow sprites{blob::normalSprites::__lma / 16, 0x00};
 
-Every argument there is a compile time constant, so that call folds down to nothing but the mapper's own
-register writes -- see ``mmc3::SwitchCharactersBy`` (or ``VRC1::SwitchCharactersBy``) for which windows an
-entry's ``__vma``/``__size`` reach, and what it deliberately does not do.
+    const u8 tile = sprites + blob::normalSprites::lma::wand;
+
+Alongside them each entry carries ``__lma``, where it was packed in the CHR image, which is what a mapper banks
+it in by:
+
+.. code-block:: cp
+
+    mmc3::SwitchCHRBank<mmc3::BankOf<blob::ui::__lma>()>(mmc3::chr3Control);
+
+``BankOf`` turns the load address into a bank number, and both are compile time constants, so the call folds
+down to the mapper's own register writes with literal operands. Which register a set goes to is the game's own
+knowledge: under ``mmc3::chrMode::fineFirst`` R2-R5 are the 1 KiB windows at PPU ``$0000``/``$0400``/``$0800``/
+``$0C00`` and R0/R1 the 2 KiB ones at ``$1000``/``$1800``. Passing the bank as a template argument, as above, is
+what lets ``SwitchCHRBank`` check it -- R0/R1 round an odd 1 KiB bank down, so a set bound for one of them has
+to be packed 2 KiB-aligned.
 
 Getting the blob into the ROM is one translation unit that ``#embed``\ s it into the CHR section and states its
 size -- see ``demo/src/graphics/chr_rom.cpp``.

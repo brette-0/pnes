@@ -14,7 +14,6 @@ The graphical tile data is symbolically referenced from the CHR blob's generated
 
  [staticLevelTiles]
  LMA         = 0x1400
- VMA         = 0x0400
  size        = 0x0400
  includes    = [
      "./assets/tiles/static/terrain.chr"
@@ -24,12 +23,18 @@ The graphical tile data is symbolically referenced from the CHR blob's generated
 
  namespace blob {
      namespace staticLevelTiles {
-         constexpr unsigned char terrain = 0x51;
          constexpr unsigned long __lma   = 0x1400; // used for BankOf()
-         constexpr unsigned long __vma   = 0x0400; // where the ppu sees the entry
          constexpr unsigned long __size  = 0x0400; // bytes the entry occupies
+
+         // every include, as a tile index into character rom
+         namespace lma {
+             constexpr unsigned short terrain = 0x0151;
+         }
      }
  }
+
+ // demo/src/graphics/windows.hpp -- banked at PPU $0400, so tile index 0x40
+ constexpr u8 terrain = windows::staticLevelTiles + blob::staticLevelTiles::lma::terrain;
 
 Using this layout, the metatile data can be easily read at a glance as:
 

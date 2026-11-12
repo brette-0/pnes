@@ -38,6 +38,17 @@ struct Sprite {
     int         row = 0;     ///< Slot row; a slot is one tile tall, 8 or 16 pixels by mode.
     int         id = 0;      ///< PPU tile id: an index within its pattern table.
     int         patternByte = 0;  ///< What a consumer puts in OAM for it, half bit and all.
+
+    /// The chr::Frame this sprite draws its tile from, by name. Part of what
+    /// identifies the tile, not a label: the same art reached through another
+    /// frame is a different id and a different pattern byte, so a sprite that
+    /// did not say which frame it meant could not be re-resolved at all.
+    ///
+    /// A .msprite written before frames existed has none, and reads back as
+    /// the project's first frame -- which is what the export it was written
+    /// against effectively used.
+    std::string frame;
+
     std::string entry;       ///< blobman entry the art came from.
     std::string include;     ///< Include (filename stem) within that entry.
     int         tile = 0;    ///< Tile index within that include.
@@ -96,6 +107,12 @@ struct Project {
     std::string metaspritesDir = kDefaultMetaspritesDir;   ///< Sidecar folder, as written.
     chr::TileMode mode = chr::TileMode::Size8x8;           ///< Tile grouping the project was authored in.
 
+    /// The tile-id spaces this project's sprites draw from, in declaration
+    /// order. They live here rather than in the CHR manifest because a frame
+    /// is the GAME's banking arrangement: character generation neither
+    /// designs one nor enforces one (see chr::Frame).
+    std::vector<chr::Frame> frames;
+
     /// Named palettes, shared by every metasprite in the project. They live in
     /// the .anim rather than per metasprite because that is what sharing means.
     std::vector<pal::Palette> palettes;
@@ -143,17 +160,23 @@ std::string fileStem(const std::string& name);
 /**
  * @brief The cell of @p table holding the art a sprite names, or nullptr.
  *
- * Matched on the art itself -- @p entry, @p include and @p tile, the tile's
- * index within that include -- because that is what survives a CHR layout
- * change: moving an entry's VMA or repacking an include renumbers every id in
- * it while the sprite still means the same picture. @p id is only the
- * fallback, for a .msprite naming art no include of this manifest has.
+ * Matched on the art itself -- @p frame, @p entry, @p include and @p tile, the
+ * tile's index within that include -- because that is what survives a CHR
+ * layout change: repacking an include renumbers every id in it while the
+ * sprite still means the same picture. @p frame is part of the match rather
+ * than a filter applied after: one entry can sit in a window of two frames,
+ * and the same tile then has an id in each, so dropping it would resolve to
+ * whichever came first. An empty @p frame matches any, for a .msprite written
+ * before frames existed.
+ *
+ * @p id is only the fallback, for a .msprite naming art no include of this
+ * manifest has.
  *
  * Shared by the editor's own load path and the headless export (exporter.cpp)
  * so the two cannot disagree about which cell -- and therefore which pattern
  * byte -- a saved sprite resolves to.
  */
-const chr::Cell* findCell(const chr::Table& table, const std::string& entry,
-                          const std::string& include, int tile, int id);
+const chr::Cell* findCell(const chr::Table& table, const std::string& frame,
+                          const std::string& entry, const std::string& include, int tile, int id);
 
 } // namespace proj

@@ -18,6 +18,7 @@
 #include "exporter.hpp"
 #include "metasprite_page.hpp"
 #include "palette_store.hpp"
+#include "frame_window.hpp"
 #include "palette_window.hpp"
 #include "project.hpp"
 #include "tile_canvas.hpp"
@@ -171,7 +172,7 @@ public:
         const chr::TileMode mode = tileMode();
 
         std::string error;
-        auto table = chr::loadManifest(path.toStdString(), mode, error);
+        auto table = chr::loadManifest(path.toStdString(), mode, frames_, error);
         if (!table) {
             const QString message = QString("Cannot load %1: %2")
                                         .arg(QFileInfo(path).fileName(), QString::fromStdString(error));
@@ -187,6 +188,7 @@ public:
         table_ = std::move(table);
         manifestPath_ = path;
         reload_->setEnabled(true);
+        if (frames_action_) frames_action_->setEnabled(true);
         canvas_->setTable(*table_);
         canvas_->resize(canvas_->sizeHint());
         sheetScroll_->verticalScrollBar()->setValue(0);
@@ -216,6 +218,15 @@ public:
                        .arg(mode == chr::TileMode::Size8x16 ? "cells" : "tiles")
                        .arg(table_->entries.size())
                        .arg(table_->entries.size() == 1 ? "entry" : "entries");
+        // Which frames the sheet was reached through, since that is what
+        // decides which entries contributed any cells at all -- a sheet with
+        // fewer tiles than the manifest has is the expected outcome, not a
+        // load that went wrong.
+        summary_ += frames_.empty()
+                        ? QString(" (no frames -- every entry, unnumbered)")
+                        : QString(" through %1 frame%2")
+                              .arg(frames_.size())
+                              .arg(frames_.size() == 1 ? "" : "s");
         if (!table_->warnings.empty()) {
             summary_ += QString(" (%1 warning%2 -- see stderr)")
                             .arg(table_->warnings.size())
@@ -376,6 +387,11 @@ private:
         QMenu* window = menuBar()->addMenu("&Window");
         QAction* palettes = window->addAction("&Palettes...");
         connect(palettes, &QAction::triggered, this, &MainWindow::showPalettes);
+        frames_action_ = window->addAction("&Frames...");
+        connect(frames_action_, &QAction::triggered, this, &MainWindow::showFrames);
+        // Frames are the id space the sheet is numbered in, so there has to be
+        // a sheet to number before one can be edited against it.
+        frames_action_->setEnabled(false);
 
         QMenu* view = menuBar()->addMenu("&View");
         tallTiles_ = view->addAction("&8x16 Tiles");
@@ -450,6 +466,63 @@ private:
     }
 
     /// Opens the palette editor, or brings it forward if it is already open.
+    /// Opens the frame editor and applies what it returns: the project's
+    /// frames, any rename the placed sprites have to follow, and a reload of
+    /// the sheet, which is the only way the new ids reach it.
+    void showFrames() {
+        if (!table_) return;
+
+        std::vector<FrameWindow::Entry> entries;
+        entries.reserve(table_->entries.size());
+        for (const chr::Entry& entry : table_->entries) {
+            entries.push_back({ QString::fromStdString(entry.name), entry.size });
+        }
+
+        // The preview draws from the manifest read WITHOUT frames and in 8x8:
+        // a frame being set up has to show art that no frame reaches yet, and
+        // a preview of a frame is a pattern table of 8x8 ids whatever height
+        // this project's sprites are. Read here rather than kept around,
+        // because it is only wanted while the dialog is open.
+        std::string error;
+        auto tiles = chr::loadManifest(manifestPath_.toStdString(), chr::TileMode::Size8x8, error);
+        if (!tiles) {
+            QMessageBox::warning(this, "Frames",
+                                 QString("Cannot read %1 for the preview: %2")
+                                     .arg(QFileInfo(manifestPath_).fileName(),
+                                          QString::fromStdString(error)));
+            return;
+        }
+
+        FrameWindow editor(frames_, std::move(entries), *tiles, this);
+        if (editor.exec() != QDialog::Accepted) return;
+
+        // Renames first: they are about the sprites already placed, which the
+        // reload below deliberately leaves alone.
+        int moved = 0;
+        for (const auto& [from, to] : editor.renames()) {
+            for (MetaspritePage* page : pages_) {
+                for (MetaspriteFrame* frame : page->frames()) {
+                    moved += frame->field()->renameFrame(from, to);
+                }
+            }
+        }
+
+        frames_ = editor.frames();
+        markDirty();
+
+        // The sheet is built FROM the frames, so it is rebuilt rather than
+        // adjusted. This drops the pick, for the reason loadManifest gives:
+        // every cell index it had belonged to the old numbering.
+        if (!manifestPath_.isEmpty()) loadManifest(manifestPath_);
+
+        if (moved != 0) {
+            statusBar()->showMessage(QString("Frames applied -- %1 placed sprite%2 followed a "
+                                             "rename")
+                                         .arg(moved)
+                                         .arg(moved == 1 ? "" : "s"));
+        }
+    }
+
     void showPalettes() {
         if (!paletteWindow_) {
             paletteWindow_ = new PaletteWindow(paletteStore_, this);
@@ -556,18 +629,32 @@ private:
     void pickCell(int index) {
         if (!table_ || index < 0 || static_cast<std::size_t>(index) >= table_->cells.size()) return;
 
-        pick_ = index;
         const chr::Cell&  cell  = table_->cells[static_cast<std::size_t>(index)];
         const chr::Entry& entry = table_->entries[cell.entry];
+
+        // An unnumbered cell cannot be stamped: a sprite made from it would
+        // have no pattern byte, which is not a sprite anything could export.
+        // Refused at the pick rather than at the stamp, so the reason is given
+        // when the tile is chosen instead of on every click afterwards.
+        if (!cell.numbered()) {
+            statusBar()->showMessage(
+                QString("%1::%2 has no id -- no frame reaches it. Open a project, or add a "
+                        "frame with a window for '%1' (Window -> Frames...), to stamp it.")
+                    .arg(QString::fromStdString(entry.name),
+                         QString::fromStdString(cell.include)));
+            return;
+        }
+
+        pick_ = index;
         pickEntry_ = QString::fromStdString(entry.name);
 
         for (MetaspritePage* page : pages_) {
             page->setBrush(&cell, pickEntry_);
         }
-        statusBar()->showMessage(QString("Picked %1::%2 tile %3  id %4")
+        statusBar()->showMessage(QString("Picked %1::%2 tile %3  id %4%5")
                                      .arg(pickEntry_, QString::fromStdString(cell.include))
                                      .arg(cell.tileInInclude)
-                                     .arg(formatCellId(cell)));
+                                     .arg(formatCellId(cell), formatCellFrame(cell)));
     }
 
     void clearPick() {
@@ -579,23 +666,38 @@ private:
         }
     }
 
-    /// The cell a saved sprite names. entry/include/tile identifies the art
-    /// exactly; a tile id alone does not, since two entries at the same offset
-    /// into their VMAs share ids. The id is the fallback for a manifest that
-    /// has been reorganised since the save.
+    /// The cell a saved sprite names. frame/entry/include/tile identifies the
+    /// art exactly; a tile id alone does not, since two entries at the same
+    /// offset into their windows share ids. The id is the fallback for a
+    /// manifest that has been reorganised since the save.
     /// The loaded sheet's cell for a saved sprite, by the same rule the
     /// headless export uses (proj::findCell) -- so opening a project and
     /// exporting it from a script resolve every sprite to the same cell.
-    [[nodiscard]] const chr::Cell* findCell(const std::string& entry, const std::string& include,
-                                            int tile, int id) const {
-        return table_ ? proj::findCell(*table_, entry, include, tile, id) : nullptr;
+    [[nodiscard]] const chr::Cell* findCell(const std::string& frame, const std::string& entry,
+                                            const std::string& include, int tile, int id) const {
+        return table_ ? proj::findCell(*table_, frame, entry, include, tile, id) : nullptr;
+    }
+
+    /// Which frame and window the ids on the same line came from, or nothing
+    /// when the sheet has no frames. Parenthesised and leading with a space so
+    /// it appends onto a status line that reads properly without it.
+    static QString formatCellFrame(const chr::Cell& cell) {
+        return cell.frame.empty()
+            ? QString()
+            : QString("  (frame %1, window %2)")
+                  .arg(QString::fromStdString(cell.frame))
+                  .arg(cell.window);
     }
 
     static QString formatCellId(const chr::Cell& cell) {
+        // A cell no frame reached has no id to show -- and saying so is the
+        // point, since it is also why it cannot be stamped.
+        if (!cell.numbered()) return QString("unnumbered");
+
         // An 8x16 cell occupies two consecutive ids, so both are worth showing
         // -- and the byte that selects the pair is neither of them when the
-        // entry's VMA is the $1000 half, so that is shown beside them rather
-        // than left for someone to work out from the VMA in the same line.
+        // frame sits in the $1000 pattern table, so that is shown beside them
+        // rather than left for someone to work out from the frame.
         return cell.heightTiles == 2
             ? QString("$%1-$%2, OAM $%3")
                   .arg(cell.id, 2, 16, QChar('0'))
@@ -614,14 +716,16 @@ private:
 
         const chr::Cell&  cell  = table_->cells[static_cast<std::size_t>(index)];
         const chr::Entry& entry = table_->entries[cell.entry];
-        statusBar()->showMessage(QString("%1::%2  tile %3  id %4  (entry VMA $%5, %6x%7)")
+        // The frame, not the entry: an entry says where the art was packed,
+        // while the id on this line is what the frame makes of it.
+        statusBar()->showMessage(QString("%1::%2  tile %3  id %4  (%5x%6)%7")
                                      .arg(QString::fromStdString(entry.name),
                                           QString::fromStdString(cell.include))
                                      .arg(cell.tileInInclude)
                                      .arg(formatCellId(cell))
-                                     .arg(entry.vma, 4, 16, QChar('0'))
                                      .arg(cell.widthPx())
-                                     .arg(cell.heightPx()));
+                                     .arg(cell.heightPx())
+                                     .arg(formatCellFrame(cell)));
     }
 
 public:
@@ -633,6 +737,10 @@ public:
         project.path = path.toStdString();
         project.mode = tileMode();
         project.metaspritesDir = metaspritesDir_;
+        // Held as the window's own state rather than rebuilt from the sheet:
+        // the frames are what the sheet was BUILT from, including any window
+        // that names no entry, which no cell could tell us about.
+        project.frames = frames_;
 
         // The manifest path is stored relative to the .anim, so a project and
         // its art can be moved or checked out anywhere together.
@@ -674,6 +782,7 @@ public:
                 saved.row     = sprite.row;
                 saved.id      = sprite.id;
                 saved.patternByte = sprite.patternByte;
+                saved.frame   = sprite.frame.toStdString();
                 saved.entry   = sprite.entry.toStdString();
                 saved.include = sprite.include.toStdString();
                 saved.tile    = sprite.tile;
@@ -865,10 +974,18 @@ public:
             tallTiles_->setChecked(project->mode == chr::TileMode::Size8x16);
         }
 
+        // The frames have to be in place before the manifest is read, for the
+        // same reason the mode does: they are what decides which tiles become
+        // cells and what id each one gets. Restored on failure, since the
+        // project is not opened and the sheet still belongs to the old one.
+        std::vector<chr::Frame> previousFrames = frames_;
+        frames_ = project->frames;
+
         const auto manifest = proj::resolve(*project, project->chrManifest);
         if (!loadManifest(QString::fromStdString(manifest.string()))) {
             // loadManifest has already said why; the project is not opened,
             // since every sprite in it names tiles from that manifest.
+            frames_ = std::move(previousFrames);
             return false;
         }
 
@@ -901,8 +1018,8 @@ public:
                 built->setPublicFrame(frame.isPublic);
 
                 for (const proj::Sprite& sprite : frame.sprites) {
-                    const chr::Cell* cell =
-                        findCell(sprite.entry, sprite.include, sprite.tile, sprite.id);
+                    const chr::Cell* cell = findCell(sprite.frame, sprite.entry, sprite.include,
+                                                     sprite.tile, sprite.id);
                     if (!cell) {
                         ++missing;
                         continue;
@@ -970,6 +1087,12 @@ private:
     QAction*                      exportOne_ = nullptr;
     QAction*                      exportAll_ = nullptr;
     QAction*                      tallTiles_ = nullptr;
+    QAction*                      frames_action_ = nullptr;
+
+    /// The project's frames, as the sheet is currently numbered in. Empty for
+    /// a manifest opened on its own, which is the fallback chr::loadManifest
+    /// documents -- not a project state.
+    std::vector<chr::Frame>       frames_;
     std::optional<chr::Table>     table_;
     std::vector<MetaspritePage*>  pages_;
     std::optional<int>            pick_;        ///< Picked cell index into table_->cells.

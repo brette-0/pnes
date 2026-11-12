@@ -151,6 +151,135 @@
             "sizeWExpr": "10",
             "splitter": " ",
             "text": "SUPER MARY SISTERS"
+        },
+        {
+            "align": 0,
+            "charmapOverride": "",
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [],
+            "kind": "ctTextBox",
+            "name": "[CT] audioText",
+            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
+            "posYExpr": "30 + 4",
+            "provideErasing": false,
+            "sizeHExpr": "1",
+            "sizeWExpr": "5",
+            "splitter": " ",
+            "text": "AUDIO"
+        },
+        {
+            "align": 0,
+            "charmapOverride": "",
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [
+                "NES"
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] musicText",
+            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
+            "posYExpr": "30 + 6",
+            "provideErasing": false,
+            "sizeHExpr": "1",
+            "sizeWExpr": "12",
+            "splitter": " ",
+            "text": "MUSIC VOLUME"
+        },
+        {
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [
+                "NES"
+            ],
+            "kind": "slider",
+            "name": "[S] musicSlider",
+            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
+            "posYExpr": "30 + 7",
+            "sizeHExpr": "1",
+            "sizeWExpr": "(PANEL1_TX >> 2) - 2",
+            "vertical": false
+        },
+        {
+            "align": 0,
+            "charmapOverride": "",
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [
+                "NES"
+            ],
+            "kind": "ctTextBox",
+            "name": "[CT] SFXText",
+            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
+            "posYExpr": "30 + 9",
+            "provideErasing": false,
+            "sizeHExpr": "1",
+            "sizeWExpr": "10",
+            "splitter": " ",
+            "text": "SFX VOLUME"
+        },
+        {
+            "children": [],
+            "hideRegions": [],
+            "hideTargets": [
+                "NES"
+            ],
+            "kind": "slider",
+            "name": "[S] SFXSlider",
+            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
+            "posYExpr": "30 + 10",
+            "sizeHExpr": "1",
+            "sizeWExpr": "(PANEL1_TX >> 2) - 2",
+            "vertical": false
+        },
+        {
+            "children": [
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [],
+                    "hideRegions": [],
+                    "hideTargets": [],
+                    "kind": "ctTextBox",
+                    "name": "[CT] enableStereoText",
+                    "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
+                    "posYExpr": "30 + 13",
+                    "provideErasing": false,
+                    "sizeHExpr": "2",
+                    "sizeWExpr": "6",
+                    "splitter": " ",
+                    "text": "ENABLE STEREO"
+                },
+                {
+                    "align": 0,
+                    "charmapOverride": "",
+                    "children": [],
+                    "hideRegions": [],
+                    "hideTargets": [],
+                    "kind": "ctTextBox",
+                    "name": "[CT] disableStereoText",
+                    "posXExpr": "enableStereoText.pos.x",
+                    "posYExpr": "enableStereoText.pos.y",
+                    "provideErasing": false,
+                    "sizeHExpr": "2",
+                    "sizeWExpr": "7",
+                    "splitter": " ",
+                    "text": "DISABLE STEREO"
+                }
+            ],
+            "defaultEnabled": true,
+            "hasBox": true,
+            "hideRegions": [],
+            "hideTargets": [
+                "NES"
+            ],
+            "kind": "button",
+            "name": "[B] enableStereo",
+            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
+            "posYExpr": "30 + 12",
+            "sizeHExpr": "4",
+            "sizeWExpr": "9",
+            "toggleable": true
         }
     ],
     "region": "NTSC",

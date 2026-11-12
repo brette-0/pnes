@@ -57,6 +57,7 @@
 #include <QBrush>
 #include <QTabWidget>
 #include <QStackedWidget>
+#include <array>
 #include <map>
 #include <optional>
 #include <utility>
@@ -257,16 +258,17 @@ constexpr int kButtonDefaultEnabledRole = Qt::UserRole + 21;
 // only ever Enabled or Disabled from outside, never toggled by itself).
 constexpr int kButtonToggleableRole = Qt::UserRole + 23;
 // Button-only: whether `<Name>_box` (the vec2<u8> footprint) is emitted at
-// all -- a button whose DrawEnabled_/DrawDisabled_/etc. implementation
+// all -- a button whose Draw()/etc. implementation
 // doesn't need to know its own dimensions (e.g. a fixed-size sprite, or one
 // that only ever cares about `<Name>_pos`) has no use for it, so it isn't
 // forced on every button the way pos is.
 constexpr int kButtonHasBoxRole = Qt::UserRole + 24;
 // Canvas-only: which axis moves its focus. Vertical (the default) steps the
 // focused index on UP/DOWN and hands everything else to the focused
-// component, which is what lets a Canvas hold a Slider -- LEFT/RIGHT fall
-// through to it. Horizontal steps on LEFT/RIGHT instead, and so cannot
-// usefully hold one: nothing is left to adjust it with (see genCanvasDecl).
+// component; horizontal steps on LEFT/RIGHT instead. Either way the OTHER
+// axis falls through untouched, which is what lets a Canvas hold a Slider or
+// a SingleChoice: the component just has to step on the axis the Canvas
+// doesn't (see kSliderVerticalRole/kSingleChoiceVerticalRole, genCanvasDecl).
 constexpr int kCanvasVerticalRole = Qt::UserRole + 25;
 // SingleChoice-only, and the same idea as kCanvasVerticalRole: which axis
 // steps its selected option. Vertical (the default) steps on UP/DOWN, a
@@ -282,6 +284,25 @@ constexpr int kSingleChoiceVerticalRole = Qt::UserRole + 26;
 // this says, when the menu is a Canvas component: the Canvas's table is built
 // out of that rect, so there it isn't a choice (see isCanvasComponent).
 constexpr int kSingleChoiceHasRectRole = Qt::UserRole + 27;
+// Slider-only, and the same idea as kCanvasVerticalRole: which axis moves its
+// handle. Horizontal (the default) steps `amount` on LEFT/RIGHT, a track laid
+// along a nametable row; vertical steps on UP/DOWN, a track laid down a
+// column. It is what lets a Slider sit inside a Canvas -- the two have to
+// disagree about the axis for the handle to be reachable at all (see
+// canvasComponents), so a horizontal Canvas wants a vertical Slider.
+//
+// Defaults to HORIZONTAL, unlike the two roles above: a slider's track is a
+// row in every scene written before this existed, and a default of vertical
+// would silently re-axis every one of them.
+//
+// uitk emits no range for a slider (its track length IS its range, see
+// genSliderDecl), so this decides which input bits its Pass() spends and is
+// also published as a `constexpr bool vertical` in the node's namespace.
+// Which dimension of `rect` bounds the handle, and how a cell address steps,
+// stay the scene's business -- a vertical slider's Draw()/DrawChange() read
+// `size.y` and walk a row at a time where a horizontal one reads `size.x`,
+// branching on that constant rather than on a literal of their own.
+constexpr int kSliderVerticalRole = Qt::UserRole + 28;
 // Compile-time and runtime textboxes are separate kinds -- currently
 // identical in behavior, but distinguished now because they'll diverge in
 // meaning later (e.g. how their text is ultimately resolved by generated
@@ -451,11 +472,11 @@ bool isSingleChoiceItem(const QTreeWidgetItem* item) {
 }
 
 // Has its own position/size, like a textbox, but no baked appearance:
-// uitk provides no Draw function for one, only the forced-to-define
-// DrawEnabled_/DrawDisabled_ hooks hand-written code must implement -- a
-// button could be a tickbox, a wide labeled box, or a sprite, so there's
-// nothing uitk could bake that would be right for all of them (see
-// genButtonDecl). Enabled/disabled is the only state uitk offers memory
+// uitk bakes no appearance for one, only the forced-to-define Draw() hook
+// hand-written code must implement, which dispatches on the generated
+// Enabled() itself -- a button could be a tickbox, a wide labeled box, or a
+// sprite, so there's nothing uitk could bake that would be right for all of
+// them (see genButtonDecl). Enabled/disabled is the only state uitk offers memory
 // for -- there is no selected/unselected concept of its own.
 bool isButtonItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kButtonKind);
@@ -465,7 +486,7 @@ bool isButtonItem(const QTreeWidgetItem* item) {
 // no appearance for one (a slider could be a tile-row track, a sprite bar,
 // or a row of discrete notches), only the forced-to-define Draw_<Name>/
 // DrawChange_<Name> hooks hand-written code must implement, the same
-// arrangement a Button has with DrawEnabled_/DrawDisabled_. Its state is
+// arrangement a Button has with its own Draw(). Its state is
 // `<name>_amount`, which uitk allocates but never bounds or writes (see
 // genSliderDecl).
 bool isSliderItem(const QTreeWidgetItem* item) {
@@ -586,13 +607,16 @@ QVector<QTreeWidgetItem*> singleChoiceMembers(const QTreeWidgetItem* scItem, con
 //  - a SingleChoice, as long as this target shows at least one of its options.
 //    It has no authored geometry, but it does have a derived `rect` covering
 //    the options it shows (see genSingleChoiceDecl), which is what a Canvas
-//    needs of it. The axis each one steps is a property of both (see
-//    kCanvasVerticalRole/kSingleChoiceVerticalRole), so for both to be
-//    reachable they have to disagree about it: a vertical Canvas holding a
-//    horizontal menu spends UP/DOWN on focus and hands LEFT/RIGHT to the menu.
-//    Agreeing is allowed -- the menu is still focusable, still takes A/B, and
-//    uitk has no business overruling a layout -- it just means the Canvas wins
-//    the axis and that menu cannot change its option while it is nested.
+//    needs of it.
+//
+// A Slider and a SingleChoice each step an axis of their own (see
+// kSliderVerticalRole/kSingleChoiceVerticalRole), so for both it and the
+// Canvas to be reachable the two have to disagree about it: a vertical Canvas
+// spends UP/DOWN on focus and hands LEFT/RIGHT to a horizontal slider or menu,
+// a horizontal Canvas does the reverse. Agreeing is allowed -- the component is
+// still focusable, still takes A/B, and uitk has no business overruling a
+// layout -- it just means the Canvas wins the axis and that component cannot be
+// adjusted while it is nested.
 //
 // Deliberately NOT a nested Canvas, which has a Pass() but no rect of its own,
 // and would need focus to mean two things at once.
@@ -921,7 +945,7 @@ std::optional<long long> evalExpr(
 // node's *position* is only "not runtime-variable" if that node's own
 // position isn't itself VIEWPORT_*-driven, so the caller passes a hook that
 // splices the referenced node's own expression in instead (see
-// emitPosComponent). Baking it would leave the referrer at whatever column
+// emitGeomComponent). Baking it would leave the referrer at whatever column
 // the editor's viewport happened to resolve to, misaligned from the node it
 // is meant to follow at any other runtime viewport size.
 QString emitExprCpp(const ExprPtr& node, const std::function<long long(const QString&, int)>& resolveIdent,
@@ -1000,6 +1024,9 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
             obj["toggleable"] = item->data(0, kButtonToggleableRole).toBool();
             obj["hasBox"] = item->data(0, kButtonHasBoxRole).toBool();
         }
+        if (isSliderItem(item)) {
+            obj["vertical"] = item->data(0, kSliderVerticalRole).toBool();
+        }
     } else if (isSingleChoiceItem(item)) {
         obj["kind"] = QStringLiteral("singlechoice");
         obj["defaultOption"] = item->data(0, kDefaultOptionRole).toInt();
@@ -1076,6 +1103,13 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
             item->setData(0, kButtonDefaultEnabledRole, obj["defaultEnabled"].toBool(true));
             item->setData(0, kButtonToggleableRole, obj["toggleable"].toBool(false));
             item->setData(0, kButtonHasBoxRole, obj["hasBox"].toBool(true));
+        }
+        if (isSlider) {
+            // Defaults to HORIZONTAL, the axis every slider written before
+            // this key existed was generated with -- the opposite default to
+            // a SingleChoice's or a Canvas's own `vertical` (see
+            // kSliderVerticalRole).
+            item->setData(0, kSliderVerticalRole, obj["vertical"].toBool(false));
         }
         item->setData(0, kLastValidNameRole, item->text(0));
     } else if (kind == QLatin1String("singlechoice")) {
@@ -1226,10 +1260,10 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outQuadrant, Q
 // `<name>_amount` byte, which uitk allocates and then leaves entirely alone
 // -- there is no generated setter, range, or clamp, because a slider's
 // bounds belong to whatever it controls, not to the scene. The hooks are
-// DrawEnabled_/DrawDisabled_ for a button, and Draw_<Name>/
-// DrawChange_<Name> for a slider -- first placement and subsequent movement
-// respectively, which are different enough in cost to be worth separating
-// (see genButtonDecl/genSliderDecl).
+// one Draw_<Name> for a button -- which dispatches on its own enabled bit
+// (see genButtonDecl) -- and Draw_<Name>/DrawChange_<Name> for a slider:
+// first placement and subsequent movement respectively, which are different
+// enough in cost to be worth separating (see genSliderDecl).
 //
 // Negative-space nodes emit nothing themselves -- an editor-only exclusion
 // zone with no runtime counterpart at all. We never bundle a component's
@@ -1363,25 +1397,204 @@ struct CtTextBoxGen {
     QString body;
 };
 
+// The four geometry properties, in the order every expression, role table and
+// error mask in this file indexes them: 0 = pos.x, 1 = pos.y, 2 = size.x,
+// 3 = size.y. Shared by the editor's own resolver (resolveAll, in
+// createSidebar) and by the export-time one below, so the two cannot drift
+// about which index means what.
+constexpr int kGeomRoles[4] = {kPosXRole, kPosYRole, kSizeWRole, kSizeHRole};
+constexpr int kGeomExprRoles[4] = {kPosXExprRole, kPosYExprRole, kSizeWExprRole, kSizeHExprRole};
+constexpr long long kGeomDefaults[4] = {0, 0, 1, 1};
+
+// Every node's four geometry properties, resolved for ONE export target.
+//
+// The editor caches exactly these numbers per node in kPosXRole/kPosYRole/
+// kSizeWRole/kSizeHRole -- but it resolves them against whatever the Target
+// combo is on, which is the target the scene was AUTHORED on and has nothing
+// to do with the target being exported. Reading those roles at export time
+// therefore bakes one target's numbers into every target's header: a slider
+// sized `(PANEL1_TX >> 2) - 2` came out 6 tiles wide in the 3DS header as well
+// as the DS one, because the scene was authored on DS, even though the 3DS's
+// bottom panel is 40 tiles wide and the expression says 8 there.
+//
+// So export resolves its own. Same fixed-point loop as the editor's resolver (a
+// property may name another node's property, which may name a third, so passes
+// repeat until one makes no progress), same identifier vocabulary, same
+// clamping. Two deliberate differences:
+//
+//  - the viewport comes from the target's own entry in viewportTilesForTarget()
+//    and panel1TilesForTarget(), not from the sidebar's Viewport X/Y boxes;
+//  - VIEWPORT_PX/PY are tiles * 8, i.e. hardware pixels. The editor multiplies
+//    by `tilePx`, the canvas's current zoom, which is a display artifact that
+//    has no business reaching generated code.
+//
+// Anything that cannot be resolved at all (a parse error, an unknown or
+// duplicate reference, a dependency cycle) keeps the editor's own cached value
+// for that property, which is exactly what export used to emit for it -- a
+// broken expression generates what it generated before rather than collapsing
+// to zero.
+//
+// Nothing here writes to the tree: the editor's cached roles stay as the editor
+// left them, so exporting for eleven targets in a row doesn't leave the canvas
+// drawing the last one's layout.
+struct TargetGeometry {
+    QHash<const QTreeWidgetItem*, std::array<long long, 4>> values;
+
+    // `prop` is an index into kGeomRoles. Falls back to the node's own cached
+    // role, then to the property's default, for a node this resolution never
+    // saw (nothing in the export path should ask, but a wrong answer here would
+    // be a silently misplaced component rather than a crash).
+    long long at(const QTreeWidgetItem* item, int prop) const {
+        if (!item || prop < 0 || prop > 3) return 0;
+        const auto it = values.constFind(item);
+        if (it != values.constEnd()) return (*it)[static_cast<size_t>(prop)];
+        const QVariant cached = item->data(0, kGeomRoles[prop]);
+        return cached.isValid() ? cached.toLongLong() : kGeomDefaults[prop];
+    }
+
+    int x(const QTreeWidgetItem* item) const { return static_cast<int>(at(item, 0)); }
+    int y(const QTreeWidgetItem* item) const { return static_cast<int>(at(item, 1)); }
+    // Clamped to what a Rect's vec2<u8> size can actually hold, the same clamp
+    // genGeometryStorage used to apply to the cached role.
+    int w(const QTreeWidgetItem* item) const { return std::clamp<int>(static_cast<int>(at(item, 2)), 1, 255); }
+    int h(const QTreeWidgetItem* item) const { return std::clamp<int>(static_cast<int>(at(item, 3)), 1, 255); }
+};
+
+TargetGeometry resolveGeometryForTarget(QTreeWidgetItem* rootItem, const QString& target, const QString& region) {
+    TargetGeometry out;
+    const QVector<QTreeWidgetItem*> components = collectComponentItems(rootItem);
+
+    const auto vp = viewportTilesForTarget(target);
+    // A target absent from that table (GC/Wii/PC) has no canonical viewport, so
+    // this falls back to the NES-native 32x30 -- the same floor generateCode's
+    // own ntOffXExpr/ntOffYExpr clamp to. It only ever feeds a baked literal,
+    // and every target absent from the table is variadic, where VIEWPORT_* is
+    // emitted as a runtime expression instead of being baked at all.
+    const long long vpTx = vp ? vp->first : kNametableQuadW;
+    const long long vpTy = vp ? vp->second : kNametableQuadH;
+    const long long vpPx = vpTx * 8;
+    const long long vpPy = vpTy * 8;
+    const auto panel = panel1TilesForTarget(target);
+
+    QHash<QString, QTreeWidgetItem*> byName;
+    QSet<QString> duplicateNames;
+    for (QTreeWidgetItem* item : components) {
+        const QString base = bareName(item);
+        if (byName.contains(base)) duplicateNames.insert(base);
+        byName.insert(base, item);
+    }
+
+    struct Pending {
+        QTreeWidgetItem* item;
+        int prop;
+        ExprPtr ast;
+    };
+    QVector<Pending> pending;
+    std::map<std::pair<const QTreeWidgetItem*, int>, long long> resolved;
+
+    for (QTreeWidgetItem* item : components) {
+        for (int prop = 0; prop < 4; ++prop) {
+            QString src = item->data(0, kGeomExprRoles[prop]).toString().trimmed();
+            if (src.isEmpty()) src = QString::number(kGeomDefaults[prop]);
+            bool ok = false;
+            ExprPtr ast = ExprParser(src).parse(ok);
+            if (!ok) continue;  // keeps the cached value, see TargetGeometry::at
+            pending.push_back({item, prop, ast});
+        }
+    }
+
+    std::function<std::optional<long long>(const QString&, int)> resolveIdent =
+        [&](const QString& name, int prop) -> std::optional<long long> {
+        if (prop < 0) {
+            if (name == QLatin1String("VIEWPORT_TX")) return vpTx;
+            if (name == QLatin1String("VIEWPORT_TY")) return vpTy;
+            if (name == QLatin1String("VIEWPORT_PX")) return vpPx;
+            if (name == QLatin1String("VIEWPORT_PY")) return vpPy;
+            if (name.startsWith(QLatin1String("PANEL1_"))) {
+                if (name == QLatin1String("PANEL1_X")) return panel ? panel->x : 0;
+                if (name == QLatin1String("PANEL1_Y")) return panel ? panel->y : 0;
+                if (name == QLatin1String("PANEL1_TX")) return panel ? panel->tx : vpTx;
+                if (name == QLatin1String("PANEL1_TY")) return panel ? panel->ty : vpTy;
+            }
+            return std::nullopt;
+        }
+        if (duplicateNames.contains(name)) return std::nullopt;
+        const auto it = byName.constFind(name);
+        if (it == byName.constEnd()) return std::nullopt;
+        // .textSize and .enabled depend on nothing that is still resolving, so
+        // they are answered directly rather than through the map below -- and
+        // .enabled against THIS export's target/region, the same check
+        // isEffectivelyHidden makes when deciding to skip the node entirely.
+        if (prop == 4) {
+            return isComponentItem(*it)
+                       ? std::optional<long long>((*it)->data(0, kTextContentRole).toString().length())
+                       : std::nullopt;
+        }
+        if (prop == 5) return isEffectivelyHidden(*it, target, region) ? 0 : 1;
+        const auto found = resolved.find({*it, prop});
+        return found != resolved.end() ? std::optional<long long>(found->second) : std::nullopt;
+    };
+
+    // `this` names whichever node's property is being evaluated -- the parser
+    // has no notion of that, so it is substituted per pending entry.
+    auto resolveIdentFor = [&resolveIdent](const QTreeWidgetItem* self) {
+        const QString selfName = bareName(self);
+        return [&resolveIdent, selfName](const QString& name, int prop) {
+            return resolveIdent(name == QLatin1String("this") ? selfName : name, prop);
+        };
+    };
+
+    bool progress = true;
+    while (progress && !pending.isEmpty()) {
+        progress = false;
+        for (int i = pending.size() - 1; i >= 0; --i) {
+            const auto v = evalExpr(pending[i].ast, resolveIdentFor(pending[i].item));
+            if (!v) continue;
+            resolved[{pending[i].item, pending[i].prop}] = *v;
+            pending.removeAt(i);
+            progress = true;
+        }
+    }
+
+    for (QTreeWidgetItem* item : components) {
+        std::array<long long, 4> vals{};
+        for (int prop = 0; prop < 4; ++prop) {
+            const auto it = resolved.find({item, prop});
+            long long value = (it != resolved.end()) ? it->second
+                                                     : item->data(0, kGeomRoles[prop]).toLongLong();
+            // Same floors the editor's resolver applies: a position cannot be
+            // negative, a size cannot be zero.
+            value = (prop >= 2) ? std::max<long long>(1, value) : std::max<long long>(0, value);
+            vals[static_cast<size_t>(prop)] = value;
+        }
+        out.values.insert(item, vals);
+    }
+    return out;
+}
+
 // Cross-reference resolver for a position expression's `Other.pos.x`-style
 // identifiers -- these are never runtime-variable, only VIEWPORT_* is (see
 // emitExprCpp), so they're baked to the already-resolved value every other
-// geometry node's own codegen uses. `.enabled` (prop 5) is the one exception
-// that isn't itself stored on the node -- it's recomputed here the same way
-// resolveAllPtr's own resolveIdent does, against this export's actual
-// target/region rather than whatever happened to be selected in the sidebar
-// when the scene was last edited. Shared by genCtTextBoxBody/
-// genCtTextBoxEraseBody and genSingleChoiceDecl's own copy of the same logic.
+// geometry node's own codegen uses -- taken from `geom`, this export target's
+// own resolution (see TargetGeometry), never from the editor's cached roles,
+// which hold whatever target the scene was last authored on. `.enabled`
+// (prop 5) is the one exception that isn't itself stored on the node -- it's
+// recomputed here the same way resolveAllPtr's own resolveIdent does, against
+// this export's actual target/region rather than whatever happened to be
+// selected in the sidebar when the scene was last edited. Shared by
+// genCtTextBoxBody/genCtTextBoxEraseBody and genSingleChoiceDecl's own copy of
+// the same logic.
 long long resolvePositionRef(QTreeWidgetItem* rootItem, const QString& target, const QString& region,
-                              const QTreeWidgetItem* self, const QString& rawName, int prop) {
+                              const QTreeWidgetItem* self, const QString& rawName, int prop,
+                              const TargetGeometry& geom) {
     const QString wanted = (rawName == QLatin1String("this")) ? bareName(self) : rawName;
     for (QTreeWidgetItem* other : collectComponentItems(rootItem)) {
         if (bareName(other) != wanted) continue;
         switch (prop) {
-            case 0: return other->data(0, kPosXRole).toInt();
-            case 1: return other->data(0, kPosYRole).toInt();
-            case 2: return other->data(0, kSizeWRole).toInt();
-            case 3: return other->data(0, kSizeHRole).toInt();
+            case 0:
+            case 1:
+            case 2:
+            case 3: return geom.at(other, prop);
             case 4: return other->data(0, kTextContentRole).toString().length();
             case 5: return isEffectivelyHidden(other, target, region) ? 0 : 1;
             default: return 0;
@@ -1390,50 +1603,58 @@ long long resolvePositionRef(QTreeWidgetItem* rootItem, const QString& target, c
     return 0;
 }
 
-// Emits one position component (x or y) of `item` as a runtime C++
-// expression when `variadic` is set and the node's stored expression text
-// (kPosXExprRole/kPosYExprRole) parses -- the same VIEWPORT_TX/TY/PX/PY-aware
-// placement a SingleChoice's own members already get on a variadic target
-// (see the kVariadicTargets doc comment above) -- falling back to the
-// already-resolved literal otherwise (fixed target, or an expression that
-// doesn't parse). A ctTextBox has exactly one position, unlike a
-// SingleChoice's several members, so this re-evaluates inline in Draw_/
-// Erase_ rather than needing separate mutable storage populated by a Make_.
-QString emitPosComponent(const QTreeWidgetItem* item, int exprRole, int literalRole, bool variadic,
-                          QTreeWidgetItem* rootItem, const QString& target, const QString& region, int depth = 0) {
+// Emits one geometry component of `item` -- `prop` indexes kGeomExprRoles, so
+// 0/1 are pos.x/pos.y and 2/3 are size.x/size.y -- as a runtime C++ expression
+// when `variadic` is set and the node's stored expression text parses: the same
+// VIEWPORT_TX/TY/PX/PY-aware placement a SingleChoice's own members already get
+// on a variadic target (see the kVariadicTargets doc comment above). Falls back
+// to the literal `geom` resolved for this export target otherwise (a fixed
+// target, or an expression that doesn't parse).
+//
+// Sizes go through this for the same reason positions do: `(VIEWPORT_TX >> 2)`
+// is no more a constant on a variadic target than `VIEWPORT_TX >> 1` is, and
+// baking it would freeze a slider's track, or a box's footprint, at one
+// target's viewport. On the variadic targets whose viewport_*() really are
+// constexpr (DS/DSi/3DS/Switch -- see kRuntimePosTargets) the emitted
+// expression simply folds, exactly as the position next to it does.
+//
+// A ctTextBox has exactly one geometry, unlike a SingleChoice's several
+// members, so this re-evaluates inline in Draw_/Erase_ rather than needing
+// separate mutable storage populated by a Make_.
+QString emitGeomComponent(const QTreeWidgetItem* item, int prop, bool variadic, QTreeWidgetItem* rootItem,
+                           const QString& target, const QString& region, const TargetGeometry& geom,
+                           int depth = 0) {
     if (variadic) {
-        QString src = item->data(0, exprRole).toString().trimmed();
+        QString src = item->data(0, kGeomExprRoles[prop]).toString().trimmed();
         if (src.isEmpty()) src = QStringLiteral("0");
         bool ok = false;
         const ExprPtr ast = ExprParser(src).parse(ok);
         if (ok) {
-            auto resolveFor = [rootItem, target, region, item](const QString& n, int p) {
-                return resolvePositionRef(rootItem, target, region, item, n, p);
+            auto resolveFor = [rootItem, target, region, item, &geom](const QString& n, int p) {
+                return resolvePositionRef(rootItem, target, region, item, n, p, geom);
             };
-            // pos.x/pos.y of another node: splice in that node's own
-            // expression (parenthesized), recursively -- see emitExprCpp.
+            // Another node's pos/size: splice in that node's own expression
+            // (parenthesized), recursively -- see emitExprCpp. Size references
+            // are spliced as well as positions, since a node sized off the
+            // viewport is exactly as runtime-variable as one placed off it.
             // Depth-capped so a reference cycle (A.pos.x = B.pos.x,
             // B.pos.x = A.pos.x -- the editor's resolver just leaves those
             // unresolved) falls back to the baked value instead of recursing
             // forever.
-            auto substitute = [rootItem, target, region, item, depth](const QString& n,
-                                                                      int p) -> std::optional<QString> {
-                if ((p != 0 && p != 1) || depth >= 16) return std::nullopt;
+            auto substitute = [rootItem, target, region, item, depth, &geom](const QString& n,
+                                                                             int p) -> std::optional<QString> {
+                if (p < 0 || p > 3 || depth >= 16) return std::nullopt;
                 const QString wanted = (n == QLatin1String("this")) ? bareName(item) : n;
                 for (QTreeWidgetItem* other : collectComponentItems(rootItem)) {
                     if (bareName(other) != wanted) continue;
-                    return "(" +
-                           emitPosComponent(other, p == 0 ? kPosXExprRole : kPosYExprRole,
-                                            p == 0 ? kPosXRole : kPosYRole, true, rootItem, target, region,
-                                            depth + 1) +
-                           ")";
+                    return "(" + emitGeomComponent(other, p, true, rootItem, target, region, geom, depth + 1) + ")";
                 }
                 return std::nullopt;
             };
             return emitExprCpp(ast, resolveFor, substitute);
         }
     }
-    return QString::number(item->data(0, literalRole).toInt());
+    return QString::number(geom.at(item, prop));
 }
 
 // Emits one ctTextBox's data + placement function body: a
@@ -1471,11 +1692,15 @@ QString emitPosComponent(const QTreeWidgetItem* item, int exprRole, int literalR
 CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes,
                                bool variadic, QTreeWidgetItem* rootItem, const QString& target,
                                const QString& region, const QString& dataPrefixTok, const QString& charmapFn,
-                               const QString& ntOffXExpr, const QString& ntOffYExpr) {
-    const int x = item->data(0, kPosXRole).toInt() + ntOffX;
-    const int y = item->data(0, kPosYRole).toInt() + ntOffY;
-    const int w = std::max(1, item->data(0, kSizeWRole).toInt());
-    const int h = std::max(1, item->data(0, kSizeHRole).toInt());
+                               const QString& ntOffXExpr, const QString& ntOffYExpr,
+                               const TargetGeometry& geom) {
+    const int x = geom.x(item) + ntOffX;
+    const int y = geom.y(item) + ntOffY;
+    // The wrap below is laid out at generation time, so the box's own size is
+    // baked even on a variadic target (unlike its position) -- but baked from
+    // THIS target's resolution, not the editor's.
+    const int w = geom.w(item);
+    const int h = geom.h(item);
     const auto align = static_cast<TextAlign>(item->data(0, kAlignRole).toInt());
     const QString splitterStr = item->data(0, kSplitterRole).toString();
     const QChar splitter = splitterStr.isEmpty() ? QLatin1Char(' ') : splitterStr.at(0);
@@ -1515,7 +1740,7 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
                                  .arg(sourceArgs);
             } else if (variadic) {
                 // Re-derive the box's own VIEWPORT_TX/TY-based placement
-                // expression at runtime (see emitPosComponent) instead of
+                // expression at runtime (see emitGeomComponent) instead of
                 // baking the value it happened to resolve to in the editor --
                 // otherwise this row's arrow-anchor (SingleChoice's own
                 // `_options[i]`, itself expression-driven) and its drawn text
@@ -1524,8 +1749,8 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
                 // fixed ntOffX/ntOffY ints -- see generateCode's own comment
                 // on them) keep the nametable-quadrant term itself runtime-
                 // resolved too, for the same reason.
-                const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
-                const QString yExpr = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
+                const QString xExpr = emitGeomComponent(item, 0, true, rootItem, target, region, geom);
+                const QString yExpr = emitGeomComponent(item, 1, true, rootItem, target, region, geom);
                 QString xFinal = startCol ? QString("(%1 + %2)").arg(xExpr).arg(startCol) : xExpr;
                 QString yFinal = row ? QString("(%1 + %2)").arg(yExpr).arg(row) : yExpr;
                 if (ntOffXExpr != QLatin1String("0")) xFinal = QString("(%1 + %2)").arg(xFinal, ntOffXExpr);
@@ -1555,11 +1780,12 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
 // switching to shorter text later doesn't leave stale tiles behind.
 QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                                QTreeWidgetItem* rootItem, const QString& target, const QString& region,
-                               const QString& charmapFn, const QString& ntOffXExpr, const QString& ntOffYExpr) {
-    const int x = item->data(0, kPosXRole).toInt() + ntOffX;
-    const int y = item->data(0, kPosYRole).toInt() + ntOffY;
-    const int w = std::max(1, item->data(0, kSizeWRole).toInt());
-    const int h = std::max(1, item->data(0, kSizeHRole).toInt());
+                               const QString& charmapFn, const QString& ntOffXExpr, const QString& ntOffYExpr,
+                               const TargetGeometry& geom) {
+    const int x = geom.x(item) + ntOffX;
+    const int y = geom.y(item) + ntOffY;
+    const int w = geom.w(item);
+    const int h = geom.h(item);
     // With a charmap, the blank tile is bound to a local `constexpr` first
     // rather than passed inline as `charmap_x(' ')`: an inline call in a plain
     // argument position is only *allowed* to fold at compile time, and an
@@ -1584,8 +1810,8 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
             // has to erase exactly where the current Draw_ call landed, which
             // only holds if both re-derive the same expression at runtime --
             // ntOffXExpr/ntOffYExpr included.
-            const QString xExpr = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
-            const QString yExpr = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
+            const QString xExpr = emitGeomComponent(item, 0, true, rootItem, target, region, geom);
+            const QString yExpr = emitGeomComponent(item, 1, true, rootItem, target, region, geom);
             QString xFinal = xExpr;
             QString yFinal = row ? QString("(%1 + %2)").arg(yExpr).arg(row) : yExpr;
             if (ntOffXExpr != QLatin1String("0")) xFinal = QString("(%1 + %2)").arg(xFinal, ntOffXExpr);
@@ -1665,32 +1891,57 @@ QStringList childNamespaceNames(const QTreeWidgetItem* item, const QString& targ
 // through the volatile object field by field.
 QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                                 bool runtimePos, QTreeWidgetItem* rootItem, const QString& target,
-                                const QString& region, const QString& ntOffXExpr, const QString& ntOffYExpr) {
-    const int x = item->data(0, kPosXRole).toInt() + ntOffX;
-    const int y = item->data(0, kPosYRole).toInt() + ntOffY;
-    const int w = std::clamp(item->data(0, kSizeWRole).toInt(), 1, 255);
-    const int h = std::clamp(item->data(0, kSizeHRole).toInt(), 1, 255);
+                                const QString& region, const QString& ntOffXExpr, const QString& ntOffYExpr,
+                                const TargetGeometry& geom) {
+    const int x = geom.x(item) + ntOffX;
+    const int y = geom.y(item) + ntOffY;
+    const int w = geom.w(item);
+    const int h = geom.h(item);
 
     // The anchor as C++: a baked literal on a fixed panel, or the node's own
-    // VIEWPORT_*-aware expression on a variadic one (see emitPosComponent).
+    // VIEWPORT_*-aware expression on a variadic one (see emitGeomComponent).
     // ntOffXExpr/ntOffYExpr rather than the fixed ntOffX/ntOffY ints for the
     // quadrant term, same reason every other variadic emission here uses them.
     QString xCpp = QString::number(x);
     QString yCpp = QString::number(y);
+    // And the footprint the same way, but only where it has to be: a size over
+    // VIEWPORT_*/PANEL1_* is no more constant on a variadic target than a
+    // position is, and baking it would pin a slider's track or a box's
+    // footprint to one target's viewport. A size that doesn't name the viewport
+    // at all -- which is nearly every one -- stays the baked literal it has
+    // always been, so the emitted size only ever changes where the scene asked
+    // it to vary. The "does it name the viewport" test is whether the emitted
+    // expression reached for a video:: accessor, which is the only way one gets
+    // in there (see emitExprCpp); everything else folded to arithmetic on
+    // constants that `w`/`h` already hold.
+    //
+    // static_cast<u8> because Rect::size is a vec2<u8>: brace-initialising that
+    // from an int expression is a narrowing conversion, an error in aggregate
+    // init unless the value is a constant that fits (true on the folding
+    // targets, not on a genuinely runtime one). The cast also means a
+    // viewport-driven size is truncated rather than clamped past 255 -- a tile
+    // count that large is off every panel this targets anyway, and the frozen
+    // literal it replaces was no more right.
+    QString wCpp = QString::number(w);
+    QString hCpp = QString::number(h);
     if (variadic) {
-        xCpp = emitPosComponent(item, kPosXExprRole, kPosXRole, true, rootItem, target, region);
-        yCpp = emitPosComponent(item, kPosYExprRole, kPosYRole, true, rootItem, target, region);
+        xCpp = emitGeomComponent(item, 0, true, rootItem, target, region, geom);
+        yCpp = emitGeomComponent(item, 1, true, rootItem, target, region, geom);
         if (ntOffXExpr != QLatin1String("0")) xCpp = QString("(%1 + %2)").arg(xCpp, ntOffXExpr);
         if (ntOffYExpr != QLatin1String("0")) yCpp = QString("(%1 + %2)").arg(yCpp, ntOffYExpr);
         xCpp = QString("static_cast<u16>(%1)").arg(xCpp);
         yCpp = QString("static_cast<u16>(%1)").arg(yCpp);
+        const QString wExpr = emitGeomComponent(item, 2, true, rootItem, target, region, geom);
+        const QString hExpr = emitGeomComponent(item, 3, true, rootItem, target, region, geom);
+        if (wExpr.contains(QLatin1String("video::"))) wCpp = QString("static_cast<u8>(%1)").arg(wExpr);
+        if (hExpr.contains(QLatin1String("video::"))) hCpp = QString("static_cast<u8>(%1)").arg(hExpr);
     }
-    const QString rectLiteral = QString("Rect{{%1, %2}, {%3, %4}}").arg(xCpp, yCpp).arg(w).arg(h);
+    const QString rectLiteral = QString("Rect{{%1, %2}, {%3, %4}}").arg(xCpp, yCpp, wCpp, hCpp);
 
     // This node's own Make() drives its children's too, every time -- see
     // childNamespaceNames for why they are made unconditionally. Own geometry
     // is resolved first: a child's placement expression that names this node is
-    // spliced in textually (emitPosComponent), never read back out of `rect`,
+    // spliced in textually (emitGeomComponent), never read back out of `rect`,
     // but ordering it this way means a child Make() that ever did read the
     // parent reads a resolved one.
     QStringList childMakes;
@@ -1801,6 +2052,16 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     // compile-time constant instead.
     lines << QString("%1inline atomic u8 option = %2;").arg(bssPrefixTok).arg(defaultOption);
     lines << QString("inline constexpr u8 nOptions = %1;").arg(nOptions);
+
+    // Which axis this menu steps (kSingleChoiceVerticalRole), as a value the
+    // scene can read rather than a fact it has to remember from the editor.
+    // Pass() below already bakes the axis into the two bits it spends, so this
+    // exists for the hand-written side: a draw hook that lays options down a
+    // column or across a row, or a static_assert that this menu disagrees with
+    // the Canvas holding it. `constexpr`, so it addresses nothing and costs no
+    // ROM -- the generated code itself never reads it.
+    lines << QString("inline constexpr bool vertical = %1;")
+                 .arg(scVertical ? QLatin1String("true") : QLatin1String("false"));
 
     // The whole menu's footprint: the smallest Rect covering every option it
     // shows. A SingleChoice has no geometry of its own to place -- this is
@@ -1952,21 +2213,32 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
 }
 
 
-// Emits one Button node's declarations: its geometry (see genGeometryStorage)
-// and the Enable()/Disable() (and, if opted in, bool-returning Toggle())
-// functions plus Draw() and Pass() that read/write its enabled bit. uitk
-// provides no appearance of its own for a button -- only the forced-to-define
-// DrawEnabled()/DrawDisabled() hooks hand-written code must supply, dispatched
-// by Draw() (and reached directly by Pass(), see below): a button could look like anything from a 1x1 tickbox to a sprite,
-// so there's no one appearance uitk could bake that would suit all of them, and
-// no selected/unselected state of its own either -- enabled or disabled,
-// dispatched purely off its own rect, is all the memory this toolkit offers.
-// Leaving DrawEnabled()/DrawDisabled() undefined is only ever caught at link
-// time, and only once something actually calls the function (directly, or
-// transitively via Draw()) that needed it -- the closest thing to "forced by
-// compile" this toolchain's codegen can offer without inventing a wholly new
-// enforcement mechanism (see the uitk research notes on this: no existing node
-// kind emits a declaration-only function).
+// Emits one Button node's declarations: its geometry (see genGeometryStorage),
+// the Enable()/Disable() (and, if opted in, bool-returning Toggle()) functions
+// that write its enabled bit, the Enabled() that reads it, and the Pass() that
+// flips it. uitk provides no appearance of its own for a button -- only the
+// forced-to-define Draw() hook hand-written code must supply: a button could
+// look like anything from a 1x1 tickbox to a sprite, so there's no one
+// appearance uitk could bake that would suit all of them, and no
+// selected/unselected state of its own either -- enabled or disabled is all the
+// memory this toolkit offers.
+//
+// ONE Draw(), not the DrawEnabled()/DrawDisabled() pair this used to emit with
+// a generated dispatcher over it. A button's two states are two appearances of
+// one widget, not two operations, and nearly every implementation of the pair
+// shared a body that differed by which tile or attribute it wrote -- so the
+// branch belongs inside the hook, off Enabled(), where it is written once. It
+// also means the branch lives once in the out-of-line Draw() rather than being
+// inlined into every call site, and leaves the scene free to force-inline its
+// own definition (`AI inline void Draw()`, see ::AI in technology.hpp) exactly
+// as it could the two hooks before.
+//
+// Leaving Draw() undefined is only ever caught at link time, and only once
+// something actually calls it (directly, or transitively via Pass() or a
+// Canvas's DrawComponents()) -- the closest thing to "forced by compile" this
+// toolchain's codegen can offer without inventing a wholly new enforcement
+// mechanism (see the uitk research notes on this: no existing node kind emits a
+// declaration-only function).
 //
 // Everything here lands inside this node's own `namespace <name>`, so the verbs
 // carry no `_<name>` suffix: `gen::options::reduceFlashesButton::Draw()`, not
@@ -1989,7 +2261,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
 QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                        bool runtimePos, QTreeWidgetItem* rootItem, const QString& target, const QString& region,
                        const QString& ntOffXExpr, const QString& ntOffYExpr, int bitIndex,
-                       const QString& stateArrayName) {
+                       const QString& stateArrayName, const TargetGeometry& geom) {
     const bool toggleable = item->data(0, kButtonToggleableRole).toBool();
     const int byteIndex = bitIndex / 8;
     const int bitInByte = bitIndex % 8;
@@ -1998,13 +2270,7 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
 
     QStringList lines =
         genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
-                            ntOffXExpr, ntOffYExpr);
-
-    // Forced-to-define: no body here, deliberately -- see the doc comment
-    // above. Hand-written game code must define these somewhere linked into
-    // the final binary.
-    lines << QString("void DrawEnabled();");
-    lines << QString("void DrawDisabled();");
+                            ntOffXExpr, ntOffYExpr, geom);
 
     lines << QString("inline AI void Enable() { %1 |= %2; }").arg(byteExpr, maskExpr);
     lines << QString("inline AI void Disable() { %1 &= static_cast<u8>(~%2); }").arg(byteExpr, maskExpr);
@@ -2022,8 +2288,22 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
                           "}")
                      .arg(byteExpr, maskExpr);
     }
-    lines << QString("inline AI void Draw() { (%1 & %2) ? DrawEnabled() : DrawDisabled(); }")
-                 .arg(byteExpr, maskExpr);
+    // The button's own bit, as a value rather than a mutation -- the one thing
+    // Enable()/Disable()/Toggle() could not previously give hand-written code.
+    // Draw() below is defined by the scene and has to dispatch on the state
+    // somehow, and `button_state` is a shared array indexed by a bit number
+    // uitk assigns (see this function's doc comment), not something a hook
+    // could reasonably reach into itself.
+    //
+    // `bool`, not the raw masked byte: the bit's position is uitk's business,
+    // and `if (Enabled())` is the only thing a caller wants from it. Returns
+    // the masked value directly, same as Toggle() does.
+    lines << QString("inline AI bool Enabled() { return %1 & %2; }").arg(byteExpr, maskExpr);
+
+    // Forced-to-define: no body here, deliberately -- see the doc comment
+    // above. Hand-written game code must define this somewhere linked into the
+    // final binary, and dispatch on Enabled() itself.
+    lines << QString("void Draw();");
 
     // The input hook, and the reason the mutators above exist: one Pass(u8)
     // per interactive node, so a menu loop can hand the frame's input to
@@ -2035,7 +2315,7 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     // button has exactly one thing it can do to the only state uitk owns for
     // it (that one bit), so there is nothing here left for hand-written code
     // to decide. What the press MEANS is still entirely hand-written -- it
-    // lands in the DrawEnabled()/DrawDisabled() this calls.
+    // lands in the Draw() this calls.
     //
     // Emitted ONLY for a toggleable button, alongside Toggle() itself. Press
     // is a flip and nothing else: a button that can't flip has no press this
@@ -2057,10 +2337,13 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     // and a button that only answered to A would quietly break any menu
     // driven by another one.
     //
-    // Then it acts, straight into the forced-to-define hooks, without going
-    // through Draw(): the new state is already known here, so dispatching off
-    // the bit again would re-read storage that is `atomic` (volatile on NES)
-    // to reach a branch this already took.
+    // Then it acts: flip the bit, then repaint through the one hook there is.
+    // Toggle() still returns the bit's new value, but nothing here can use it
+    // -- Draw() reads the state itself (via Enabled()), so a press costs one
+    // more read of that `atomic` (volatile on NES) byte than it did when there
+    // were two hooks to dispatch between. That is the price of the scene having
+    // one Draw() to write instead of two, and it is an LDA/AND on the only
+    // target where it is measurable.
     if (toggleable) {
         // Toggle() returns the bit's NEW value, so the press and the repaint
         // share one read-modify-write of the shared state byte.
@@ -2070,7 +2353,8 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
                           "    ));\n"
                           "\n"
                           "    if (!wanted) return;\n"
-                          "    Toggle() ? DrawEnabled() : DrawDisabled();\n"
+                          "    Toggle();\n"
+                          "    Draw();\n"
                           "}");
     }
 
@@ -2104,13 +2388,21 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
 // be: a slider's track length IS its range -- DrawSliderBody lays that many
 // cells down, and the hooks clamp against the same width to know how far the
 // handle can travel (demo/ui/impl/sliders.hpp) -- and a Rect carries it
-// inseparably from the anchor regardless.
+// inseparably from the anchor regardless. Which dimension of that Rect is the
+// track is the slider's own axis (kSliderVerticalRole): a vertical slider's
+// hooks measure `size.y` where a horizontal one measures `size.x`. uitk emits
+// no range either way -- the axis reaches the scene as the two input bits
+// Pass() spends and as the `vertical` constant below, and what to measure
+// against it stays the hooks' decision.
 QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                        bool runtimePos, QTreeWidgetItem* rootItem, const QString& target, const QString& region,
-                       const QString& bssPrefixTok, const QString& ntOffXExpr, const QString& ntOffYExpr) {
+                       const QString& bssPrefixTok, const QString& ntOffXExpr, const QString& ntOffYExpr,
+                       const TargetGeometry& geom) {
+    const bool vertical = item->data(0, kSliderVerticalRole).toBool();
+
     QStringList lines =
         genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
-                            ntOffXExpr, ntOffYExpr);
+                            ntOffXExpr, ntOffYExpr, geom);
 
     // The slider's holding value -- the one piece of state uitk does own for
     // one. `atomic` (technology.hpp: volatile on NES, a true atomic
@@ -2127,8 +2419,20 @@ QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     // bounding it is the caller's job.
     lines << QString("%1inline atomic u8 amount = 0;").arg(bssPrefixTok);
 
-    // Forced-to-define, same as a Button's DrawEnabled()/DrawDisabled() --
-    // hand-written game code must define both of these somewhere linked
+    // Which axis the handle moves along (kSliderVerticalRole). The generated
+    // Pass() below already bakes it into the two input bits it spends, so this
+    // is here for the hooks uitk does NOT write: Draw() and DrawChange() have
+    // to know whether the track runs along `rect.size.x` or down
+    // `rect.size.y`, and whether stepping a cell means +1 or +<row stride>.
+    // Emitting it keeps that decision sourced from the scene instead of
+    // duplicated as a literal in demo/ui/impl/sliders.hpp, where it could
+    // drift from what the editor says. `constexpr`, so it addresses nothing
+    // and costs no ROM.
+    lines << QString("inline constexpr bool vertical = %1;")
+                 .arg(vertical ? QLatin1String("true") : QLatin1String("false"));
+
+    // Forced-to-define, same as a Button's Draw() -- hand-written game code
+    // must define both of these somewhere linked
     // into the final binary. They're split because putting a slider on
     // screen and moving one already on screen are different amounts of
     // work, not two cases of one operation: Draw() lays down the whole
@@ -2180,27 +2484,57 @@ QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     // caller's own DrawChange().
     //
     // `payload` is the frame's input mask (input::Buttons, see
-    // pnes/input.hpp), the newly-pressed bits. Horizontal only: UP/DOWN move
-    // the focus between a menu's rows, and a slider has no second axis to
-    // spend them on. `amount` is read once into a local -- it is `atomic`
-    // (volatile on NES), and DrawChange() reads it again itself.
+    // pnes/input.hpp), the newly-pressed bits. Only the two bits of the
+    // slider's own axis are spent (kSliderVerticalRole) -- LEFT/RIGHT for a
+    // track along a row, UP/DOWN for one down a column -- and the other pair
+    // is left untouched for something outside to use. That is what lets a
+    // Canvas hold a slider and still move its own focus, in either
+    // orientation: a vertical Canvas wants a horizontal slider, a horizontal
+    // Canvas a vertical one (see genCanvasDecl). `amount` is read once into a
+    // local -- it is `atomic` (volatile on NES), and DrawChange() reads it
+    // again itself.
+    const QString slBack = vertical ? QStringLiteral("input::UP") : QStringLiteral("input::LEFT");
+    const QString slFwd = vertical ? QStringLiteral("input::DOWN") : QStringLiteral("input::RIGHT");
     lines << QString("inline AI void Pass(const u8 payload) {\n"
                       "    const u8 cur = amount;\n"
                       "\n"
-                      "    if      (payload & input::RIGHT) DrawChange(static_cast<u8>(cur + 1));\n"
-                      "    else if (payload & input::LEFT)  DrawChange(static_cast<u8>(cur - 1));\n"
-                      "}");
+                      "    if      (payload & %1) DrawChange(static_cast<u8>(cur + 1));\n"
+                      "    else if (payload & %2) DrawChange(static_cast<u8>(cur - 1));\n"
+                      "}")
+                 .arg(slFwd, slBack);
 
     return lines.join("\n") + "\n";
 }
 
 
+// Whether `item` -- known to be a Canvas component (see hasGeneratedPass) --
+// has a nullary Draw() in its own namespace on this target.
+//
+// A Slider always does (forced-to-define, see genSliderDecl) and so does a
+// Button (generated, dispatching off its state bit, see genButtonDecl). A
+// SingleChoice only does when every option it shows is a ctTextBox: an
+// rtTextBox's text isn't known until runtime, so there is nothing for uitk to
+// draw, and that menu's own Draw() is omitted rather than half-emitted (see
+// genSingleChoiceDecl). This is what decides whether a Canvas can offer
+// DrawComponents() at all.
+bool componentHasDraw(QTreeWidgetItem* item, const QString& target, const QString& region) {
+    if (isSingleChoiceItem(item)) {
+        const QVector<QTreeWidgetItem*> members = singleChoiceMembers(item, target, region);
+        if (members.isEmpty()) return false;
+        for (QTreeWidgetItem* member : members) {
+            if (!isCtTextBoxItem(member)) return false;
+        }
+        return true;
+    }
+    return isSliderItem(item) || isButtonItem(item);
+}
+
 // Emits one Canvas node's own declarations: the `components` table over the
 // interactable nodes nested under it, the `index` holding which of them has
 // focus, the Make() that drives its children, the forced-to-define
-// DrawUpdate() that repaints a focus move, and the generated Pass() that turns
-// a frame's input into either a focus move or a call into the focused
-// component. Its children's own namespaces are emitted separately,
+// DrawUpdate() that repaints a focus move, the DrawComponents() that paints
+// every component in one call, and the generated Pass() that turns a frame's
+// input into either a focus move or a call into the focused component. Its children's own namespaces are emitted separately,
 // immediately BEFORE this, by emitNodeNamespace -- which is what lets the
 // table below name them.
 //
@@ -2214,8 +2548,15 @@ QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
 //
 // Never returns empty, unlike genSingleChoiceDecl: a Canvas with nothing
 // focusable in it still has children to make, so it still gets a namespace and
-// a Make(). What it loses is the table, the index, DrawUpdate() and Pass() --
-// there is no focus to hold or move.
+// a Make(). What it loses is the table, the index, DrawUpdate(),
+// DrawComponents() and Pass() -- there is no focus to hold or move, and nothing
+// in the ring to draw.
+//
+// There is deliberately no Erase() counterpart to DrawComponents(). A Canvas
+// exists to hold more UI than a scene tends to clear in one go, and only a
+// SingleChoice has an Erase() at all (and only when every option opted into
+// Provide Erasing) -- a canvas-wide one could not be built out of parts that
+// mostly don't have it.
 //
 // `bssPrefixTok`/`dataPrefixTok` are empty on every target but NES (see
 // generateCode): the first places `index`, the second the components table,
@@ -2257,6 +2598,18 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
         // authored index would mean a different control on different targets.
         lines << QString("%1inline atomic u8 index = 0;").arg(bssPrefixTok);
 
+        // Which axis moves the focus (kCanvasVerticalRole), same arrangement
+        // as a Slider's or a SingleChoice's own `vertical`: Pass() has the
+        // axis baked in, and this is the value the hand-written side can read
+        // -- a DrawUpdate() that slides a cursor sprite along the ring, or a
+        // static_assert that a nested component disagrees with this Canvas
+        // about the axis (agreement compiles, but leaves that component
+        // unadjustable -- see hasGeneratedPass). Emitted only where it means
+        // something: a Canvas with nothing focusable has no Pass() and no
+        // focus to move. `constexpr`, so it costs no ROM.
+        lines << QString("inline constexpr bool vertical = %1;")
+                     .arg(vertical ? QLatin1String("true") : QLatin1String("false"));
+
         // Forced-to-define, like every other draw hook uitk emits: moving
         // focus has to unpaint one component and paint another, and what that
         // looks like is entirely the scene's business (an attribute change, a
@@ -2287,6 +2640,59 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
         return lines.join("\n") + "\n";
     }
 
+    // Paints the whole focus ring in one call: every component's own Draw(), in
+    // the table's order, which is the scene's order.
+    //
+    // Make() first, always. A component's Draw() reads its own `rect`/`pos`,
+    // and on a runtime-viewport target those are storage that Make() fills
+    // (genGeometryStorage) -- drawing before making paints at whatever address
+    // zero-initialised storage names. Make() already makes every child, so
+    // "Make() then DrawComponents()" is the whole entry sequence for a Canvas.
+    //
+    // Unrolled direct calls, not a walk over `components[]`: that table carries
+    // rects and Pass() only, and giving it a Draw() pointer per entry would cost
+    // ROM AND force an out-of-line copy of every component's Draw -- the same
+    // price InvokeableComponant's own comment describes for &Pass, except here
+    // there is nothing to buy with it. The call order is known at compile time,
+    // so direct calls let each AI'd body inline exactly as a hand-written
+    // sequence would.
+    //
+    // What a component's Draw() covers is that component's business, not this
+    // one's. A SingleChoice draws every option it shows (genSingleChoiceDecl);
+    // a Slider draws its track and handle; a Button's own hand-written Draw()
+    // dispatches on Enabled() to paint whichever state it is in -- which is
+    // exactly why this does NOT also walk each component's children. A
+    // button's children are typically its two alternative labels, stacked at one
+    // position (demo/ui/options.uis: DISABLE MUSIC / ENABLE MUSIC), so drawing
+    // them all would paint one over the other; choosing between them is what
+    // those two hooks exist for, and a child's namespace is nested INSIDE its
+    // parent's (gen::options::reduceFlashesButton::reduceFlashesText), so a
+    // hook can call `<label>::Draw()` unqualified from the parent's own scope.
+    //
+    // Omitted entirely -- no empty stub -- when any component has no Draw() of
+    // its own to call (see componentHasDraw). A partial DrawComponents() that
+    // quietly skipped a menu would be worse than its absence, which is a compile
+    // error at the call site naming this Canvas.
+    //
+    // Nothing here paints focus. Make() seeds `index` to 0 but DrawUpdate() is
+    // the hook that makes a component look focused, and its contract is the two
+    // rects of a MOVE -- so the initial highlight stays the scene's call, next
+    // to the rest of its first-frame drawing.
+    bool allComponentsDrawable = true;
+    for (QTreeWidgetItem* comp : comps) {
+        if (!componentHasDraw(comp, target, region)) {
+            allComponentsDrawable = false;
+            break;
+        }
+    }
+    if (allComponentsDrawable) {
+        QStringList drawBody;
+        for (QTreeWidgetItem* comp : comps) {
+            drawBody << QString("    %1::Draw();").arg(bareName(comp));
+        }
+        lines << QString("inline AI void DrawComponents() {\n%1\n}").arg(drawBody.join("\n"));
+    }
+
     // The input hook, and the point of the whole node: one Pass(u8) that a
     // menu loop can hand a frame's input to without knowing which control is
     // focused, or even what kind of control it is. `payload` is the
@@ -2297,10 +2703,13 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
     // -- it is never also delivered to a component, because the press that
     // leaves a control is not a press that control should act on. Everything
     // else goes straight through to the focused component's own Pass(), which
-    // is what lets a vertical Canvas hold a Slider: UP/DOWN are the Canvas's,
-    // LEFT/RIGHT are the slider's. A horizontal Canvas therefore cannot
-    // usefully hold one (nothing is left to adjust it with), which is a
-    // property of the layout, not something uitk can fix.
+    // is what lets a Canvas hold a Slider or a SingleChoice: a vertical Canvas
+    // spends UP/DOWN on focus and hands LEFT/RIGHT to a horizontal component, a
+    // horizontal Canvas spends LEFT/RIGHT and hands UP/DOWN to a vertical one
+    // (see kSliderVerticalRole/kSingleChoiceVerticalRole). A Canvas whose
+    // component agrees with it about the axis wins that axis and leaves the
+    // component unadjustable -- a property of the layout, and the author's
+    // call, not something uitk overrules.
     //
     // The ends don't wrap. A focus ring that jumps from the last control back
     // to the first is a different control scheme, not a better one, and it is
@@ -2362,6 +2771,12 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
 GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, const QString& region, int quadrant,
                              const QString& linkerPrefix, const QString& bssPrefix, const QString& dataPrefix,
                              const QString& charmap, const QString& sceneName) {
+    // Every node's geometry, resolved for THIS target rather than read back out
+    // of the editor's cached roles, which hold the target the scene was last
+    // authored on (see TargetGeometry). Computed once here and handed to every
+    // emitter below, so one export is one resolution.
+    const TargetGeometry geom = resolveGeometryForTarget(rootItem, target, region);
+
     const int ntOffX = (quadrant & 1) * kNametableQuadW;
     const int ntOffY = ((quadrant >> 1) & 1) * kNametableQuadH;
     // bss_prefix/data_prefix are placement attributes -- a bank or section a
@@ -2477,7 +2892,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     // Children are emitted BEFORE their parent's own declarations, because a
     // parent can name them (a SingleChoice's Draw() calls each member's Draw())
     // while the reverse never happens -- a child's placement expression that
-    // references its parent is spliced in textually by emitPosComponent, not
+    // references its parent is spliced in textually by emitGeomComponent, not
     // resolved through a symbol.
     //
     // `makeAll` collects the qualified name of every node the scene-level
@@ -2508,14 +2923,15 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
 
             if (isButtonItem(child)) {
                 body << genButtonDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
-                                       ntOffXExpr, ntOffYExpr, buttonBitIndex.value(child), kButtonStateArrayName);
+                                       ntOffXExpr, ntOffYExpr, buttonBitIndex.value(child), kButtonStateArrayName,
+                                       geom);
                 // Only a toggleable button gets a Pass(), and so only one of
                 // those puts input:: in the header -- see genButtonDecl.
                 if (child->data(0, kButtonToggleableRole).toBool()) usesInput = true;
                 makeAll << qual;
             } else if (isSliderItem(child)) {
                 body << genSliderDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
-                                       bssPrefixTok, ntOffXExpr, ntOffYExpr);
+                                       bssPrefixTok, ntOffXExpr, ntOffYExpr, geom);
                 usesInput = true;
                 makeAll << qual;
             } else if (isSingleChoiceItem(child)) {
@@ -2539,7 +2955,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                 // rtTextBox, negative space -- and each now carries the same
                 // rect/pos/Make() the placeable kinds above do.
                 QStringList own = genGeometryStorage(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem,
-                                                      target, region, ntOffXExpr, ntOffYExpr);
+                                                      target, region, ntOffXExpr, ntOffYExpr, geom);
                 makeAll << qual;
 
                 const QString charmapFn = nodeCharmapFn(child);
@@ -2561,19 +2977,19 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                     // out-of-line copy left for a section attribute to pin.
                     const CtTextBoxGen gen = genCtTextBoxBody(child, ntOffX, ntOffY, isNes, variadic, rootItem,
                                                                 target, region, dataPrefixTok, charmapFn,
-                                                                ntOffXExpr, ntOffYExpr);
+                                                                ntOffXExpr, ntOffYExpr, geom);
                     if (!gen.rootDecls.isEmpty()) own << gen.rootDecls;
                     own << QString("inline AI void Draw() {\n%1\n}").arg(gen.body);
 
                     if (child->data(0, kProvideErasingRole).toBool()) {
                         const QString eraseBody = genCtTextBoxEraseBody(child, ntOffX, ntOffY, isNes, variadic,
                                                                           rootItem, target, region, charmapFn,
-                                                                          ntOffXExpr, ntOffYExpr);
+                                                                          ntOffXExpr, ntOffYExpr, geom);
                         own << QString("inline AI void Erase() {\n%1\n}").arg(eraseBody);
                     }
                 } else if (isRtTextBoxItem(child)) {
-                    const int w = std::max(1, child->data(0, kSizeWRole).toInt());
-                    const int h = std::max(1, child->data(0, kSizeHRole).toInt());
+                    const int w = geom.w(child);
+                    const int h = geom.h(child);
                     const QString splitterStr = child->data(0, kSplitterRole).toString();
                     const QChar splitter = splitterStr.isEmpty() ? QLatin1Char(' ') : splitterStr.at(0);
                     // Text isn't known until runtime, so there's nothing here to
@@ -2792,7 +3208,7 @@ protected:
         }
 
         // uitk draws no real appearance for a button (that's entirely
-        // DrawEnabled_/DrawDisabled_'s job -- see genButtonDecl), but the
+        // its hand-written Draw()'s job -- see genButtonDecl), but the
         // editor still needs *something* visible to place/drag/select.
         // Only the edge/corner tiles of the box are painted -- a 1-tile-wide
         // frame, same as a real tile-based button border would spend tiles
@@ -3592,7 +4008,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     buttonDefaultEnabledCheck->setToolTip("Whether the scene starts with this button Enabled or Disabled.");
     buttonToggleableCheck->setToolTip("Also generate a Toggle_<Name>() that flips and returns the enabled flag.");
     buttonHasBoxCheck->setToolTip("Also generate a <Name>_box (vec2<u8>) constant with this button's Size X/Y.\n"
-                                   "Leave unchecked if your DrawEnabled_/DrawDisabled_/etc. implementation has "
+                                   "Leave unchecked if your Draw()/etc. implementation has "
                                    "no use for its own footprint (e.g. a fixed-size sprite).");
 
     // SingleChoice-only (see kSingleChoiceVerticalRole).
@@ -3610,8 +4026,16 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // Canvas-only (see kCanvasVerticalRole).
     auto* canvasVerticalCheck = new QCheckBox(properties);
     canvasVerticalCheck->setToolTip("Vertical: focus steps with UP/DOWN and everything else (including\n"
-                                     "LEFT/RIGHT) reaches the focused component -- the layout a Slider can\n"
-                                     "live in. Unchecked: focus steps with LEFT/RIGHT instead.");
+                                     "LEFT/RIGHT) reaches the focused component. Unchecked: focus steps\n"
+                                     "with LEFT/RIGHT instead, and UP/DOWN fall through. Either way, a\n"
+                                     "component nested here wants the opposite axis to this one.");
+
+    // Slider-only (see kSliderVerticalRole).
+    auto* sliderVerticalCheck = new QCheckBox(properties);
+    sliderVerticalCheck->setToolTip("Vertical: the handle moves with UP/DOWN, a track down a column --\n"
+                                     "your Draw()/DrawChange() measure the range off Size Y. Unchecked:\n"
+                                     "LEFT/RIGHT along a row, measured off Size X. Inside a Canvas, set\n"
+                                     "this to the opposite of the Canvas's own axis so both can be moved.");
 
     // Hide-on-Target/Region: a checkable-menu button rather than a list
     // widget, so a multi-select fits the sidebar's width without eating a
@@ -3718,6 +4142,11 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     canvasForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     canvasForm->addRow("Vertical", canvasVerticalCheck);
 
+    auto* sliderGroup = new QGroupBox("Slider", properties);
+    auto* sliderForm = new QFormLayout(sliderGroup);
+    sliderForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    sliderForm->addRow("Vertical", sliderVerticalCheck);
+
     auto* buttonGroup = new QGroupBox("Button", properties);
     auto* buttonForm = new QFormLayout(buttonGroup);
     buttonForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
@@ -3744,6 +4173,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     propertiesLayout->addWidget(erasingGroup);
     propertiesLayout->addWidget(choiceGroup);
     propertiesLayout->addWidget(canvasGroup);
+    propertiesLayout->addWidget(sliderGroup);
     propertiesLayout->addWidget(buttonGroup);
     propertiesLayout->addWidget(visibilityGroup);
     properties->setVisible(false);
@@ -3753,7 +4183,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // straight back -- harmless, but pointless).
     auto populateFrom = [posXEdit, posYEdit, sizeWEdit, sizeHEdit, alignCombo, textEdit, splitterEdit,
                          charmapOverrideEdit, provideErasingCheck, defaultOptionSpin, choiceVerticalCheck,
-                         choiceHasRectCheck, canvasVerticalCheck, buttonDefaultEnabledCheck,
+                         choiceHasRectCheck, canvasVerticalCheck, sliderVerticalCheck,
+                         buttonDefaultEnabledCheck,
                          buttonToggleableCheck, buttonHasBoxCheck, hideTargetsButton,
                          hideTargetActions, hideRegionsButton, hideRegionActions, updateHideButtonSummary,
                          suppressHideWrite](QTreeWidgetItem* item) {
@@ -3770,6 +4201,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         const QSignalBlocker bscv(choiceVerticalCheck);
         const QSignalBlocker bscr(choiceHasRectCheck);
         const QSignalBlocker bcv(canvasVerticalCheck);
+        const QSignalBlocker bsv(sliderVerticalCheck);
         const QSignalBlocker bbe(buttonDefaultEnabledCheck);
         const QSignalBlocker bbt(buttonToggleableCheck);
         const QSignalBlocker bbb(buttonHasBoxCheck);
@@ -3791,6 +4223,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         choiceVerticalCheck->setChecked(item->data(0, kSingleChoiceVerticalRole).toBool());
         choiceHasRectCheck->setChecked(item->data(0, kSingleChoiceHasRectRole).toBool());
         canvasVerticalCheck->setChecked(item->data(0, kCanvasVerticalRole).toBool());
+        sliderVerticalCheck->setChecked(item->data(0, kSliderVerticalRole).toBool());
         buttonDefaultEnabledCheck->setChecked(item->data(0, kButtonDefaultEnabledRole).toBool());
         buttonToggleableCheck->setChecked(item->data(0, kButtonToggleableRole).toBool());
         buttonHasBoxCheck->setChecked(item->data(0, kButtonHasBoxRole).toBool());
@@ -3825,8 +4258,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
 
     QObject::connect(
         tree, &QTreeWidget::currentItemChanged,
-        [properties, geometryGroup, componentGroup, erasingGroup, choiceGroup, canvasGroup, buttonGroup,
-         visibilityGroup, populateFrom, updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
+        [properties, geometryGroup, componentGroup, erasingGroup, choiceGroup, canvasGroup, sliderGroup,
+         buttonGroup, visibilityGroup, populateFrom,
+         updateErrorHighlight](QTreeWidgetItem* current, QTreeWidgetItem*) {
             const bool selected = isPrefixedItem(current);
             properties->setVisible(selected);
             // Geometry means nothing for SingleChoice or Canvas -- both are pure
@@ -3843,6 +4277,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             erasingGroup->setVisible(isCtTextBoxItem(current));
             choiceGroup->setVisible(isSingleChoiceItem(current));
             canvasGroup->setVisible(isCanvasItem(current));
+            sliderGroup->setVisible(isSliderItem(current));
             buttonGroup->setVisible(isButtonItem(current));
             visibilityGroup->setVisible(selected);
             if (selected) {
@@ -3860,7 +4295,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         tree, &QTreeWidget::itemChanged,
         [tree, populateFrom, updateErrorHighlight, posXEdit, posYEdit, sizeWEdit, sizeHEdit, textEdit,
          splitterEdit, charmapOverrideEdit, provideErasingCheck, defaultOptionSpin, choiceVerticalCheck,
-         choiceHasRectCheck, canvasVerticalCheck, buttonDefaultEnabledCheck,
+         choiceHasRectCheck, canvasVerticalCheck, sliderVerticalCheck, buttonDefaultEnabledCheck,
          buttonToggleableCheck, buttonHasBoxCheck](QTreeWidgetItem* item, int column) {
             if (column != 0 || item != tree->currentItem() || !isPrefixedItem(item)) {
                 return;
@@ -3870,7 +4305,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                 textEdit->hasFocus() || splitterEdit->hasFocus() || charmapOverrideEdit->hasFocus() ||
                 provideErasingCheck->hasFocus() || defaultOptionSpin->hasFocus() ||
                 choiceVerticalCheck->hasFocus() || choiceHasRectCheck->hasFocus() ||
-                canvasVerticalCheck->hasFocus() ||
+                canvasVerticalCheck->hasFocus() || sliderVerticalCheck->hasFocus() ||
                 buttonDefaultEnabledCheck->hasFocus() ||
                 buttonToggleableCheck->hasFocus() || buttonHasBoxCheck->hasFocus()) {
                 return;
@@ -3950,6 +4385,12 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         QTreeWidgetItem* item = tree->currentItem();
         if (isCanvasItem(item)) {
             item->setData(0, kCanvasVerticalRole, checked);
+        }
+    });
+    QObject::connect(sliderVerticalCheck, &QCheckBox::toggled, [tree](bool checked) {
+        QTreeWidgetItem* item = tree->currentItem();
+        if (isSliderItem(item)) {
+            item->setData(0, kSliderVerticalRole, checked);
         }
     });
     QObject::connect(buttonDefaultEnabledCheck, &QCheckBox::toggled, [tree](bool checked) {
@@ -4085,8 +4526,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
 
     // A canvas, like a single choice, is nothing but a parent node -- no
     // geometry -- but it does have one property: which axis its focus moves
-    // along. Defaults to vertical, the layout that can still hold a Slider
-    // (see kCanvasVerticalRole). Its Button/Slider children are added onto it
+    // along. Defaults to vertical, a stacked menu (see kCanvasVerticalRole),
+    // which pairs with the horizontal default a new Slider gets so the two are
+    // immediately compatible. Its Button/Slider children are added onto it
     // via the context menu below, same as a SingleChoice's options.
     auto canvasCounter = std::make_shared<int>(1);
     auto addCanvasNode = [canvasCounter](QTreeWidgetItem* parent) {
@@ -4128,14 +4570,18 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
 
     // A slider's only state is its generated `<name>_amount` byte, which
     // always starts at 0 and has no editor-side knob (see genSliderDecl) --
-    // so, unlike a button, there are no kind-specific defaults to seed here
-    // at all, just geometry.
+    // so the one kind-specific default to seed here is its axis, which
+    // starts horizontal, the track-along-a-row layout (kSliderVerticalRole).
+    // Note that is the OPPOSITE default to a Canvas's own `vertical`, which
+    // is deliberate: a slider dropped onto a fresh Canvas is adjustable
+    // straight away rather than fighting it for LEFT/RIGHT.
     auto sliderCounter = std::make_shared<int>(1);
     auto addSliderNode = [sliderCounter](QTreeWidgetItem* parent) {
         const QString name = QString(kSliderPrefix) + "Slider" + QString::number((*sliderCounter)++);
         auto* child = new QTreeWidgetItem(parent, QStringList{name});
         child->setFlags(child->flags() | Qt::ItemIsEditable);
         child->setData(0, kKindRole, QString(kSliderKind));
+        child->setData(0, kSliderVerticalRole, false);
         child->setData(0, kPosXExprRole, QStringLiteral("0"));
         child->setData(0, kPosYExprRole, QStringLiteral("0"));
         child->setData(0, kSizeWExprRole, QStringLiteral("1"));
@@ -4361,9 +4807,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             int prop;
             ExprPtr ast;
         };
-        static constexpr int kRoles[4] = {kPosXRole, kPosYRole, kSizeWRole, kSizeHRole};
-        static constexpr int kExprRoles[4] = {kPosXExprRole, kPosYExprRole, kSizeWExprRole, kSizeHExprRole};
-        static constexpr long long kDefaults[4] = {0, 0, 1, 1};
 
         QVector<Pending> pending;
         std::map<std::pair<QTreeWidgetItem*, int>, long long> resolved;
@@ -4374,9 +4817,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
 
         for (QTreeWidgetItem* item : components) {
             for (int prop = 0; prop < 4; ++prop) {
-                QString src = item->data(0, kExprRoles[prop]).toString().trimmed();
+                QString src = item->data(0, kGeomExprRoles[prop]).toString().trimmed();
                 if (src.isEmpty()) {
-                    src = QString::number(kDefaults[prop]);
+                    src = QString::number(kGeomDefaults[prop]);
                 }
                 bool ok = false;
                 ExprPtr ast = ExprParser(src).parse(ok);
@@ -4484,11 +4927,11 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             long long values[4];
             for (int prop = 0; prop < 4; ++prop) {
                 const auto it = resolved.find({item, prop});
-                long long value = (it != resolved.end()) ? it->second : kDefaults[prop];
+                long long value = (it != resolved.end()) ? it->second : kGeomDefaults[prop];
                 value = (prop >= 2) ? std::max<long long>(1, value) : std::max<long long>(0, value);
                 values[prop] = value;
-                if (item->data(0, kRoles[prop]).toLongLong() != value) {
-                    item->setData(0, kRoles[prop], static_cast<int>(value));
+                if (item->data(0, kGeomRoles[prop]).toLongLong() != value) {
+                    item->setData(0, kGeomRoles[prop], static_cast<int>(value));
                 }
             }
             rects[item] = QRect(static_cast<int>(values[0]), static_cast<int>(values[1]),

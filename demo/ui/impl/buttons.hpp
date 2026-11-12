@@ -4,6 +4,7 @@
 #include <intsh>
 
 #include "../../chr/chr.h"
+#include "../../src/graphics/windows.hpp"
 #include STRCAT(../../gen/options/GEN_TARGET_DIR/options.hpp)
 
 // hand written uitk button impls
@@ -15,14 +16,14 @@ namespace ui::impl {
 
     constexpr void DrawTextBox(const u16 pos, const vec2<u8>& box) {
         // TODO: create actual graphics and use it normally
-        constexpr u8 ULCornerGraphic   = blob::ui::box_ul;
-        constexpr u8 URCornerGraphic   = blob::ui::box_ur;
-        constexpr u8 BLCornerGraphic   = blob::ui::box_bl;
-        constexpr u8 BRCornerGraphic   = blob::ui::box_br;
-        constexpr u8 LeftEdgeGraphic   = blob::ui::box_vertical;
-        constexpr u8 RightEdgeGraphic  = blob::ui::box_vertical;
-        constexpr u8 TopEdgeGraphic    = blob::ui::box_horizontal;
-        constexpr u8 BottomEdgeGraphic = blob::ui::box_horizontal;
+        constexpr u8 ULCornerGraphic   = windows::ui + blob::ui::lma::box_ul;
+        constexpr u8 URCornerGraphic   = windows::ui + blob::ui::lma::box_ur;
+        constexpr u8 BLCornerGraphic   = windows::ui + blob::ui::lma::box_bl;
+        constexpr u8 BRCornerGraphic   = windows::ui + blob::ui::lma::box_br;
+        constexpr u8 LeftEdgeGraphic   = windows::ui + blob::ui::lma::box_vertical;
+        constexpr u8 RightEdgeGraphic  = windows::ui + blob::ui::lma::box_vertical;
+        constexpr u8 TopEdgeGraphic    = windows::ui + blob::ui::lma::box_horizontal;
+        constexpr u8 BottomEdgeGraphic = windows::ui + blob::ui::lma::box_horizontal;
 
         // UL
         ppu::WriteSingleToNameTable(pos, ULCornerGraphic);
@@ -70,32 +71,28 @@ namespace gen::options {
     // out whole before its size is read: on a runtime-viewport target it is
     // `atomic Rect`, i.e. volatile, so reading it goes through Rect's volatile
     // copy constructor once rather than per field.
+    //
+    // One Draw() per button, dispatching on the generated Enabled() -- uitk no
+    // longer emits a DrawEnabled()/DrawDisabled() pair with a generated branch
+    // over it, because a button's two states are two appearances of one widget
+    // and the branch belongs where the appearance is decided (see
+    // genButtonDecl). `inline`, so this header stays includable from more than
+    // one TU; add AI to a definition that should be force-inlined at its call
+    // sites (::AI in technology.hpp).
     namespace reduceFlashesButton {
-        inline void DrawEnabled() {
+        inline void Draw() {
             const Rect r = rect;
             ui::impl::DrawTextBox(pos, r.size);
-            ui::impl::UpdateTextBox(ui::impl::Disabled, pos, r.size);
-        }
-
-        inline void DrawDisabled() {
-            const Rect r = rect;
-            ui::impl::DrawTextBox(pos, r.size);
-            ui::impl::UpdateTextBox(ui::impl::Disabled, pos, r.size);
+            ui::impl::UpdateTextBox(Enabled() ? ui::impl::Enabled : ui::impl::Disabled, pos, r.size);
         }
     }
 
 #if TARGET_GC
     namespace enableWidescreenButton {
-        inline void DrawEnabled() {
+        inline void Draw() {
             const Rect r = rect;
             ui::impl::DrawTextBox(pos, r.size);
-            ui::impl::UpdateTextBox(ui::impl::Disabled, pos, r.size);
-        }
-
-        inline void DrawDisabled() {
-            const Rect r = rect;
-            ui::impl::DrawTextBox(pos, r.size);
-            ui::impl::UpdateTextBox(ui::impl::Disabled, pos, r.size);
+            ui::impl::UpdateTextBox(Enabled() ? ui::impl::Enabled : ui::impl::Disabled, pos, r.size);
         }
     }
 #endif

@@ -64,7 +64,8 @@ struct PlacedSprite {
 
     // Where the art came from, kept in pieces rather than as one label: this is
     // what a saved metasprite identifies a tile BY, since an id alone is
-    // ambiguous (two entries at the same offset into their VMAs share ids).
+    // ambiguous (two entries at the same offset into their windows share ids).
+    QString frame;            ///< chr::Frame the id is numbered in.
     QString entry;            ///< blobman entry.
     QString include;          ///< Include (filename stem) within it.
     int     tile = 0;         ///< Tile index within that include.
@@ -116,6 +117,18 @@ public:
     /// Sets what one slot means: an 8x8 or an 8x16 tile. Sprites keep their
     /// slots, so the metasprite stretches or squashes vertically with the mode.
     void setTileMode(chr::TileMode mode);
+
+    /**
+     * @brief Repoints every sprite drawing through @p from at @p to.
+     *
+     * A sprite records its frame by name, so a frame renamed in the editor
+     * would otherwise leave each of them naming one that no longer exists --
+     * which resolves to nothing and fails the export. Nothing about the art
+     * changes; only which frame the sprite says it came through.
+     *
+     * @return How many sprites were repointed.
+     */
+    int renameFrame(const QString& from, const QString& to);
 
     /**
      * @brief Resizes the metasprite, in tile slots.
@@ -173,6 +186,7 @@ private:
         int     id = 0;
         int     patternByte = 0;
         int     heightTiles = 1;
+        QString frame;
         QString entry;
         QString include;
         int     tile = 0;

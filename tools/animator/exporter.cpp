@@ -30,6 +30,13 @@ std::string hex2(int value) {
     return text;
 }
 
+/// A PPU address, four digits -- a frame's pattern table reads as $1000.
+std::string hex4(std::uint32_t value) {
+    char text[16];
+    std::snprintf(text, sizeof(text), "%04x", value);
+    return text;
+}
+
 /// "1 frame" / "2 frames", because a log that says "1 frames" reads like a bug
 /// in the thing being diagnosed. @p many is for the nouns an 's' does not fix.
 std::string plural(std::size_t count, const std::string& noun, const std::string& many = {}) {
@@ -153,16 +160,28 @@ int run(const Options& options) {
 
     info("project " + options.project.string() + ": " +
          plural(project->metasprites.size(), "metasprite") + ", " +
-         plural(project->palettes.size(), "palette") + ", " + modeName(project->mode) + " tiles");
+         plural(project->palettes.size(), "palette") + ", " +
+         plural(project->frames.size(), "frame") + ", " + modeName(project->mode) + " tiles");
+    if (options.verbose) {
+        for (const chr::Frame& frame : project->frames) {
+            std::string windows;
+            for (const std::string& window : frame.windows) {
+                windows += (windows.empty() ? "" : ", ") + (window.empty() ? "--" : window);
+            }
+            info("    frame " + frame.name + ": pattern table $" + hex4(frame.patternTable) + ", " +
+                 plural(frame.windows.size(), "window") + " [" + windows + "]");
+        }
+    }
     info("  manifest " + project->chrManifest + " -> " + manifest.string());
     info("  output   " + output.string());
 
     // The manifest is not optional here, even though every sprite already
     // carries a pattern byte from its .msprite: that byte is only as current
-    // as the last save, and the CHR layout it came from may have moved since
-    // (a new include, a changed VMA). Re-resolving is what makes a blobman
-    // edit reach the generated headers.
-    auto table = chr::loadManifest(manifest, project->mode, error);
+    // as the last save, and either half of what produced it may have moved
+    // since -- the CHR layout (a new include, a repack) or the frame the
+    // sprite draws through. Re-resolving is what makes a blobman edit, or a
+    // re-ordered window, reach the generated headers.
+    auto table = chr::loadManifest(manifest, project->mode, project->frames, error);
     if (!table) {
         problem("cannot read the CHR manifest " + manifest.string() + ": " + error);
         return 1;
@@ -186,19 +205,30 @@ int run(const Options& options) {
         }
     }
 
+    // Said once, here, rather than discovered per sprite: with no frames
+    // nothing has an id, so every sprite in the project would fail to resolve
+    // and the real problem would be buried under one error per sprite.
+    if (project->frames.empty()) {
+        problem("cannot export " + options.project.string() +
+                ": the project declares no frames, so no sprite has a tile id. Add a [[frame]] "
+                "to the .anim (or author one in the designer's Window -> Frames...).");
+        return 1;
+    }
+
     std::size_t unresolved = 0;
     std::size_t repaired = 0;
     for (proj::Metasprite& metasprite : project->metasprites) {
         for (std::size_t f = 0; f < metasprite.frames.size(); ++f) {
             for (proj::Sprite& sprite : metasprite.frames[f].sprites) {
-                const chr::Cell* cell =
-                    proj::findCell(*table, sprite.entry, sprite.include, sprite.tile, sprite.id);
+                const chr::Cell* cell = proj::findCell(*table, sprite.frame, sprite.entry,
+                                                       sprite.include, sprite.tile, sprite.id);
                 if (!cell) {
                     ++unresolved;
                     problem("error: " + metasprite.name + " frame " + std::to_string(f) + " slot (" +
                             std::to_string(sprite.col) + "," + std::to_string(sprite.row) +
-                            ") names art this manifest does not have: entry '" + sprite.entry +
-                            "', include '" + sprite.include + "', tile " + std::to_string(sprite.tile));
+                            ") names art this manifest does not have: frame '" + sprite.frame +
+                            "', entry '" + sprite.entry + "', include '" + sprite.include +
+                            "', tile " + std::to_string(sprite.tile));
                     continue;
                 }
                 if (cell->patternByte != sprite.patternByte) {
