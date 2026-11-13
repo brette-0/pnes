@@ -14,6 +14,8 @@
 
 u8 scratchpad[5];
 
+atomic u16 frameCounter = 0;
+
 // ReSharper disable once CppUseAuto
 atomic eGameModes gameMode = eGameModes::Title;
 
@@ -39,6 +41,20 @@ void (*pIRQ)();
 
 NMI(FIXED) {
     const mmc3::select_latch_scope latch;
+
+    // ::frameCounter is stepped HERE, for the same reason the latch guard is:
+    // this is the only NMI vector in the ROM, so one increment covers level,
+    // title and world at once and no mode's handler can forget it. Stepped
+    // before the dispatch, so a handler reading it sees its own frame's value
+    // rather than the previous one's.
+    //
+    // Loaded and stored through a local rather than `+= 1`: ::frameCounter is
+    // `atomic`, which is `volatile` on every C++ target (technology.hpp), and
+    // compound assignment to a volatile lvalue is deprecated in C++20 --
+    // -Wvolatile warns on it. This is the same two accesses in the same order.
+    const u16 frame = static_cast<u16>(frameCounter + 1);
+    frameCounter = frame;
+
     pNMI();
 }
 

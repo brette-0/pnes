@@ -21,6 +21,4 @@ namespace title {
         End      = Options
 #endif
     };
-
-    AI auto SelectorUpdate() -> void;
 }

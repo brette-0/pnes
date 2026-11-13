@@ -1986,8 +1986,9 @@ QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOf
 
 // Emits one SingleChoice node's own declarations: the runtime-indexable
 // `options` anchor table, optionally the `rect` covering all of them, the
-// `option`/`nOptions` variables, and the Make()/Pass() functions that
-// initialize/step them. Its members' own namespaces are
+// `option`/`nOptions` variables, the Make()/Pass() functions that
+// initialize/step them, and the forced-to-define DrawChange() that Pass()
+// repaints the selection indicator through. Its members' own namespaces are
 // emitted separately, immediately BEFORE this, by emitNodeNamespace -- which is
 // what lets Draw() below name them. Everything lives header-only (`inline`),
 // same reasoning as rtTextBox's own wrapper: it has to be safely includable
@@ -2156,6 +2157,38 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
 
     lines << QString("inline AI void Make() {\n%1\n}").arg(makeBody.join("\n"));
 
+    // Forced-to-define, like a Slider's DrawChange() and a Canvas's
+    // DrawUpdate(): the Pass() below moves `option`, and repainting the
+    // indicator that marks it is the scene's business. uitk knows where every
+    // option sits (`options` above) and nothing whatever about what marks one
+    // -- the demo's is a BG tile two cells left of the option's anchor
+    // (demo/ui/impl/singleChoice.hpp), but it could as easily be a sprite, a
+    // palette swap, or an attribute change, and there is no appearance here
+    // that would be right for every menu. Same reasoning as a Button's
+    // Draw().
+    //
+    // Declared for EVERY SingleChoice, unlike the Draw()/Erase() pair below,
+    // which need every option to be a ctTextBox: an indicator is placed out
+    // of `options`, which exists whatever the options are made of, so an
+    // rtTextBox menu has a cursor to move just the same.
+    //
+    // Both indices, rather than the Slider's single "moving to" value. A
+    // Slider can get away with one because `amount` still holds the old
+    // position when DrawChange() runs -- the hook is what stores the new one.
+    // Here Pass() owns `option` (it is the clamped value the rest of the
+    // scene reads back, and a Canvas may be what called in), so by the time
+    // the hook runs the old index is gone unless it is passed. Indices and
+    // not Rects: the hook indexes `options` itself, which is a constexpr ROM
+    // table on a fixed target, and two u8s are a far cheaper call on 6502
+    // than two copies of a six-byte Rect.
+    //
+    // `from == to` is the cold paint -- there is no previous indicator to
+    // unpaint, so a hook that clears `from` and draws `to` does the right
+    // thing on one tile without a second entry point. Pass() never calls it
+    // that way (it only ever reports a real move); a scene putting the menu
+    // on screen for the first time does.
+    lines << QString("void DrawChange(u8 from, u8 to);");
+
     // Clamps `option` against the two direction bits of the menu's own axis --
     // UP/DOWN for a vertical list, LEFT/RIGHT for a row (see
     // kSingleChoiceVerticalRole). Only those two: the other axis is left
@@ -2167,11 +2200,40 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     // The ends clamp rather than wrap, same as a Canvas's focus and for the
     // same reason: a menu can build wrapping on top of clamping, but cannot
     // take it back out.
+    //
+    // Then it repaints, through DrawChange() above -- and ONLY on a frame
+    // that actually moved: an end-stop press changes nothing, so there is
+    // nothing to unpaint and redraw, and the `from == to` call it would make
+    // is reserved for a cold paint. This is what makes the menu work when a
+    // Canvas is what fed it (genCanvasDecl's Pass forwards the frame to
+    // `components[index].func`): a Canvas's own DrawUpdate() fires on a focus
+    // MOVE and knows nothing about a focused component stepping internally,
+    // and Pass() returns void, so a caller outside could not even tell that
+    // it had. Painting here means the menu behaves the same whether a Canvas
+    // or the scene itself drove it, exactly as a Slider already does.
+    //
+    // `option` is read once into a local: it is `atomic` (volatile on NES),
+    // and the body needs it three times.
     const QString scBack = scVertical ? QStringLiteral("input::UP") : QStringLiteral("input::LEFT");
     const QString scFwd = scVertical ? QStringLiteral("input::DOWN") : QStringLiteral("input::RIGHT");
     lines << QString("inline AI void Pass(const u8 inputs) {\n"
-                      "    if      (inputs & %1) { if (option != 0) option -= 1; }\n"
-                      "    else if (inputs & %2) { if (option != nOptions - 1) option += 1; }\n"
+                      "    const u8 from = option;\n"
+                      "\n"
+                      "    if (inputs & %1) {\n"
+                      "        if (from == 0) return;\n"
+                      "        const u8 to = static_cast<u8>(from - 1);\n"
+                      "        option = to;\n"
+                      "        DrawChange(from, to);\n"
+                      "        return;\n"
+                      "    }\n"
+                      "\n"
+                      "    if (inputs & %2) {\n"
+                      "        if (from == nOptions - 1) return;\n"
+                      "        const u8 to = static_cast<u8>(from + 1);\n"
+                      "        option = to;\n"
+                      "        DrawChange(from, to);\n"
+                      "        return;\n"
+                      "    }\n"
                       "}")
                  .arg(scBack, scFwd);
 

@@ -133,6 +133,21 @@ extern void (*pIRQ)();
 
 extern u8 scratchpad[];
 
+/**
+ * @brief Frames elapsed since reset, stepped once per NMI by main.cpp's one
+ *        vector -- so it counts every mode's frames, not any one mode's.
+ *
+ * `atomic` (volatile on NES, a true atomic elsewhere -- technology.hpp)
+ * because the vector writes it and the mainline reads it: anything driving an
+ * animation off it is, by definition, not the code that last stepped it.
+ *
+ * Wraps at 65536 frames (~18 minutes NTSC) and is meant to: a reader uses it
+ * modulo its own cycle length (see ui::impl's selector sway,
+ * demo/ui/impl/singleChoice.hpp), and a power of two divides the wrap exactly,
+ * so even the wrapping frame steps by one phase like any other.
+ */
+extern atomic u16 frameCounter;
+
 // Shared OAM staging buffer -- every mode (title, level, ...) refreshes its
 // own sprites into the same 64-sprite table rather than each owning one, so
 // it lives here instead of any one mode's header.

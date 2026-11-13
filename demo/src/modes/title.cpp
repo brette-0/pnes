@@ -7,6 +7,7 @@
 #include STRCAT(../../gen/gameOptions/GEN_TARGET_DIR/gameOptions.hpp)
 #include "../../ui/impl/buttons.hpp"
 #include "../../ui/impl/sliders.hpp"
+#include "../../ui/impl/singleChoice.hpp"
 #include "../main.hpp"
 #include "pnes/logger.hpp"
 #include "../banks.hpp"
@@ -46,11 +47,25 @@ namespace title {
                   "the standing pose was exported against a frame in the $0000 pattern table, "
                   "but title mode's 8x8 sprites read $1000 (ppu::ctrl::SPRITE_ADDR)");
 
-    // Slots each character occupies, back to back from the start of OAM. The
-    // title screen uses nothing else, so player two needs no reservation
-    // beyond this.
+    // Slots each character occupies, back to back from the start of OAM.
     constexpr u8 kPlayerOneSlot = 0;
     constexpr u8 kPlayerTwoSlot = kPlayerOneSlot + kPlayerSprites;
+
+    // The menu selection arrow, in the first slot past the characters -- so it
+    // tracks ::kPlayerSprites rather than being a number that has to be
+    // revisited if the pose grows. ONE slot for every menu on this screen:
+    // the title menu and the play-mode menu are alternatives for the same
+    // rows, so only one arrow is ever wanted (ui/impl/singleChoice.hpp).
+    //
+    // Built WITHOUT a second player the slot moves down to 4, which is
+    // correct rather than merely harmless: nothing is reserved for a character
+    // that is never drawn.
+#ifdef PLAYER2_SUPPORTED
+    constexpr u8 kSelectorSlot = kPlayerTwoSlot + kPlayerSprites;
+#else
+    constexpr u8 kSelectorSlot = kPlayerOneSlot + kPlayerSprites;
+#endif
+    static_assert(kSelectorSlot < 64, "the title screen's OAM reservations run past the sprite table");
 
     // Where each character's leftmost sprite sits. The pose is kWidth tiles
     // wide, so player two is displaced by twice that -- a two-tile gap of
@@ -65,46 +80,20 @@ namespace title {
                   "the title's standing pose is more than one sprite tall: its rows need "
                   "offsetting by the sprite height, which the Y placement here does not do");
 
-    template <typename Options>
-    static u16 ArrowAddr(const Options& options, const u8 i) {
-        return ppu::CartesianToAddress({static_cast<u16>(options[i].pos.x - 2), static_cast<u16>(options[i].pos.y)});
+    // Putting a menu's arrow on screen cold, through the menu's own hook:
+    // uitk calls it with `from == to` meaning "nothing to unpaint" (see
+    // genSingleChoiceDecl), which a sprite does not have to distinguish -- the
+    // arrow has one position either way. Moving one needs nothing here at all:
+    // the generated Pass() calls DrawChange() itself, so the arrow follows the
+    // option wherever input came from, this loop or a Canvas.
+    static void DrawTitleSelector() {
+        namespace menu = gen::title::TitleOptions;
+        menu::DrawChange(menu::option, menu::option);
     }
 
-    static u8 ActiveOption() {
-        return playModeActive ? gen::gameOptions::gameOptions::option : gen::title::TitleOptions::option;
-    }
-
-    static u16 TitleArrowAddr() {
-        return ArrowAddr(gen::title::TitleOptions::options, gen::title::TitleOptions::option);
-    }
-
-    static u16 PlayModeArrowAddr() {
-        return ArrowAddr(gen::gameOptions::gameOptions::options, gen::gameOptions::gameOptions::option);
-    }
-
-    static u16 ActiveArrowAddr() {
-        return playModeActive ? PlayModeArrowAddr() : TitleArrowAddr();
-    }
-
-    static void QueueSelectorDraw(const u16 addr) {
-        scratchpad[1] = scratchpad[3] = static_cast<u8>(addr & 0xff);
-        scratchpad[2] = scratchpad[4] = static_cast<u8>(addr >> 8);
-        scratchpad[0] = 1;
-    }
-
-
-    static u16 CurrentSelectorAddr() {
-        return static_cast<u16>(scratchpad[3] | (scratchpad[4] << 8));
-    }
-
-    // Moves the arrow: the tile it is on now becomes the next SelectorUpdate's
-    // clear, the new tile its draw.
-    static void MoveSelector(const u16 addr) {
-        scratchpad[1] = scratchpad[3];
-        scratchpad[2] = scratchpad[4];
-        scratchpad[3] = static_cast<u8>(addr & 0xff);
-        scratchpad[4] = static_cast<u8>(addr >> 8);
-        scratchpad[0] = 1;
+    static void DrawPlayModeSelector() {
+        namespace menu = gen::gameOptions::gameOptions;
+        menu::DrawChange(menu::option, menu::option);
     }
 
     static oam::oam_t Clear(u16 _);
@@ -272,6 +261,22 @@ namespace title {
         return PreviewScrollYFor(SplitRow());
     }
 
+    // The scroll ui/impl/singleChoice.hpp places the arrow by -- see its
+    // ::SelectorScroll declaration for why it has to ask the mode at all.
+    //
+    // This is the scroll the menu band is drawn under, not the frame's
+    // top-of-screen scroll: on a single-screen target ::ApplySplit switches to
+    // it at the raster split (X to ::kMenuNT's nametable, Y to the menu
+    // plane), and the arrow is a sprite sitting over THOSE rows. On a
+    // dual-screen one there is no switch -- the UI is plane rows 30+ of
+    // nametable 0, read under the frame's own bottom-anchored scroll -- so the
+    // X term is zero and the Y term is the scroll already in force. Either way
+    // this is the scroll that plane coordinates below the split are seen
+    // through, which is exactly what converts one to a screen position.
+    static vec2<u16> MenuBandScroll() {
+        return {static_cast<u16>(kUiOnOwnPanel ? 0 : (kMenuNT << 3)), PreviewScrollY()};
+    }
+
     constexpr u8 kSplitDelay = REGION ? 90 : 100;
     static void ApplySplit();
 
@@ -417,6 +422,13 @@ namespace title {
         mmc3::SetMirroring(false);
         ppu::Flush((windows::ui + blob::ui::hud_whitespace), 0xff);
         ppu::pal::WriteFromBuffer(13, titleScreenColours, 3);
+        // Sprite palette 1, the menu arrow's (ui/impl/singleChoice.hpp's
+        // ::kSelectorAttributes). The same three colours BG_3 just took, for
+        // the same reason it is excluded from ::kFadeEntries: the arrow is UI,
+        // and the fade is there to take the preview away from under it. The
+        // arrow parks instead of fading (::nmi_handler_lockOptions), which is
+        // what the background tile's erase used to do.
+        ppu::pal::WriteFromBuffer(ppu::SPRITE_1 + 1, titleScreenColours, 3);
 
         log("title::main: before DrawLevelPreview");
         DrawLevelPreview();
@@ -451,7 +463,7 @@ namespace title {
         playModeActive = false;
 
         gen::title::TitleOptions::Draw();
-        QueueSelectorDraw(TitleArrowAddr());
+        DrawTitleSelector();
 
         ppu::SetScroll({0, 0xff});
         // No SPRITE_SIZE: title mode runs 8x8 sprites, unlike level mode,
@@ -471,10 +483,13 @@ namespace title {
             prevInputs = inputs;
 
             if (!optionsLocked) {
-                const u8 lastOption = ActiveOption();
+                // Pass() repaints the arrow itself now, through the menu's own
+                // DrawChange() hook -- so there is no snapshot-and-compare to
+                // do here, and no arrow address for this loop to work out.
+                // Which menu is live is still its business, because the two
+                // are alternative content for the same rows.
                 if (playModeActive) gen::gameOptions::gameOptions::Pass(pressed);
                 else                gen::title::TitleOptions::Pass(pressed);
-                if (ActiveOption() != lastOption) MoveSelector(ActiveArrowAddr());
 
                 if (pressed & input::A) {
                     if (playModeActive) {
@@ -535,8 +550,8 @@ namespace title {
     }
 
     void nmi_handler() {
+        ui::impl::AnimateSelector();
         oam::RefreshSprites(OAMBuffer);
-        SelectorUpdate();
 
         ppu::SetScroll({0, PreviewScrollY()});
         BankPreviewTiles();
@@ -544,16 +559,18 @@ namespace title {
         ArmSplitIRQ();
     }
 
-    // Both swap handlers: wipe the old arrow first (its tile can sit inside
-    // the incoming menu's text, so clearing it after the redraw would punch a
-    // hole in it), swap the two menus' labels, then draw the arrow fresh --
-    // QueueSelectorDraw's clear-then-arrow onto one tile.
+    // Both swap handlers: swap the two menus' labels, then put the incoming
+    // menu's arrow where its option is.
+    //
+    // The outgoing arrow needs no wipe. It used to: the background tile could
+    // sit inside the incoming menu's text, so it had to be cleared BEFORE the
+    // redraw or the clear would punch a hole in it. A sprite is not in the
+    // nametable at all, has exactly one position, and the DrawChange() below
+    // moves it -- so there is nothing to clear and no ordering to get right.
     static void nmi_handler_drawPlayMode() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::hud_whitespace));
         gen::title::TitleOptions::Erase();
         gen::gameOptions::gameOptions::Draw();
-        QueueSelectorDraw(PlayModeArrowAddr());
-        SelectorUpdate();
+        DrawPlayModeSelector();
         ppu::SetScroll({0, PreviewScrollY()});
         BankPreviewTiles();
         ArmSplitIRQ();
@@ -562,11 +579,9 @@ namespace title {
     }
 
     static void nmi_handler_drawMenu() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::hud_whitespace));
         gen::gameOptions::gameOptions::Erase();
         gen::title::TitleOptions::Draw();
-        QueueSelectorDraw(TitleArrowAddr());
-        SelectorUpdate();
+        DrawTitleSelector();
         ppu::SetScroll({0, PreviewScrollY()});
         BankPreviewTiles();
         ArmSplitIRQ();
@@ -627,6 +642,7 @@ namespace title {
     }
 
     static void nmi_handler_fadeToOptions() {
+        ui::impl::AnimateSelector();
         oam::RefreshSprites(OAMBuffer);
         mmc3::AcknowledgeScanlineIRQ();
 
@@ -667,7 +683,11 @@ namespace title {
     }
 
     static void nmi_handler_lockOptions() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::hud_whitespace));
+        // Parked, not faded: the labels it points at are being erased on this
+        // very frame, and the arrow's palette is deliberately outside the fade
+        // (see the ::SPRITE_1 load in ::main). ::nmi_handler_lockAnimReverse
+        // places it again when the menu comes back.
+        ui::impl::ParkSelector();
         gen::title::TitleOptions::Erase();
         mmc3::AcknowledgeScanlineIRQ();
         oam::RefreshSprites(OAMBuffer);
@@ -708,6 +728,7 @@ namespace title {
     }
 
     static void nmi_handler_lockAnim() {
+        ui::impl::AnimateSelector();
         oam::RefreshSprites(OAMBuffer);
 
         lockAnimScanline = lockAnimScanline > kScanlinesPerFrame
@@ -729,6 +750,7 @@ namespace title {
     }
 
     static void nmi_handler_locked() {
+        ui::impl::AnimateSelector();
         oam::RefreshSprites(OAMBuffer);
 
         // ::kUiOnOwnPanel: the options panel is NOT the whole frame here. It
@@ -755,6 +777,7 @@ namespace title {
     }
 
     static void nmi_handler_lockAnimReverse() {
+        ui::impl::AnimateSelector();
         oam::RefreshSprites(OAMBuffer);
 
         const u16 target = static_cast<u16>(SplitRow()) << 3;
@@ -774,8 +797,7 @@ namespace title {
                 gen::title::GameTitle::Draw();
             }
             gen::title::TitleOptions::Draw();
-            QueueSelectorDraw(TitleArrowAddr());
-            SelectorUpdate();
+            DrawTitleSelector();
             ppu::SetScroll({0, PreviewScrollY()});
             BankPreviewTiles();
             ArmSplitIRQ();
@@ -799,8 +821,8 @@ namespace title {
     }
 
     static void nmi_handler_fadeFromOptions() {
+        ui::impl::AnimateSelector();
         oam::RefreshSprites(OAMBuffer);
-        SelectorUpdate();
 
         // ::kUiOnOwnPanel: no fade, and the palette is left untouched -- the
         // state machine advances on this very frame instead.
@@ -992,13 +1014,16 @@ namespace title {
 #endif
     }
 
-    AI auto SelectorUpdate() -> void {
-        if (const u8 updateFlag = scratchpad[0]; !updateFlag) return;
+}
 
-        const u16 clearAddr  = scratchpad[1] | (scratchpad[2] << 8);
-        const u16 arrowAddr  = scratchpad[3] | (scratchpad[4] << 8);
-        ppu::WriteSingleToNameTable(clearAddr, (windows::ui + blob::ui::hud_whitespace));
-        ppu::WriteSingleToNameTable(arrowAddr, (windows::ui + blob::ui::arrow));
-        scratchpad[0] = 0;  // clear update flag, update is done
-    }
+// What ui/impl/singleChoice.hpp declared and left to the mode: this screen's
+// OAM layout and the scroll its menu band is read under. Defined here, at the
+// end, because both forward to ::title internals -- and in ui::impl rather
+// than in ::title because that is the namespace the hooks calling them live
+// in. Non-static, unlike everything they reach for: an inline function in that
+// header is what calls these, so they need linkage, and this is the one
+// translation unit that includes it.
+namespace ui::impl {
+    u8 SelectorSlot() { return title::kSelectorSlot; }
+    vec2<u16> SelectorScroll() { return title::MenuBandScroll(); }
 }
