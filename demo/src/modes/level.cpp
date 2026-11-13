@@ -213,7 +213,7 @@ namespace level {
             irq::reset();    // spin reset on NES, exit on SDL3
         }
 
-        ppu::Flush((windows::ui + blob::ui::lma::hud_whitespace), 0xff);
+        ppu::Flush((windows::ui + blob::ui::hud_whitespace), 0xff);
 
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);
 
@@ -239,7 +239,7 @@ namespace level {
             ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - ::tech::nes_str::length(msg_mary)), 0}, SIZED_STR(msg_mary), 0);
         });
 
-        constexpr u8 coinUI[] = {windows::ui + blob::ui::lma::hud_coin, windows::ui + (blob::ui::lma::font + 0), windows::ui + (blob::ui::lma::font + 0)};
+        constexpr u8 coinUI[] = {windows::ui + blob::ui::hud_coin, windows::ui + (blob::ui::font + 0), windows::ui + (blob::ui::font + 0)};
         ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(coinUI)), 1}, SIZED_OBJ(coinUI), 0);
 
         mmc3::CallInBlock<level_code_tag>([] {

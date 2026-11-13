@@ -9,9 +9,9 @@ namespace ui::impl {
     template <bool orient>
     inline void DrawSliderBody(const u16 pos, const u8 width) {
         if constexpr (!orient) return;
-        constexpr u8 LeftEdgeGraphic  = windows::ui + blob::ui::lma::slider_left;
-        constexpr u8 RightEdgeGraphic = windows::ui + blob::ui::lma::slider_right;
-        constexpr u8 MiddleGraphic    = windows::ui + blob::ui::lma::slider_middle;
+        constexpr u8 LeftEdgeGraphic  = windows::ui + blob::ui::slider_left;
+        constexpr u8 RightEdgeGraphic = windows::ui + blob::ui::slider_right;
+        constexpr u8 MiddleGraphic    = windows::ui + blob::ui::slider_middle;
 
         ppu::WriteSingleToNameTable(pos, LeftEdgeGraphic);
         ppu::WriteRepeatedToNameTable(pos, MiddleGraphic, width - 2, 0);
@@ -26,14 +26,14 @@ namespace ui::impl {
     template <bool orient>
     inline void ClearSliderHandle(const u16 pos, const u8 amt) {
         if constexpr (!orient) return;
-        constexpr u8 MiddleGraphic = windows::ui + blob::ui::lma::slider_middle;
+        constexpr u8 MiddleGraphic = windows::ui + blob::ui::slider_middle;
         ppu::WriteSingleToNameTable(pos + amt, MiddleGraphic);
     }
 
     template <bool orient>
     inline void DrawSliderHandle(const u16 pos, const u8 amt) {
         if constexpr (!orient) return;
-        constexpr u8 ActiveGraphic = windows::ui + blob::ui::lma::slider_cursor;
+        constexpr u8 ActiveGraphic = windows::ui + blob::ui::slider_cursor;
         ppu::WriteSingleToNameTable(pos + amt, ActiveGraphic);
     }
 }

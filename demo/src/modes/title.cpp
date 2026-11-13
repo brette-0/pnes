@@ -27,6 +27,44 @@ namespace title {
     static atomic bool playModeActive = false;
     static atomic bool optionsLocked = false;
 
+    // Hardware sprites one character takes. The designer exported the pose
+    // for 8x16 (one slot per column, each slot a vertical tile PAIR), and
+    // title mode runs 8x8 -- so each exported slot becomes two sprites here,
+    // the top tile of the pair and the bottom one.
+    constexpr u8 kPlayerSprites = static_cast<u8>(gen::mary_standing::kSize) * 2;
+
+    // Every exported byte has to name art in the $1000 table, because 8x8
+    // sprites take their table from SPRITE_ADDR (set in EnableRendering) and
+    // not from the byte. In an 8x16 pattern byte that table is bit 0.
+    constexpr bool StandingIsInSpriteTable() {
+        for (u16 i = 0; i < gen::mary_standing::kSize; i++) {
+            if ((gen::mary_standing::Get()[i] & 1) == 0) return false;
+        }
+        return true;
+    }
+    static_assert(StandingIsInSpriteTable(),
+                  "the standing pose was exported against a frame in the $0000 pattern table, "
+                  "but title mode's 8x8 sprites read $1000 (ppu::ctrl::SPRITE_ADDR)");
+
+    // Slots each character occupies, back to back from the start of OAM. The
+    // title screen uses nothing else, so player two needs no reservation
+    // beyond this.
+    constexpr u8 kPlayerOneSlot = 0;
+    constexpr u8 kPlayerTwoSlot = kPlayerOneSlot + kPlayerSprites;
+
+    // Where each character's leftmost sprite sits. The pose is kWidth tiles
+    // wide, so player two is displaced by twice that -- a two-tile gap of
+    // clear space between them, rather than two characters that read as one
+    // wide one.
+    constexpr oam::oam_t kPlayerOneX = 32;
+    constexpr oam::oam_t kPlayerTwoX = kPlayerOneX + gen::mary_standing::kWidth * 8 * 2;
+
+    // The feet-Y math below puts every slot of the pose on one sprite row, so
+    // a taller pose would stack its lower rows on top of its upper ones.
+    static_assert(gen::mary_standing::kHeight == 1,
+                  "the title's standing pose is more than one sprite tall: its rows need "
+                  "offsetting by the sprite height, which the Y placement here does not do");
+
     template <typename Options>
     static u16 ArrowAddr(const Options& options, const u8 i) {
         return ppu::CartesianToAddress({static_cast<u16>(options[i].pos.x - 2), static_cast<u16>(options[i].pos.y)});
@@ -73,8 +111,8 @@ namespace title {
     static oam::oam_t Zero(u16 _);
     static oam::oam_t StandingTile(u16 i);
     static NI void DrawLevelPreview();
-    static void UpdateMarySpriteYForPixels(u16 splitPixelRow);
-    static void UpdateMarySpriteY(u8 splitRow);
+    static void PlaceStandingSprites();
+    static void ParkStandingSprites();
     static void nmi_handler_drawPlayMode();
     static void nmi_handler_drawMenu();
     static void BuildPaletteFadePhases();
@@ -319,7 +357,7 @@ namespace title {
     static constexpr u16 kUiBandRow0 = 30;
     static void ClearUiBand() {
         for (u16 r = kUiBandRow0; r < video::viewport_ty(); r++)
-            ppu::WriteRepeatedToNameTable({0, r}, (windows::ui + blob::ui::lma::hud_whitespace),
+            ppu::WriteRepeatedToNameTable({0, r}, (windows::ui + blob::ui::hud_whitespace),
                                           static_cast<u8>(kMenuNT), 0);
     }
 
@@ -352,18 +390,32 @@ namespace title {
         mmc3::SwitchCHRBank<mmc3::BankOf<blob::ui::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
         mmc3::SwitchCHRBank<mmc3::BankOf<blob::normalSprites::__lma>()>(mmc3::chr0Control);   // R0, PPU $1000, 2 KiB
 
+        // R1, PPU $1800, 2 KiB: the ui set a SECOND time, so its art is live
+        // as sprites as well as in the background window R3 points at. Not a
+        // move -- both registers hold it at once, and the same bytes answer to
+        // two different tile indices (see windows::ui and windows::uiSprites).
+        //
+        // R1 being 2 KiB means two things. ui has to sit on a 2 KiB boundary
+        // or the bank rounds down, which SwitchCHRBank's compile-time-bank
+        // overload asserts; and ui being only 1 KiB leaves the upper half
+        // ($1C00-$1FFF) showing whatever follows it in the image, which the
+        // overload cannot see. So nothing may be packed after ui -- that
+        // leaves the upper half blob padding.
+        static_assert(blob::normalSprites::__lma + blob::normalSprites::__size <= blob::ui::__lma &&
+                      blob::dynamicLevelTiles::__lma + blob::dynamicLevelTiles::__size <= blob::ui::__lma &&
+                      blob::staticLevelTiles::__lma + blob::staticLevelTiles::__size <= blob::ui::__lma,
+                      "something is packed after ui, so R1's upper 1 KiB "
+                      "($1C00-$1FFF) shows that art instead of padding: give "
+                      "it an entry of its own, or re-point R1");
+        mmc3::SwitchCHRBank<mmc3::BankOf<blob::ui::__lma>()>(mmc3::chr1Control);
+
         constexpr u32 padLma = blob::normalSprites::__lma + blob::normalSprites::__size;
-        static_assert(padLma + 2 * mmc3::kChrBankSize <= blob::dynamicLevelTiles::__lma,
-                      "R5/R1 run past normalSprites into the next entry: give "
-                      "PPU $0C00-$0FFF and $1800-$1FFF entries of their own, "
-                      "or re-point them");
-        // R1 is a 2 KiB window, so the gap has to start 2 KiB-aligned or
-        // hardware rounds the bank down -- asserted by SwitchCHRBank's
-        // compile-time-bank overload rather than restated here.
+        static_assert(padLma + mmc3::kChrBankSize <= blob::dynamicLevelTiles::__lma,
+                      "R5 runs past normalSprites into the next entry: give "
+                      "PPU $0C00-$0FFF an entry of its own, or re-point it");
         mmc3::SwitchCHRBank<mmc3::BankOf<padLma>()>(mmc3::chr5Control);
-        mmc3::SwitchCHRBank<mmc3::BankOf<padLma>()>(mmc3::chr1Control);
         mmc3::SetMirroring(false);
-        ppu::Flush((windows::ui + blob::ui::lma::hud_whitespace), 0xff);
+        ppu::Flush((windows::ui + blob::ui::hud_whitespace), 0xff);
         ppu::pal::WriteFromBuffer(13, titleScreenColours, 3);
 
         log("title::main: before DrawLevelPreview");
@@ -402,7 +454,11 @@ namespace title {
         QueueSelectorDraw(TitleArrowAddr());
 
         ppu::SetScroll({0, 0xff});
-        ppu::EnableRendering(ppu::ctrl::SPRITE_ADDR | ppu::ctrl::SPRITE_SIZE | ppu::ctrl::GEN_NMI, ppu::mask::BG_L | ppu::mask::SPRITE_L);
+        // No SPRITE_SIZE: title mode runs 8x8 sprites, unlike level mode,
+        // which sets it in its own EnableRendering. SPRITE_ADDR therefore
+        // means something here -- in 8x16 it is ignored -- and selects the
+        // $1000 pattern table the sprite art is banked into.
+        ppu::EnableRendering(ppu::ctrl::SPRITE_ADDR | ppu::ctrl::GEN_NMI, ppu::mask::BG_L | ppu::mask::SPRITE_L);
         irq::EnableInterrupts();
         log("title::main: entering input loop");
 
@@ -493,7 +549,7 @@ namespace title {
     // hole in it), swap the two menus' labels, then draw the arrow fresh --
     // QueueSelectorDraw's clear-then-arrow onto one tile.
     static void nmi_handler_drawPlayMode() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::lma::hud_whitespace));
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::hud_whitespace));
         gen::title::TitleOptions::Erase();
         gen::gameOptions::gameOptions::Draw();
         QueueSelectorDraw(PlayModeArrowAddr());
@@ -506,7 +562,7 @@ namespace title {
     }
 
     static void nmi_handler_drawMenu() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::lma::hud_whitespace));
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::hud_whitespace));
         gen::gameOptions::gameOptions::Erase();
         gen::title::TitleOptions::Draw();
         QueueSelectorDraw(TitleArrowAddr());
@@ -600,11 +656,18 @@ namespace title {
         // while BankPreviewTiles has it drawing the preview's tiles.
         ArmSplitIRQ();
 
-        if (!stillFading) pNMI = nmi_handler_lockOptions;
+        if (!stillFading) {
+            // Fully black now, so the characters go off-screen for the whole
+            // options page rather than sitting under it: the lock animation
+            // below scrolls the ground out from under them, and nothing
+            // blanks OAM on its own.
+            if constexpr (!kUiOnOwnPanel) ParkStandingSprites();
+            pNMI = nmi_handler_lockOptions;
+        }
     }
 
     static void nmi_handler_lockOptions() {
-        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::lma::hud_whitespace));
+        ppu::WriteSingleToNameTable(CurrentSelectorAddr(), (windows::ui + blob::ui::hud_whitespace));
         gen::title::TitleOptions::Erase();
         mmc3::AcknowledgeScanlineIRQ();
         oam::RefreshSprites(OAMBuffer);
@@ -661,7 +724,6 @@ namespace title {
         // while the options panel is drawn in the one palette the fade skips.
         ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
         BankMenuTiles();
-        UpdateMarySpriteYForPixels(lockAnimScanline);
 
         if (lockAnimScanline == 0) pNMI = nmi_handler_locked;
     }
@@ -719,6 +781,11 @@ namespace title {
             ArmSplitIRQ();
 
             fadeFrameCounter = 0;
+            // Back in place BEFORE ::nmi_handler_fadeFromOptions steps the
+            // palette, so they are already standing on the ground when the
+            // first frame of colour comes up. The scroll this branch just set
+            // is the resting one, which is what ::PlaceStandingSprites reads.
+            if constexpr (!kUiOnOwnPanel) PlaceStandingSprites();
             pNMI = nmi_handler_fadeFromOptions;
             return;
         }
@@ -729,7 +796,6 @@ namespace title {
         // coming back into the top band are still black.
         ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
         BankMenuTiles();
-        UpdateMarySpriteYForPixels(lockAnimScanline);
     }
 
     static void nmi_handler_fadeFromOptions() {
@@ -793,11 +859,34 @@ namespace title {
         return 0;
     }
 
-    // One tile id per slot, packed -- indexed rather than handed to
-    // ::oam::PopulateFromBuffer, which walks its source by the sprite stride
-    // because it takes sprite_t records.
+    // One tile id per 8x8 slot, derived from the pose's 8x16 pattern bytes:
+    // slot i is column i/2, and i%2 picks the top or bottom tile of that
+    // column's pair. An 8x16 byte holds the pair in bits 7-1 and the pattern
+    // table in bit 0, so masking bit 0 off gives the top tile and +1 the
+    // bottom -- which is exactly what the hardware would have fetched.
     static oam::oam_t StandingTile(const u16 i) {
-        return gen::mary_standing::Get()[i];
+        const u8 pair = gen::mary_standing::Get()[i / 2] & 0xFE;
+        return static_cast<oam::oam_t>(pair + (i % 2));
+    }
+
+    // Lays one character's slots out: slot i is column i/2 of the exported
+    // pose, so the X steps every second slot.
+    static void PlaceStandingX(const u8 slot, const oam::oam_t x) {
+        for (u16 i = 0; i < kPlayerSprites; i++) {
+            OAMBuffer[slot + i].x = static_cast<oam::oam_t>(x + (i / 2) * 8);
+        }
+    }
+
+    // The other half of the same split: i%2 is the top or bottom tile of the
+    // column's pair, so the bottom one sits 8 pixels lower. @p y is the top.
+    //
+    // Both characters stand on the same ground and the preview's scroll is the
+    // only thing that moves them, so both follow a transition by being given
+    // the same @p y.
+    static void PlaceStandingY(const u8 slot, const oam::oam_t y) {
+        for (u16 i = 0; i < kPlayerSprites; i++) {
+            OAMBuffer[slot + i].y = static_cast<oam::oam_t>(y + (i % 2) * 8);
+        }
     }
 
     static NI void DrawLevelPreview() {
@@ -813,7 +902,7 @@ namespace title {
         CallLevelGraphics([] {
             ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - ::tech::nes_str::length(msg_mary)), 0}, SIZED_STR(msg_mary), 0);
         });
-        constexpr u8 coinUI[] = {windows::ui + blob::ui::lma::hud_coin, windows::ui + (blob::ui::lma::font + 0), windows::ui + (blob::ui::lma::font + 0)};
+        constexpr u8 coinUI[] = {windows::ui + blob::ui::hud_coin, windows::ui + (blob::ui::font + 0), windows::ui + (blob::ui::font + 0)};
         ppu::WriteFromBufferToNameTable({static_cast<u16>(video::viewport_tx() - sizeof(coinUI)), 1}, SIZED_OBJ(coinUI), 0);
 
         // Metatile columns needed to cover the panel, ROUNDED UP: a viewport
@@ -838,23 +927,44 @@ namespace title {
             // The still pose the designer exported: its ids already carry the
             // pattern-table half their CHR entry is banked into (see the
             // header's banner), so they are OAM-ready as they stand.
-            oam::PopulateFromProvider(OAMBuffer, 0, oam::tile,
-                                      StandingTile, gen::mary_standing::kSize);
+            oam::PopulateFromProvider(OAMBuffer, kPlayerOneSlot, oam::tile,
+                                      StandingTile, kPlayerSprites);
             // Sprite palette 0, unflipped, in front: the generated frames hold
             // no palette or mirroring, so this is the one place it is decided.
-            oam::PopulateFromProvider(OAMBuffer, 0, oam::attributes,
-                                      Zero, gen::mary_standing::kSize);
+            oam::PopulateFromProvider(OAMBuffer, kPlayerOneSlot, oam::attributes,
+                                      Zero, kPlayerSprites);
+#ifdef PLAYER2_SUPPORTED
+            // Player two, shown only where the build HAS a second player to
+            // show -- the same compile-time capability gate level mode uses,
+            // not the session's own multiplayer choice: the title screen is
+            // advertising what the build can do, before anything is chosen.
+            // Same pose and same palette, since it is a second character
+            // rather than a different one.
+            oam::PopulateFromProvider(OAMBuffer, kPlayerTwoSlot, oam::tile,
+                                      StandingTile, kPlayerSprites);
+            oam::PopulateFromProvider(OAMBuffer, kPlayerTwoSlot, oam::attributes,
+                                      Zero, kPlayerSprites);
+#endif
             ppu::pal::WriteFromBuffer(ppu::SPRITE_0 + 1, SIZED_OBJ(maryColors));
             ppu::pal::WriteFromBuffer(0, BGColours, 4);
             ppu::pal::WriteFromBuffer(5, BGColours + 5, 3);
         });
 
         maryGroundNtRow = tyBase * 8 + (levelHeight - 2) * 16;
-        OAMBuffer[0].x = 32; OAMBuffer[1].x = 40;
-        UpdateMarySpriteY(SplitRow());
+        PlaceStandingX(kPlayerOneSlot, kPlayerOneX);
+#ifdef PLAYER2_SUPPORTED
+        PlaceStandingX(kPlayerTwoSlot, kPlayerTwoX);
+#endif
+        PlaceStandingSprites();
     }
 
-    static void UpdateMarySpriteYForPixels(const u16 splitPixelRow) {
+    // Placed once, at the resting split, and never moved again. The lock
+    // animation walks the scroll past them, which used to be tracked per
+    // frame -- it does not need to be: ::nmi_handler_fadeToOptions only hands
+    // over to ::nmi_handler_lockAnim once the fade has finished, and
+    // ::kFadeEntries includes SPRITE_0 + 1, so the characters are already
+    // fully black by the time anything scrolls.
+    static void PlaceStandingSprites() {
         // On a dual-screen target the preview really is scrolled (the
         // bottom-anchor above), so Mary's sprite has to be offset by it like
         // any other target's -- pinning this to 0 would float her 48px off the
@@ -862,14 +972,24 @@ namespace title {
         // (GBA), where the preview is not scrolled at all.
         const u16 spriteScroll = (!kUiOnOwnPanel && video::panel_ty(0) < 30)
             ? 0
-            : PreviewScrollYForPixels(splitPixelRow);
+            : PreviewScrollY();
         const i16 rawFeetY    = static_cast<i16>(maryGroundNtRow) - 16 - static_cast<i16>(spriteScroll);
         const auto feetY      = rawFeetY < 0 ? ParkedSpriteY() : static_cast<oam::oam_t>(rawFeetY);
-        OAMBuffer[0].y = feetY; OAMBuffer[1].y = feetY;
+        PlaceStandingY(kPlayerOneSlot, feetY);
+#ifdef PLAYER2_SUPPORTED
+        PlaceStandingY(kPlayerTwoSlot, feetY);
+#endif
     }
 
-    static void UpdateMarySpriteY(const u8 splitRow) {
-        UpdateMarySpriteYForPixels(static_cast<u16>(splitRow) << 3);
+    // Parks every character off-screen, undone by ::PlaceStandingSprites.
+    // Only on the fading path: where the options panel has a screen of its own
+    // (::kUiOnOwnPanel) there is no fade, the preview stays fully visible
+    // beside it, and parking them would just make the characters vanish.
+    static void ParkStandingSprites() {
+        PlaceStandingY(kPlayerOneSlot, ParkedSpriteY());
+#ifdef PLAYER2_SUPPORTED
+        PlaceStandingY(kPlayerTwoSlot, ParkedSpriteY());
+#endif
     }
 
     AI auto SelectorUpdate() -> void {
@@ -877,8 +997,8 @@ namespace title {
 
         const u16 clearAddr  = scratchpad[1] | (scratchpad[2] << 8);
         const u16 arrowAddr  = scratchpad[3] | (scratchpad[4] << 8);
-        ppu::WriteSingleToNameTable(clearAddr, (windows::ui + blob::ui::lma::hud_whitespace));
-        ppu::WriteSingleToNameTable(arrowAddr, (windows::ui + blob::ui::lma::arrow));
+        ppu::WriteSingleToNameTable(clearAddr, (windows::ui + blob::ui::hud_whitespace));
+        ppu::WriteSingleToNameTable(arrowAddr, (windows::ui + blob::ui::arrow));
         scratchpad[0] = 0;  // clear update flag, update is done
     }
 }

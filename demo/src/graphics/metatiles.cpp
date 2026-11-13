@@ -31,9 +31,9 @@ namespace {
 // The tiles this table names, each translated once by the window its set is
 // banked at. Named rather than spelled out per slot so a metatile row stays
 // four tile names and an attribute byte.
-constexpr u8 air     = windows::staticLevelTiles  + blob::staticLevelTiles::lma::air;
-constexpr u8 terrain = windows::staticLevelTiles  + blob::staticLevelTiles::lma::terrain;
-constexpr u8 coin    = windows::dynamicLevelTiles + blob::dynamicLevelTiles::lma::coin;
+constexpr u8 air     = windows::staticLevelTiles  + blob::staticLevelTiles::air;
+constexpr u8 terrain = windows::staticLevelTiles  + blob::staticLevelTiles::terrain;
+constexpr u8 coin    = windows::dynamicLevelTiles + blob::dynamicLevelTiles::coin;
 
 constexpr u8 MetatilesSrc[256 * 5] = {
     air, air, air, air,        (MetatileCollision::None    | 0b00),   // $00 (air)

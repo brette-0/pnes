@@ -506,20 +506,13 @@ static std::string Hex(const unsigned long value, const int width) {
     return hex.str();
 }
 
-// one namespace per entry: a nested `lma` namespace giving every include's
-// tile index in character rom, plus the entry's load address (for BankOf())
-// and size. Nothing here says where the ppu sees an entry -- that is not a
-// property of how it was packed, and whatever banks the entry in is what
-// decides it.
+// one namespace per entry: every include's tile index in character rom, plus
+// the entry's load address (for BankOf()) and size. Nothing here says where
+// the ppu sees an entry -- that is not a property of how it was packed, and
+// whatever banks the entry in is what decides it.
 bool GenerateHeader() {
     static constexpr std::string_view lmaSymbol  = "__lma";
     static constexpr std::string_view sizeSymbol = "__size";
-
-    // Nested namespace holding every include's tile index in CHARACTER ROM.
-    // Nested rather than sitting directly in the entry so a call site says
-    // which space it means, which matters where the index is then translated
-    // into one the ppu reads (ppu::ChrWindow).
-    static constexpr std::string_view lmaNamespace = "lma";
 
     std::ostringstream header;
     header << "#pragma once\n\n"
@@ -557,7 +550,7 @@ bool GenerateHeader() {
                 return false;
             }
 
-            if (symbol == lmaSymbol || symbol == sizeSymbol || symbol == lmaNamespace) {
+            if (symbol == lmaSymbol || symbol == sizeSymbol) {
                 std::cout << "include symbol collides with " << symbol << ": " << f.name
                           << ", in entry: " << e.name << '\n';
                 return false;
@@ -593,29 +586,37 @@ bool GenerateHeader() {
         header << "\n    // " << e.name << " entry\n"
                   "    namespace " << entryName << " {\n";
 
-        header << "        constexpr unsigned long " << std::left << std::setw(static_cast<int>(widest))
-               << lmaSymbol << " = " << Hex(static_cast<unsigned long>(e.LMA), 4)
-               << "; // used for BankOf()\n"
-                  "        constexpr unsigned long " << std::left << std::setw(static_cast<int>(widest))
-               << sizeSymbol << " = " << Hex(static_cast<unsigned long>(e.size), 4)
-               << "; // bytes the entry occupies\n";
-
         // Every include, as a tile index into the character rom image.
         // unsigned short, not char: this indexes the whole image, which passes
         // 0xff inside the first 16 KiB -- unlike a ppu tile index, which is a
-        // byte because that is all the hardware reads.
+        // byte because that is all the hardware reads, and which nothing here
+        // emits.
+        //
+        // The type names are padded to the widest of them so that the '='
+        // column lines up across the tiles and the two placement constants
+        // below, which are a different width.
+        static constexpr std::string_view tileType  = "unsigned short";
+        static constexpr std::string_view placeType = "unsigned long ";
+
         if (!symbols.empty()) {
-            header << "\n        // every include, as a tile index into character rom\n"
-                      "        namespace " << lmaNamespace << " {\n";
-            for (const genSymbol& s : symbols) {
-                header << "            constexpr unsigned short " << std::left
-                       << std::setw(static_cast<int>(widest)) << s.name << " = "
-                       << Hex(static_cast<unsigned long>(s.rom), 4) << ";\n";
-            }
-            header << "        }\n";
+            header << "        // tile indices into character rom; see ppu::ChrWindow for\n"
+                      "        // turning one into the index the ppu reads\n";
+        }
+        for (const genSymbol& s : symbols) {
+            header << "        constexpr " << tileType << ' ' << std::left
+                   << std::setw(static_cast<int>(widest)) << s.name << " = "
+                   << Hex(static_cast<unsigned long>(s.rom), 4) << ";\n";
         }
 
-        header << "    }\n";
+        header << "        constexpr " << placeType << ' ' << std::left
+               << std::setw(static_cast<int>(widest))
+               << lmaSymbol << " = " << Hex(static_cast<unsigned long>(e.LMA), 4)
+               << "; // byte offset, used for BankOf()\n"
+                  "        constexpr " << placeType << ' ' << std::left
+               << std::setw(static_cast<int>(widest))
+               << sizeSymbol << " = " << Hex(static_cast<unsigned long>(e.size), 4)
+               << "; // bytes the entry occupies\n"
+                  "    }\n";
     }
 
     header << "}\n";

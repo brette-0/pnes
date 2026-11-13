@@ -7,8 +7,8 @@
  * One ppu::ChrWindow per packed set this game banks in: where the set starts
  * in character ROM, and the tile index the PPU sees it at once it is there.
  * Every tile reference in the demo goes through one of these -- a tile is
- * named by where the packer put it (blob::<entry>::lma::<include>) and turned
- * into what the hardware reads by the window holding it.
+ * named by where the packer put it (blob::<entry>::<include>) and turned into
+ * what the hardware reads by the window holding it.
  *
  * THE PPU ORIGINS BELOW ARE THIS GAME'S DECISION, written out rather than
  * derived. blobman says where art was packed; where it is banked is the
@@ -27,8 +27,8 @@
  */
 namespace windows {
     /// CHR tiles are 16 bytes, so an entry's byte position in the image
-    /// divides down into the tile index ppu::ChrWindow wants. blobman emits
-    /// `lma::` per include but the entry's own origin only in bytes, as
+    /// divides down into the tile index ppu::ChrWindow wants. blobman emits a
+    /// tile index per include but the entry's own origin only in bytes, as
     /// __lma, hence the division here.
     constexpr u16 kTileBytes = 16;
 
@@ -48,4 +48,20 @@ namespace windows {
     /// with the table coming from PPUCTRL.
     inline constexpr ppu::ChrWindow normalSprites{
         blob::normalSprites::__lma / kTileBytes, 0x00};
+
+    /// R1, PPU $1800 -- the ui set banked a second time, as sprites, while R3
+    /// still holds it for the background. The same bytes under two tile
+    /// numberings at once, which is why this is a separate window and not a
+    /// re-pointing of ::ui.
+    ///
+    /// An ordinary window, with no pattern-table bit in it, because title mode
+    /// runs 8x8 sprites: a sprite's tile byte is then a plain tile index and
+    /// the table comes from ppu::ctrl::SPRITE_ADDR. (Were it 8x16, the byte
+    /// would hold a PAIR in bits 7-1 and the table in bit 0, which is not an
+    /// affine translation and not something ppu::ChrWindow can do.)
+    ///
+    /// Title mode only: level mode points R1 at blob padding instead, and runs
+    /// 8x16 sprites (see each mode's own bank setup and EnableRendering).
+    inline constexpr ppu::ChrWindow uiSprites{
+        blob::ui::__lma / kTileBytes, 0x80};
 }

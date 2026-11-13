@@ -16,14 +16,14 @@ namespace ui::impl {
 
     constexpr void DrawTextBox(const u16 pos, const vec2<u8>& box) {
         // TODO: create actual graphics and use it normally
-        constexpr u8 ULCornerGraphic   = windows::ui + blob::ui::lma::box_ul;
-        constexpr u8 URCornerGraphic   = windows::ui + blob::ui::lma::box_ur;
-        constexpr u8 BLCornerGraphic   = windows::ui + blob::ui::lma::box_bl;
-        constexpr u8 BRCornerGraphic   = windows::ui + blob::ui::lma::box_br;
-        constexpr u8 LeftEdgeGraphic   = windows::ui + blob::ui::lma::box_vertical;
-        constexpr u8 RightEdgeGraphic  = windows::ui + blob::ui::lma::box_vertical;
-        constexpr u8 TopEdgeGraphic    = windows::ui + blob::ui::lma::box_horizontal;
-        constexpr u8 BottomEdgeGraphic = windows::ui + blob::ui::lma::box_horizontal;
+        constexpr u8 ULCornerGraphic   = windows::ui + blob::ui::box_ul;
+        constexpr u8 URCornerGraphic   = windows::ui + blob::ui::box_ur;
+        constexpr u8 BLCornerGraphic   = windows::ui + blob::ui::box_bl;
+        constexpr u8 BRCornerGraphic   = windows::ui + blob::ui::box_br;
+        constexpr u8 LeftEdgeGraphic   = windows::ui + blob::ui::box_vertical;
+        constexpr u8 RightEdgeGraphic  = windows::ui + blob::ui::box_vertical;
+        constexpr u8 TopEdgeGraphic    = windows::ui + blob::ui::box_horizontal;
+        constexpr u8 BottomEdgeGraphic = windows::ui + blob::ui::box_horizontal;
 
         // UL
         ppu::WriteSingleToNameTable(pos, ULCornerGraphic);

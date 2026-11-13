@@ -83,14 +83,12 @@ header of symbolic tile ids:
 
     namespace blob {
         namespace normalSprites {
-            constexpr unsigned long __lma            = 0x0000; // used for BankOf()
-            constexpr unsigned long __size           = 0x0800; // bytes the entry occupies
-
-            // every include, as a tile index into character rom
-            namespace lma {
-                constexpr unsigned short mushlet_standing = 0x0000;
-                constexpr unsigned short wand             = 0x0018;
-            }
+            // tile indices into character rom; see ppu::ChrWindow for
+            // turning one into the index the ppu reads
+            constexpr unsigned short mushlet_standing = 0x0000;
+            constexpr unsigned short wand             = 0x0018;
+            constexpr unsigned long  __lma            = 0x0000; // byte offset, used for BankOf()
+            constexpr unsigned long  __size           = 0x0800; // bytes the entry occupies
         }
     }
 
@@ -103,7 +101,7 @@ one into the index the hardware reads.
 
     constexpr ppu::ChrWindow sprites{blob::normalSprites::__lma / 16, 0x00};
 
-    const u8 tile = sprites + blob::normalSprites::lma::wand;
+    const u8 tile = sprites + blob::normalSprites::wand;
 
 Alongside them each entry carries ``__lma``, where it was packed in the CHR image, which is what a mapper banks
 it in by:

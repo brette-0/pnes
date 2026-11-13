@@ -33,9 +33,9 @@ The resulting members will be generated:
 
 .. code-block:: cpp
 
-    blob::sprites::lma::asset1;   // tile index in Character ROM; will be 0x00
-    blob::sprites::lma::asset2;
-    blob::sprites::lma::asset3;
+    blob::sprites::asset1;   // tile index in Character ROM; will be 0x0000
+    blob::sprites::asset2;
+    blob::sprites::asset3;
     blob::sprites::__lma;         // byte offset of the entry; will be 0x0000
     blob::sprites::__size;
 
@@ -48,7 +48,7 @@ property of how it was packed, so the manifest does not say: whatever banks the 
     // the set is packed at __lma and banked in at PPU $0400, i.e. tile 0x40
     constexpr ppu::ChrWindow window{blob::sprites::__lma / 16, 0x40};
 
-    const u8 tile = window + blob::sprites::lma::asset1;
+    const u8 tile = window + blob::sprites::asset1;
 
 ``__lma`` in bytes is what a mapper banks by -- ``mmc3::BankOf<blob::sprites::__lma>()`` -- while the tile indices
 under ``lma::`` are in tiles, since a CHR tile is 16 bytes and no sub-tile value means anything.

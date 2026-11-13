@@ -20,8 +20,8 @@
 // choice is that a terminator drawn to the nametable by mistake is visible
 // rather than invisible -- SIZED_STR / nes_str::length exist so it isn't.
 inline constexpr auto charmap_generic = ::tech::nes_str::charmap({
-    { '\0',     windows::ui + blob::ui::lma::empty },           // terminator; its own tile, scannable -- see above
-    { ' ',      windows::ui + blob::ui::lma::hud_whitespace },   // dedicated blank tile, not part of the font run
-    { '0', '9', windows::ui + (blob::ui::lma::font + 0x00) },
-    { 'A', 'Z', windows::ui + (blob::ui::lma::font + 0x0a) },
+    { '\0',     windows::ui + blob::ui::empty },           // terminator; its own tile, scannable -- see above
+    { ' ',      windows::ui + blob::ui::hud_whitespace },   // dedicated blank tile, not part of the font run
+    { '0', '9', windows::ui + (blob::ui::font + 0x00) },
+    { 'A', 'Z', windows::ui + (blob::ui::font + 0x0a) },
 });

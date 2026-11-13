@@ -6,74 +6,66 @@ namespace blob {
 
     // normalSprites entry
     namespace normalSprites {
-        constexpr unsigned long __lma            = 0x0000; // used for BankOf()
-        constexpr unsigned long __size           = 0x0800; // bytes the entry occupies
-
-        // every include, as a tile index into character rom
-        namespace lma {
-            constexpr unsigned short mushlet_standing = 0x0000;
-            constexpr unsigned short player_standing  = 0x0004;
-            constexpr unsigned short player_walking1  = 0x0008;
-            constexpr unsigned short player_walking2  = 0x000c;
-            constexpr unsigned short player_walking3  = 0x0010;
-            constexpr unsigned short berries          = 0x0014;
-            constexpr unsigned short wand             = 0x0018;
-        }
+        // tile indices into character rom; see ppu::ChrWindow for
+        // turning one into the index the ppu reads
+        constexpr unsigned short mushlet_standing = 0x0000;
+        constexpr unsigned short player_standing  = 0x0004;
+        constexpr unsigned short player_walking1  = 0x0008;
+        constexpr unsigned short player_walking2  = 0x000c;
+        constexpr unsigned short player_walking3  = 0x0010;
+        constexpr unsigned short berries          = 0x0014;
+        constexpr unsigned short wand             = 0x0018;
+        constexpr unsigned long  __lma            = 0x0000; // byte offset, used for BankOf()
+        constexpr unsigned long  __size           = 0x0800; // bytes the entry occupies
     }
 
     // dynamicLevelTiles entry
     namespace dynamicLevelTiles {
-        constexpr unsigned long __lma    = 0x1000; // used for BankOf()
-        constexpr unsigned long __size   = 0x0400; // bytes the entry occupies
-
-        // every include, as a tile index into character rom
-        namespace lma {
-            constexpr unsigned short box      = 0x0100;
-            constexpr unsigned short coin     = 0x0104;
-            constexpr unsigned short powerbox = 0x0108;
-        }
+        // tile indices into character rom; see ppu::ChrWindow for
+        // turning one into the index the ppu reads
+        constexpr unsigned short box      = 0x0100;
+        constexpr unsigned short coin     = 0x0104;
+        constexpr unsigned short powerbox = 0x0108;
+        constexpr unsigned long  __lma    = 0x1000; // byte offset, used for BankOf()
+        constexpr unsigned long  __size   = 0x0400; // bytes the entry occupies
     }
 
     // staticLevelTiles entry
     namespace staticLevelTiles {
-        constexpr unsigned long __lma   = 0x1400; // used for BankOf()
-        constexpr unsigned long __size  = 0x0400; // bytes the entry occupies
-
-        // every include, as a tile index into character rom
-        namespace lma {
-            constexpr unsigned short air     = 0x0140;
-            constexpr unsigned short bush    = 0x0141;
-            constexpr unsigned short cloud   = 0x0145;
-            constexpr unsigned short liquid  = 0x0149;
-            constexpr unsigned short pipe    = 0x014d;
-            constexpr unsigned short terrain = 0x0151;
-        }
+        // tile indices into character rom; see ppu::ChrWindow for
+        // turning one into the index the ppu reads
+        constexpr unsigned short air     = 0x0140;
+        constexpr unsigned short bush    = 0x0141;
+        constexpr unsigned short cloud   = 0x0145;
+        constexpr unsigned short liquid  = 0x0149;
+        constexpr unsigned short pipe    = 0x014d;
+        constexpr unsigned short terrain = 0x0151;
+        constexpr unsigned long  __lma   = 0x1400; // byte offset, used for BankOf()
+        constexpr unsigned long  __size  = 0x0400; // bytes the entry occupies
     }
 
     // ui entry
     namespace ui {
-        constexpr unsigned long __lma          = 0x1800; // used for BankOf()
-        constexpr unsigned long __size         = 0x0400; // bytes the entry occupies
-
-        // every include, as a tile index into character rom
-        namespace lma {
-            constexpr unsigned short arrow          = 0x0180;
-            constexpr unsigned short empty          = 0x0181;
-            constexpr unsigned short font           = 0x0182;
-            constexpr unsigned short hud_coin       = 0x01a6;
-            constexpr unsigned short hud_whitespace = 0x01a7;
-            constexpr unsigned short selected       = 0x01a8;
-            constexpr unsigned short slider_cursor  = 0x01a9;
-            constexpr unsigned short slider_left    = 0x01aa;
-            constexpr unsigned short slider_middle  = 0x01ab;
-            constexpr unsigned short slider_right   = 0x01ac;
-            constexpr unsigned short unselected     = 0x01ad;
-            constexpr unsigned short box_bl         = 0x01ae;
-            constexpr unsigned short box_br         = 0x01af;
-            constexpr unsigned short box_horizontal = 0x01b0;
-            constexpr unsigned short box_ul         = 0x01b1;
-            constexpr unsigned short box_ur         = 0x01b2;
-            constexpr unsigned short box_vertical   = 0x01b3;
-        }
+        // tile indices into character rom; see ppu::ChrWindow for
+        // turning one into the index the ppu reads
+        constexpr unsigned short arrow          = 0x0180;
+        constexpr unsigned short empty          = 0x0181;
+        constexpr unsigned short font           = 0x0182;
+        constexpr unsigned short hud_coin       = 0x01a6;
+        constexpr unsigned short hud_whitespace = 0x01a7;
+        constexpr unsigned short selected       = 0x01a8;
+        constexpr unsigned short slider_cursor  = 0x01a9;
+        constexpr unsigned short slider_left    = 0x01aa;
+        constexpr unsigned short slider_middle  = 0x01ab;
+        constexpr unsigned short slider_right   = 0x01ac;
+        constexpr unsigned short unselected     = 0x01ad;
+        constexpr unsigned short box_bl         = 0x01ae;
+        constexpr unsigned short box_br         = 0x01af;
+        constexpr unsigned short box_horizontal = 0x01b0;
+        constexpr unsigned short box_ul         = 0x01b1;
+        constexpr unsigned short box_ur         = 0x01b2;
+        constexpr unsigned short box_vertical   = 0x01b3;
+        constexpr unsigned long  __lma          = 0x1800; // byte offset, used for BankOf()
+        constexpr unsigned long  __size         = 0x0400; // bytes the entry occupies
     }
 }
