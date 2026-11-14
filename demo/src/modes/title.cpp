@@ -161,6 +161,9 @@ namespace title {
     static void nmi_handler_locked();
     static void nmi_handler_lockAnimReverse();
     static void nmi_handler_fadeFromOptions();
+#if TARGET_GC
+    static void ApplyWidescreenChange(bool on);
+#endif
 
     static u16 kMenuNT;
 
@@ -465,7 +468,28 @@ namespace title {
         const u8 payload = canvasInput;
         if (!payload) return;
         canvasInput = 0;
+#if TARGET_GC
+        // The widescreen bit BEFORE the press. uitk's generated Pass() flips
+        // the bit and repaints the box -- that is the whole of what it can do,
+        // because the ENGINE-side consequence of the flip is the game's to
+        // own (video.hpp's SetWidescreen: the GameCube is told, not asked). So
+        // it is noticed here, at the one place a component press is ever
+        // spent, by comparing the bit across the call.
+        //
+        // Not hooked in the button's own Draw() in ui/impl/buttons.hpp, which
+        // is the other place hand-written code meets this button: that runs on
+        // every ordinary repaint of the panel, including the repaint this very
+        // change performs, and re-striding VRAM from inside a paint call would
+        // be both wrong and re-entrant.
+        const bool wideBefore = gen::options::videoCanvas::enableWidescreenButton::Enabled();
+#endif
         pOptionsPass(payload);
+#if TARGET_GC
+        if (const bool wideNow = gen::options::videoCanvas::enableWidescreenButton::Enabled();
+            wideNow != wideBefore) {
+            ApplyWidescreenChange(wideNow);
+        }
+#endif
     }
 
     static void ParkOptionsCorners() {
@@ -515,6 +539,20 @@ namespace title {
 
     TITLE NI void main() {
         log("title::main: entered");
+
+#if TARGET_GC
+        // The GameCube boots 4:3 and is TOLD otherwise (video.hpp's
+        // SetWidescreen), so the engine's aspect and the button's state bit are
+        // two copies of one setting -- and the button is the one the player
+        // sees, which makes it the authority. Synced once here, BEFORE kMenuNT
+        // and every Make()/Draw() below resolve against the viewport, so the
+        // first frame is already drawn at the width the page claims. A no-op
+        // when the two already agree, which is the ordinary cold-boot case; it
+        // earns its keep the moment the setting is restored from anywhere (a
+        // memory card, a debug default) instead of starting at the scene's.
+        video::ogc::SetWidescreen(gen::options::videoCanvas::enableWidescreenButton::Enabled());
+#endif
+
         kMenuNT = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
 
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);
@@ -821,6 +859,102 @@ namespace title {
         WritePaletteFadePhase(--fadePhase);
         return fadePhase != 0;
     }
+
+#if TARGET_GC
+    // Flips the GameCube's display aspect and rebuilds the screen around it.
+    //
+    // ::video::ogc::SetWidescreen moves ::video::viewport_tx() -- 40 columns at
+    // 4:3, 52 at 16:9 -- and the viewport width IS the nametable page stride
+    // (::video::nametable_plane_bytes, ::emu::ComputeNtGeometry), so the
+    // instant it moves every byte already in the plane is at the wrong offset.
+    // Nothing there is salvageable and nothing needs to be: this redraws the
+    // screen the way ::main first drew it. The ALLOCATION never moves --
+    // irq::init() sizes VRAM for the wider of the two aspects -- so nothing
+    // anything holds here goes stale. See the @warning on SetWidescreen's
+    // declaration; this function is the demo's half of that contract.
+    //
+    // Reached only from ::nmi_handler_locked, i.e. the options page at rest,
+    // which is the one state the button can be pressed in. That is what settles
+    // what has to come back here and what must not: in this state the title
+    // menu's labels have been ERASED and its arrow parked
+    // (::nmi_handler_lockOptions), so neither is restored here --
+    // ::nmi_handler_lockAnimReverse still owns putting them back on the way
+    // out, and drawing them now would put an arrow over the page.
+    static void ApplyWidescreenChange(const bool on) {
+        // Rendering off across the re-stride: from the switch to the last write
+        // below, every address in the plane means something other than what is
+        // on screen. PPUMASK is SAVED AND RESTORED rather than re-derived --
+        // ::main's EnableRendering is not the last thing to have set it by the
+        // time the page is up, and what the page's rendering state should be is
+        // not this function's decision to make.
+        const u8 mask = ppu::PPUMASK;
+        ppu::PPUMASK = 0;
+
+        video::ogc::SetWidescreen(on);
+
+        // Everything from here down re-derives against the new viewport.
+        kMenuNT = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
+
+        ppu::Flush((windows::ui + blob::ui::hud_whitespace), 0xff);
+
+        // Re-resolve every UI anchor. Each Make() also ZEROES its scene's
+        // running state, which must not happen here: the player is standing on
+        // a focused component in a selected column, and the display changing
+        // shape is no reason to throw their place in the menu away. The title
+        // and play-mode menus are off-screen in this state, but their rects are
+        // just as stale, and their option is what the player picked on the way
+        // in -- so both go through the same save/restore.
+        const u8 videoIndex  = gen::options::videoCanvas::index;
+        const u8 audioIndex  = gen::options::audioCanvas::index;
+        const u8 titleOption = gen::title::TitleOptions::option;
+        const u8 playOption  = gen::gameOptions::gameOptions::option;
+        gen::options::videoCanvas::Make();
+        gen::options::audioCanvas::Make();
+        gen::title::TitleOptions::Make();
+        gen::gameOptions::gameOptions::Make();
+        gen::options::videoCanvas::index  = videoIndex;
+        gen::options::audioCanvas::index  = audioIndex;
+        gen::title::TitleOptions::option  = titleOption;
+        gen::gameOptions::gameOptions::option = playOption;
+
+        // The preview, the logo and the panel, in ::main's own order.
+        //
+        // ::DrawLevelPreview is written for a COLD START, so the two things it
+        // does for one have to be undone again here -- it is the whole of the
+        // preview's construction and splitting those out of it would only move
+        // the problem to the one caller that does want them.
+        //
+        // It uploads the UNFADED palettes, so the fade goes back over the top:
+        // ::fadePhase is at the fully-black end in this state and the preview
+        // has to stay black behind the page. The three runs it writes (BG_0,
+        // BG_1 colours 1-3, SPRITE_0 colours 1-3) are exactly ::kFadeEntries,
+        // so the re-write covers all of it with nothing left bright.
+        //
+        // And it finishes by PLACING the characters on the ground, which is
+        // precisely what the options page is not supposed to show: they were
+        // parked for the whole page in ::nmi_handler_fadeToOptions, ONCE --
+        // nothing re-parks them per frame -- and ::nmi_handler_locked refreshes
+        // OAM immediately after this returns, so leaving them placed puts Mary
+        // back on screen over the page. (Palette-black would not have saved it
+        // either: the fade covers her colours 1-3, not the backdrop.) No
+        // ::kUiOnOwnPanel guard on the park, unlike the two existing call
+        // sites: the GameCube is single-screen, so the page IS the whole frame
+        // and this branch is the only one that exists here.
+        DrawLevelPreview();
+        WritePaletteFadePhase(fadePhase);
+        ParkStandingSprites();
+        InitTitleScreen();
+        DrawOptionsPanel();
+
+        // The corners last, onto the rects the Make()s above just re-resolved,
+        // and in whichever of the page's two states it is actually in -- the
+        // same two calls ::nmi_handler_locked's own input paths choose between.
+        if (canvasEntered) SelectFocusedComponent();
+        else               PlaceOptionsCorners();
+
+        ppu::PPUMASK = mask;
+    }
+#endif
 
     static void nmi_handler_fadeToOptions() {
         ui::impl::AnimateSelector();

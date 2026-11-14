@@ -12,6 +12,21 @@
 #include "../graphics/windows.hpp"
 #include "../graphics/metatiles.hpp"
 
+// NES only: EnterLevelSetup gates TrackPlay on the options scene's DISABLE
+// MUSIC button, and the button's state bit lives in this generated header
+// (gen::options::button_state). Guarded because the button itself is
+// NES-only -- options.uis hides it on every other target, where the audio
+// column is the two mix sliders instead, so the namespace the gate names
+// does not exist there (demo/ui/impl/sliders.hpp carries the mirror of this
+// guard). Included after strings.hpp deliberately: the generated header
+// needs charmap_generic already in scope.
+#ifdef TARGET_NES
+#ifndef GEN_TARGET_DIR
+#error "GEN_TARGET_DIR is not set -- add it to this target's CMakeLists.txt branch."
+#endif
+#include STRCAT(../../gen/options/GEN_TARGET_DIR/options.hpp)
+#endif
+
 #include "level/levels.hpp"
 #include "level/collision_map.hpp"
 #include "level/dynamic.hpp"
@@ -255,9 +270,29 @@ namespace level {
         ppu::SetScroll({0, 0});
 
 
-        mmc3::CallPairedBlock<audio_tag, audio_data_tag>([] {
-            audio::TrackPlay(0);
-        });
+        // The options scene's audio setting, NES only. The bit reads as "the
+        // feature is ON": set means the box paints DISABLE MUSIC, i.e. the
+        // action it offers, so music plays exactly while it is set (see
+        // demo/ui/impl/buttons.hpp's disableMusic::Draw, and button_state's
+        // 0x07 seed -- music is on at boot). Every other target has no such
+        // button and always starts the song.
+        //
+        // Checked OUT HERE, not inside the lambda: with music off there is
+        // then no paired bank switch to pay for at all. Only the song start
+        // is gated -- audio::Update() below stays unconditional, because the
+        // engine has one tick for music AND sound effects and a stopped song
+        // already costs it nothing (famistudio_update's `song_speed == 0`
+        // early path).
+#ifdef TARGET_NES
+        const bool playMusic = gen::options::audioCanvas::disableMusic::Enabled();
+#else
+        constexpr bool playMusic = true;
+#endif
+        if (playMusic) {
+            mmc3::CallPairedBlock<audio_tag, audio_data_tag>([] {
+                audio::TrackPlay(0);
+            });
+        }
 
         // ColMapSeed is ::LEVEL_CODE too -- same reason and pattern as LoadLevel's
         // wrap above.

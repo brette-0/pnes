@@ -169,7 +169,7 @@
                             "text": "ENABLE WIDESCREEN"
                         }
                     ],
-                    "defaultEnabled": true,
+                    "defaultEnabled": false,
                     "hasBox": true,
                     "hideRegions": [
                     ],
