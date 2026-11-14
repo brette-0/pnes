@@ -327,6 +327,19 @@ constexpr char kSliderKind[] = "slider";
 // and let the Canvas decide which control it reaches. The only state it owns
 // is the focused index (see genCanvasDecl).
 constexpr char kCanvasKind[] = "canvas";
+// Geometry and nothing else: a named position and footprint, and the Make()
+// that resolves them -- no appearance, no state, no Pass(), not even a hook to
+// define. It is the Rect every other placeable kind already carries, offered on
+// its own, for an area the scene wants named and resolved per target without
+// uitk having an opinion about what lives there: a panel hand-written code
+// clears, a region a sprite is clamped to, an anchor other nodes write their
+// own placement against.
+//
+// Deliberately NOT a negative space zone, which is also pure geometry: that one
+// MEANS something ("nothing may overlap this", and uitk flags whatever does).
+// A Rect means nothing at all, which is the point -- and is why it is a kind of
+// its own rather than a flag on that one.
+constexpr char kRectKind[] = "rect";
 constexpr char kCtTextBoxPrefix[] = "[CT] ";
 constexpr char kRtTextBoxPrefix[] = "[RT] ";
 constexpr char kNegSpacePrefix[] = "[N] ";
@@ -334,6 +347,7 @@ constexpr char kSingleChoicePrefix[] = "[SC] ";
 constexpr char kButtonPrefix[] = "[B] ";
 constexpr char kSliderPrefix[] = "[S] ";
 constexpr char kCanvasPrefix[] = "[C] ";
+constexpr char kRectPrefix[] = "[R] ";
 
 // Every backend pnes currently supports, in the order they appear in
 // the Target dropdown. Scene-wide, same as the quadrant -- one scene targets
@@ -464,6 +478,13 @@ bool isNegSpaceItem(const QTreeWidgetItem* item) {
     return item && item->data(0, kKindRole).toString() == QLatin1String(kNegSpaceKind);
 }
 
+// Position and size, and nothing else -- see kRectKind. Every other geometry
+// kind here is this plus something (text, a Draw() hook, a value byte, an
+// exclusion rule); this one is the floor they all stand on, exported on its own.
+bool isRectItem(const QTreeWidgetItem* item) {
+    return item && item->data(0, kKindRole).toString() == QLatin1String(kRectKind);
+}
+
 // A pure grouping node -- no geometry of its own, just a parent for the
 // ctTextBox/rtTextBox nodes representing its options. Not a geometry item:
 // it's never drawn, dragged, or resolved, same as root/plain branch nodes.
@@ -508,7 +529,8 @@ bool isCanvasItem(const QTreeWidgetItem* item) {
 // referenceable in another node's expressions -- regardless of what kind of
 // thing it visually is.
 bool isGeometryItem(const QTreeWidgetItem* item) {
-    return isComponentItem(item) || isNegSpaceItem(item) || isButtonItem(item) || isSliderItem(item);
+    return isComponentItem(item) || isNegSpaceItem(item) || isButtonItem(item) || isSliderItem(item) ||
+           isRectItem(item);
 }
 
 // Anything that carries a kind-specific name prefix -- every geometry item,
@@ -518,7 +540,7 @@ bool isPrefixedItem(const QTreeWidgetItem* item) {
     return isGeometryItem(item) || isSingleChoiceItem(item) || isCanvasItem(item);
 }
 
-// The "[CT] "/"[RT] "/"[N] "/"[SC] "/"[B] "/"[S] "/"[C] " prefix a node's kind
+// The "[CT] "/"[RT] "/"[N] "/"[SC] "/"[B] "/"[S] "/"[C] "/"[R] " prefix a node's kind
 // requires, or empty for kinds (root, plain branch nodes) that don't have one.
 QString requiredPrefixFor(const QTreeWidgetItem* item) {
     if (isCtTextBoxItem(item)) return QString(kCtTextBoxPrefix);
@@ -528,6 +550,7 @@ QString requiredPrefixFor(const QTreeWidgetItem* item) {
     if (isButtonItem(item)) return QString(kButtonPrefix);
     if (isSliderItem(item)) return QString(kSliderPrefix);
     if (isCanvasItem(item)) return QString(kCanvasPrefix);
+    if (isRectItem(item)) return QString(kRectPrefix);
     return QString();
 }
 
@@ -1059,13 +1082,17 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
     const bool isNegSpace = (kind == QLatin1String("negspace"));
     const bool isButton = (kind == QLatin1String("button"));
     const bool isSlider = (kind == QLatin1String("slider"));
-    if (isComponent || isNegSpace || isButton || isSlider) {
+    // Nothing kind-specific to read back for a Rect -- the geometry block below
+    // is the whole of it (see kRectKind).
+    const bool isRect = (kind == QLatin1String("rect"));
+    if (isComponent || isNegSpace || isButton || isSlider || isRect) {
         item->setFlags(item->flags() | Qt::ItemIsEditable);
         item->setData(0, kKindRole,
                        QString(isCtTextBox   ? kCtTextBoxKind
                                : isRtTextBox ? kRtTextBoxKind
                                : isNegSpace  ? kNegSpaceKind
                                : isButton    ? kButtonKind
+                               : isRect      ? kRectKind
                                              : kSliderKind));
         const QString posXExpr = obj["posXExpr"].toString(QStringLiteral("0"));
         const QString posYExpr = obj["posYExpr"].toString(QStringLiteral("0"));
@@ -2594,9 +2621,10 @@ bool componentHasDraw(QTreeWidgetItem* item, const QString& target, const QStrin
 // Emits one Canvas node's own declarations: the `components` table over the
 // interactable nodes nested under it, the `index` holding which of them has
 // focus, the Make() that drives its children, the forced-to-define
-// DrawUpdate() that repaints a focus move, the DrawComponents() that paints
-// every component in one call, and the generated Pass() that turns a frame's
-// input into either a focus move or a call into the focused component. Its children's own namespaces are emitted separately,
+// DrawUpdate() that repaints a focus move and DrawComponentSelection() that
+// paints one, the DrawComponents() that paints every component in one call,
+// and the generated Pass() that turns a frame's input into either a focus move
+// or a call into the focused component. Its children's own namespaces are emitted separately,
 // immediately BEFORE this, by emitNodeNamespace -- which is what lets the
 // table below name them.
 //
@@ -2611,7 +2639,7 @@ bool componentHasDraw(QTreeWidgetItem* item, const QString& target, const QStrin
 // Never returns empty, unlike genSingleChoiceDecl: a Canvas with nothing
 // focusable in it still has children to make, so it still gets a namespace and
 // a Make(). What it loses is the table, the index, DrawUpdate(),
-// DrawComponents() and Pass() -- there is no focus to hold or move, and nothing
+// DrawComponentSelection(), DrawComponents() and Pass() -- there is no focus to hold or move, and nothing
 // in the ring to draw.
 //
 // There is deliberately no Erase() counterpart to DrawComponents(). A Canvas
@@ -2620,12 +2648,22 @@ bool componentHasDraw(QTreeWidgetItem* item, const QString& target, const QStrin
 // Provide Erasing) -- a canvas-wide one could not be built out of parts that
 // mostly don't have it.
 //
-// `bssPrefixTok`/`dataPrefixTok` are empty on every target but NES (see
-// generateCode): the first places `index`, the second the components table,
-// which is `constexpr` and therefore ROM on every target (see
-// InvokeableComponant in pnes/extras/ui/types.hpp for why it can be).
+// `bssPrefixTok` is empty on every target but NES (see generateCode), and
+// places `index` in the scene's declared RAM section.
+//
+// There is deliberately no dataPrefixTok counterpart for the components table,
+// which every other generated constant takes. The table is the one piece of a
+// scene's data that is read by the scene's DRIVER rather than by the scene's
+// own code: a menu loop calls Pass(), Pass() indexes the table, and that loop
+// lives wherever the mode that owns it lives. On NES the scene's data section
+// is a switchable bank, so a table pinned there is only readable while that
+// bank happens to be mapped -- and nothing in a generated scene maps it, or
+// could know when to. The entries are not scene content either; they are
+// pointers INTO it (see InvokeableComponant). So the table goes wherever the
+// target's ordinary constant data goes, which is resident, and the bank a
+// scene declares stays for the things that scene's own code reads.
 QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const QString& region,
-                       const QString& bssPrefixTok, const QString& dataPrefixTok) {
+                       const QString& bssPrefixTok) {
     const QVector<QTreeWidgetItem*> comps = canvasComponents(canvasItem, target, region);
     const int size = comps.size();
     const bool vertical = canvasItem->data(0, kCanvasVerticalRole).toBool();
@@ -2644,8 +2682,8 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
         for (QTreeWidgetItem* comp : comps) {
             entries << QString("    {&%1::rect, &%1::Pass},").arg(bareName(comp));
         }
-        lines << QString("%1inline constexpr InvokeableComponant components[size] {\n%2\n};")
-                     .arg(dataPrefixTok, entries.join("\n"));
+        lines << QString("inline constexpr InvokeableComponant components[size] {\n%1\n};")
+                     .arg(entries.join("\n"));
 
         // Which component has focus. `atomic` (technology.hpp: volatile on
         // NES, a true atomic elsewhere) for the same reason a SingleChoice's
@@ -2684,6 +2722,27 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
         // settled value it can read as many times as it likes rather than
         // storage that is re-read on every access.
         lines << QString("void DrawUpdate(const Rect& last, const Rect& current);");
+
+        // The other half of that, and the only half some indicators have:
+        // paint the selection HERE. Forced-to-define as well, and taking one
+        // rect -- the component that now holds the focus -- because an
+        // indicator that need not unpaint anything (a sprite, which has one
+        // position, moves with a store) has nothing to do with a `last`, and
+        // on a cold paint there is no `last` to have.
+        //
+        // Nothing generated calls it, deliberately. Pass() reports MOVES, and
+        // only moves, through DrawUpdate(); DrawComponents() paints no focus at
+        // all (see its own comment). So putting the first selection on screen
+        // stays the scene's call, and this is the entry point for it -- as well
+        // as the natural thing for a DrawUpdate() to forward to once it has
+        // dealt with `last`, which is what keeps the two hooks from being two
+        // copies of one appearance.
+        //
+        // Emitted beside DrawUpdate rather than in place of it, and on the
+        // same condition, so a single-component Canvas gets one too: there
+        // focus cannot move and Pass() never calls DrawUpdate at all, but there
+        // is still a selection to show.
+        lines << QString("void DrawComponentSelection(const Rect& current);");
     }
 
     // Children first, then the focus seed, same contract as every other
@@ -3004,7 +3063,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                 usesInput = true;
                 makeAll << qual;
             } else if (isCanvasItem(child)) {
-                body << genCanvasDecl(child, target, region, bssPrefixTok, dataPrefixTok);
+                body << genCanvasDecl(child, target, region, bssPrefixTok);
                 // A Canvas names input:: only once it has somewhere to move
                 // focus TO: with one component its Pass() just forwards the
                 // payload, and with none it has no Pass() at all. Either way
@@ -3014,8 +3073,13 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                 makeAll << qual;
             } else {
                 // Every remaining prefixed kind is a geometry node -- ctTextBox,
-                // rtTextBox, negative space -- and each now carries the same
-                // rect/pos/Make() the placeable kinds above do.
+                // rtTextBox, negative space, Rect -- and each now carries the
+                // same rect/pos/Make() the placeable kinds above do. For a
+                // Rect that is the whole of its namespace: neither textbox
+                // branch below fires for one, and it has no state, no hook and
+                // no Pass() of its own, so what it exports is exactly the
+                // constexpr-where-it-can-be geometry every other node already
+                // got (see kRectKind and genGeometryStorage).
                 QStringList own = genGeometryStorage(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem,
                                                       target, region, ntOffXExpr, ntOffYExpr, geom);
                 makeAll << qual;
@@ -3336,6 +3400,35 @@ protected:
             }
         }
 
+        // A Rect has no appearance to preview at all -- it is pure geometry
+        // (see kRectKind) -- so it is drawn as an outline and nothing else:
+        // one thin frame around its footprint, no fill, so whatever shares
+        // those cells stays readable underneath it. Drawn after every kind
+        // that does have a look of its own, for that same reason: a Rect is
+        // usually an area AROUND other nodes, and filling or covering them
+        // would misrepresent a node that paints nothing on the target.
+        for (QTreeWidgetItem* item : collectComponents()) {
+            if (!isRectItem(item)) {
+                continue;
+            }
+            const int x = item->data(0, kPosXRole).toInt();
+            const int y = item->data(0, kPosYRole).toInt();
+            const int w = std::max(1, item->data(0, kSizeWRole).toInt());
+            const int h = std::max(1, item->data(0, kSizeHRole).toInt());
+
+            const QRect region = tileRect(x, y).united(tileRect(x + w - 1, y + h - 1));
+            painter.setPen(QPen(QColor(150, 110, 200), 1, Qt::DashLine));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(region.adjusted(0, 0, -1, -1));
+
+            painter.setFont(glyphFont_);
+            painter.setPen(QColor(190, 160, 230));
+            const QString name = bareName(item);
+            for (int i = 0; i < name.length() && i < w; ++i) {
+                drawCellGlyph(painter, tileRect(x + i, y), name.at(i));
+            }
+        }
+
         // Editor-only alignment aid (see showTileGridCheck/tileGridWSpin/
         // tileGridHSpin) -- drawn last, on top of everything else, as thin
         // translucent lines every tileGridWSpin_/tileGridHSpin_ tiles. Purely
@@ -3486,6 +3579,12 @@ private:
     // (see paintEvent()), so they're likewise preferred here -- clicking on
     // a textbox sitting in a violated zone selects/drags the textbox, not
     // the exclusion zone underneath it.
+    //
+    // A Rect loses to everything, for the opposite reason to a textbox
+    // winning: it is an outline with nothing inside it (paintEvent()), so the
+    // cells it covers are almost always meant for whatever it is drawn around.
+    // Clicking one of those selects that node; a Rect is still grabbable
+    // anywhere nothing else is, and always selectable from the tree.
     QTreeWidgetItem* hitTest(const QPoint& pos) const {
         const QPoint cell = cellAt(pos);
         auto contains = [&cell](QTreeWidgetItem* item) {
@@ -3497,17 +3596,21 @@ private:
         };
         QTreeWidgetItem* componentMatch = nullptr;
         QTreeWidgetItem* negSpaceMatch = nullptr;
+        QTreeWidgetItem* rectMatch = nullptr;
         for (QTreeWidgetItem* item : collectComponents()) {
             if (!contains(item)) {
                 continue;
             }
             if (isComponentItem(item)) {
                 componentMatch = item;
+            } else if (isRectItem(item)) {
+                rectMatch = item;
             } else {
                 negSpaceMatch = item;
             }
         }
-        return componentMatch ? componentMatch : negSpaceMatch;
+        if (componentMatch) return componentMatch;
+        return negSpaceMatch ? negSpaceMatch : rectMatch;
     }
 
     double tilePx_;
@@ -4567,6 +4670,30 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         return child;
     };
 
+    // A Rect is the smallest node there is: geometry, a name, and the hide
+    // lists every prefixed node carries -- no properties of its own at all, so
+    // selecting one shows the Geometry and Visibility groups and nothing else
+    // (the properties panel is driven by per-kind predicates, so that needs no
+    // wiring here). Same 1x1-at-the-origin start as every other placeable kind.
+    auto rectCounter = std::make_shared<int>(1);
+    auto addRectNode = [rectCounter](QTreeWidgetItem* parent) {
+        const QString name = QString(kRectPrefix) + "Rect" + QString::number((*rectCounter)++);
+        auto* child = new QTreeWidgetItem(parent, QStringList{name});
+        child->setFlags(child->flags() | Qt::ItemIsEditable);
+        child->setData(0, kKindRole, QString(kRectKind));
+        child->setData(0, kPosXExprRole, QStringLiteral("0"));
+        child->setData(0, kPosYExprRole, QStringLiteral("0"));
+        child->setData(0, kSizeWExprRole, QStringLiteral("1"));
+        child->setData(0, kSizeHExprRole, QStringLiteral("1"));
+        child->setData(0, kPosXRole, 0);
+        child->setData(0, kPosYRole, 0);
+        child->setData(0, kSizeWRole, 1);
+        child->setData(0, kSizeHRole, 1);
+        child->setData(0, kLastValidNameRole, name);
+        parent->setExpanded(true);
+        return child;
+    };
+
     // A single choice is nothing but a parent node at this stage -- no
     // geometry, no properties -- so it just needs a name and its kind; its
     // ctTextBox/rtTextBox option children are added onto it the same way as
@@ -4685,8 +4812,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     tree->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(
         tree, &QTreeWidget::customContextMenuRequested,
-        [tree, rootItem, addCtTextBoxNode, addRtTextBoxNode, addNegativeSpaceNode, addSingleChoiceNode,
-         addCanvasNode, addButtonNode, addSliderNode, deleteNode](const QPoint& pos) {
+        [tree, rootItem, addCtTextBoxNode, addRtTextBoxNode, addNegativeSpaceNode, addRectNode,
+         addSingleChoiceNode, addCanvasNode, addButtonNode, addSliderNode, deleteNode](const QPoint& pos) {
             QTreeWidgetItem* clicked = tree->itemAt(pos);
             const bool onSingleChoice = isSingleChoiceItem(clicked);
             // A Button can likewise take ctTextBox/rtTextBox children (e.g.
@@ -4720,6 +4847,12 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             QMenu menu;
             QAction* addCtTextboxAction = menu.addAction("Add Compile-Time Textbox");
             QAction* addRtTextboxAction = menu.addAction("Add Runtime Textbox");
+            // Offered wherever a textbox is, and for the same reason: a Rect
+            // is passive geometry, so it can sit in any container without
+            // changing what that container is. A SingleChoice ignores it when
+            // collecting its options, and a Canvas when building its component
+            // table -- neither looks at anything but the kinds it wants.
+            QAction* addRectAction = menu.addAction("Add Rect");
             QAction* addNegSpaceAction =
                 (onTextBoxContainer || onCanvas) ? nullptr : menu.addAction("Add Negative Space");
             QAction* addSingleChoiceAction = onTextBoxContainer ? nullptr : menu.addAction("Add Single Choice");
@@ -4742,6 +4875,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                 tree->setCurrentItem(addCtTextBoxNode(textBoxParent));
             } else if (chosen == addRtTextboxAction) {
                 tree->setCurrentItem(addRtTextBoxNode(textBoxParent));
+            } else if (chosen && chosen == addRectAction) {
+                tree->setCurrentItem(addRectNode(textBoxParent));
             } else if (chosen && chosen == addNegSpaceAction) {
                 tree->setCurrentItem(addNegativeSpaceNode(rootItem));
             } else if (chosen && chosen == addSingleChoiceAction) {

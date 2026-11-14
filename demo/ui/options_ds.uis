@@ -3,17 +3,19 @@
     "charmap": "generic",
     "data_prefix": "OPTIONS_DATA",
     "linker_prefix": "OPTIONS",
-    "nametable": 0,
     "nodes": [
         {
             "align": 0,
             "charmapOverride": "",
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [],
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
             "kind": "ctTextBox",
             "name": "[CT] optionsTitle",
-            "posXExpr": "PANEL1_X + ( ( PANEL1_TX - this.size.x ) >> 1 )",
+            "posXExpr": "PANEL1_X + ( ( PANEL1_TX - this.size.x ) >> 1 ) ",
             "posYExpr": "30 + 3",
             "provideErasing": false,
             "sizeHExpr": "1",
@@ -24,13 +26,16 @@
         {
             "align": 0,
             "charmapOverride": "",
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [],
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
             "kind": "ctTextBox",
             "name": "[CT] videoOptions",
-            "posXExpr": "PANEL1_X + 1",
-            "posYExpr": "30 + 4",
+            "posXExpr": "PANEL1_X + 4",
+            "posYExpr": "35",
             "provideErasing": false,
             "sizeHExpr": "1",
             "sizeWExpr": "5",
@@ -38,113 +43,17 @@
             "text": "VIDEO"
         },
         {
-            "children": [
-                {
-                    "align": 0,
-                    "charmapOverride": "",
-                    "children": [],
-                    "hideRegions": [],
-                    "hideTargets": [],
-                    "kind": "ctTextBox",
-                    "name": "[CT] reduceFlashesText",
-                    "posXExpr": "reduceFlashesButton.pos.x + 1",
-                    "posYExpr": "reduceFlashesButton.pos.y + 1",
-                    "provideErasing": false,
-                    "sizeHExpr": "2",
-                    "sizeWExpr": "7",
-                    "splitter": " ",
-                    "text": "REDUCE FLASHES"
-                },
-                {
-                    "align": 0,
-                    "charmapOverride": "",
-                    "children": [],
-                    "hideRegions": [],
-                    "hideTargets": [],
-                    "kind": "ctTextBox",
-                    "name": "[CT] enableFlashesText",
-                    "posXExpr": "reduceFlashesButton.pos.x + 1",
-                    "posYExpr": "reduceFlashesButton.pos.y + 1",
-                    "provideErasing": false,
-                    "sizeHExpr": "2",
-                    "sizeWExpr": "7",
-                    "splitter": " ",
-                    "text": "ENABLE FLASHES"
-                }
-            ],
-            "defaultEnabled": true,
-            "hasBox": true,
-            "hideRegions": [],
-            "hideTargets": [],
-            "kind": "button",
-            "name": "[B] reduceFlashesButton",
-            "posXExpr": "PANEL1_X + 3",
-            "posYExpr": "30 + 7",
-            "sizeHExpr": "4",
-            "sizeWExpr": "9",
-            "toggleable": true
-        },
-        {
-            "align": 0,
-            "charmapOverride": "",
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [
-                "NES",
-                "GBA",
-                "DS",
-                "DSI",
-                "Wii",
-                "Wii U",
-                "3DS",
-                "Switch",
-                "PSP",
-                "PC"
-            ],
-            "kind": "ctTextBox",
-            "name": "[CT] enableWidescreenText",
-            "posXExpr": "PANEL1_X + 4",
-            "posYExpr": "30 + 14",
-            "provideErasing": false,
-            "sizeHExpr": "2",
-            "sizeWExpr": "10",
-            "splitter": " ",
-            "text": "ENABLE WIDESCREEN"
-        },
-        {
-            "children": [],
-            "defaultEnabled": true,
-            "hasBox": true,
-            "hideRegions": [],
-            "hideTargets": [
-                "NES",
-                "GBA",
-                "DS",
-                "DSI",
-                "Wii",
-                "Wii U",
-                "3DS",
-                "Switch",
-                "PSP",
-                "PC"
-            ],
-            "kind": "button",
-            "name": "[B] enableWidescreenButton",
-            "posXExpr": "PANEL1_X + 3",
-            "posYExpr": "30 + 13",
-            "sizeHExpr": "4",
-            "sizeWExpr": "12",
-            "toggleable": true
-        },
-        {
             "align": 1,
             "charmapOverride": "",
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [],
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
             "kind": "ctTextBox",
             "name": "[CT] superMarySistersText",
-            "posXExpr": "PANEL1_X + 1",
+            "posXExpr": "PANEL1_X + 3",
             "posYExpr": "30 + 1",
             "provideErasing": false,
             "sizeHExpr": "2",
@@ -155,13 +64,16 @@
         {
             "align": 0,
             "charmapOverride": "",
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [],
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
             "kind": "ctTextBox",
             "name": "[CT] audioText",
-            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
-            "posYExpr": "30 + 4",
+            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
+            "posYExpr": "30 + 5",
             "provideErasing": false,
             "sizeHExpr": "1",
             "sizeWExpr": "5",
@@ -169,119 +81,296 @@
             "text": "AUDIO"
         },
         {
-            "align": 0,
-            "charmapOverride": "",
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [
-                "NES"
+            "children": [
+                {
+                    "children": [
+                        {
+                            "align": 0,
+                            "charmapOverride": "",
+                            "children": [
+                            ],
+                            "hideRegions": [
+                            ],
+                            "hideTargets": [
+                            ],
+                            "kind": "ctTextBox",
+                            "name": "[CT] reduceFlashesText",
+                            "posXExpr": "reduceFlashesButton.pos.x + 1",
+                            "posYExpr": "reduceFlashesButton.pos.y + 1",
+                            "provideErasing": false,
+                            "sizeHExpr": "2",
+                            "sizeWExpr": "7",
+                            "splitter": " ",
+                            "text": "REDUCE FLASHES"
+                        },
+                        {
+                            "align": 0,
+                            "charmapOverride": "",
+                            "children": [
+                            ],
+                            "hideRegions": [
+                            ],
+                            "hideTargets": [
+                            ],
+                            "kind": "ctTextBox",
+                            "name": "[CT] enableFlashesText",
+                            "posXExpr": "reduceFlashesButton.pos.x + 1",
+                            "posYExpr": "reduceFlashesButton.pos.y + 1",
+                            "provideErasing": false,
+                            "sizeHExpr": "2",
+                            "sizeWExpr": "7",
+                            "splitter": " ",
+                            "text": "ENABLE FLASHES"
+                        }
+                    ],
+                    "defaultEnabled": true,
+                    "hasBox": true,
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "button",
+                    "name": "[B] reduceFlashesButton",
+                    "posXExpr": "PANEL1_X + 3",
+                    "posYExpr": "30 + 7",
+                    "sizeHExpr": "4",
+                    "sizeWExpr": "9",
+                    "toggleable": true
+                },
+                {
+                    "children": [
+                        {
+                            "align": 0,
+                            "charmapOverride": "",
+                            "children": [
+                            ],
+                            "hideRegions": [
+                            ],
+                            "hideTargets": [
+                                "NES",
+                                "GBA",
+                                "DS",
+                                "DSI",
+                                "Wii",
+                                "Wii U",
+                                "3DS",
+                                "Switch",
+                                "PSP",
+                                "PC"
+                            ],
+                            "kind": "ctTextBox",
+                            "name": "[CT] enableWidescreenText",
+                            "posXExpr": "PANEL1_X + 4",
+                            "posYExpr": "30 + 14",
+                            "provideErasing": false,
+                            "sizeHExpr": "2",
+                            "sizeWExpr": "10",
+                            "splitter": " ",
+                            "text": "ENABLE WIDESCREEN"
+                        }
+                    ],
+                    "defaultEnabled": true,
+                    "hasBox": true,
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                        "NES",
+                        "GBA",
+                        "DS",
+                        "DSI",
+                        "Wii",
+                        "Wii U",
+                        "3DS",
+                        "Switch",
+                        "PSP",
+                        "PC"
+                    ],
+                    "kind": "button",
+                    "name": "[B] enableWidescreenButton",
+                    "posXExpr": "PANEL1_X + 3",
+                    "posYExpr": "30 + 13",
+                    "sizeHExpr": "4",
+                    "sizeWExpr": "12",
+                    "toggleable": true
+                },
+                {
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "rect",
+                    "name": "[R] videoCanvasRect",
+                    "posXExpr": "videoOptions.pos.x -1",
+                    "posYExpr": "videoOptions.pos.y -1",
+                    "sizeHExpr": "VIEWPORT_TY - (30 + 5)",
+                    "sizeWExpr": "(PANEL1_TX >> 1) - 4"
+                }
             ],
-            "kind": "ctTextBox",
-            "name": "[CT] musicText",
-            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
-            "posYExpr": "30 + 6",
-            "provideErasing": false,
-            "sizeHExpr": "1",
-            "sizeWExpr": "12",
-            "splitter": " ",
-            "text": "MUSIC VOLUME"
-        },
-        {
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [
-                "NES"
+            "hideRegions": [
             ],
-            "kind": "slider",
-            "name": "[S] musicSlider",
-            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
-            "posYExpr": "30 + 7",
-            "sizeHExpr": "1",
-            "sizeWExpr": "(PANEL1_TX >> 2) - 2",
-            "vertical": false
-        },
-        {
-            "align": 0,
-            "charmapOverride": "",
-            "children": [],
-            "hideRegions": [],
             "hideTargets": [
-                "NES"
             ],
-            "kind": "ctTextBox",
-            "name": "[CT] SFXText",
-            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
-            "posYExpr": "30 + 9",
-            "provideErasing": false,
-            "sizeHExpr": "1",
-            "sizeWExpr": "10",
-            "splitter": " ",
-            "text": "SFX VOLUME"
-        },
-        {
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [
-                "NES"
-            ],
-            "kind": "slider",
-            "name": "[S] SFXSlider",
-            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
-            "posYExpr": "30 + 10",
-            "sizeHExpr": "1",
-            "sizeWExpr": "(PANEL1_TX >> 2) - 2",
-            "vertical": false
+            "kind": "canvas",
+            "name": "[C] videoCanvas",
+            "vertical": true
         },
         {
             "children": [
                 {
-                    "align": 0,
-                    "charmapOverride": "",
-                    "children": [],
-                    "hideRegions": [],
-                    "hideTargets": [],
-                    "kind": "ctTextBox",
-                    "name": "[CT] enableStereoText",
+                    "children": [
+                        {
+                            "align": 0,
+                            "charmapOverride": "",
+                            "children": [
+                            ],
+                            "hideRegions": [
+                            ],
+                            "hideTargets": [
+                                "NES"
+                            ],
+                            "kind": "ctTextBox",
+                            "name": "[CT] musicText",
+                            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
+                            "posYExpr": "30 + 6",
+                            "provideErasing": false,
+                            "sizeHExpr": "1",
+                            "sizeWExpr": "12",
+                            "splitter": " ",
+                            "text": "MUSIC VOLUME"
+                        }
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                        "NES"
+                    ],
+                    "kind": "slider",
+                    "name": "[S] musicSlider",
                     "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
-                    "posYExpr": "30 + 13",
-                    "provideErasing": false,
-                    "sizeHExpr": "2",
-                    "sizeWExpr": "6",
-                    "splitter": " ",
-                    "text": "ENABLE STEREO"
+                    "posYExpr": "30 + 7",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "(PANEL1_TX >> 2) - 2",
+                    "vertical": false
                 },
                 {
-                    "align": 0,
-                    "charmapOverride": "",
-                    "children": [],
-                    "hideRegions": [],
-                    "hideTargets": [],
-                    "kind": "ctTextBox",
-                    "name": "[CT] disableStereoText",
-                    "posXExpr": "enableStereoText.pos.x",
-                    "posYExpr": "enableStereoText.pos.y",
-                    "provideErasing": false,
-                    "sizeHExpr": "2",
-                    "sizeWExpr": "7",
-                    "splitter": " ",
-                    "text": "DISABLE STEREO"
+                    "children": [
+                        {
+                            "align": 0,
+                            "charmapOverride": "",
+                            "children": [
+                            ],
+                            "hideRegions": [
+                            ],
+                            "hideTargets": [
+                                "NES"
+                            ],
+                            "kind": "ctTextBox",
+                            "name": "[CT] SFXText",
+                            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
+                            "posYExpr": "30 + 9",
+                            "provideErasing": false,
+                            "sizeHExpr": "1",
+                            "sizeWExpr": "10",
+                            "splitter": " ",
+                            "text": "SFX VOLUME"
+                        }
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                        "NES"
+                    ],
+                    "kind": "slider",
+                    "name": "[S] SFXSlider",
+                    "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
+                    "posYExpr": "30 + 10",
+                    "sizeHExpr": "1",
+                    "sizeWExpr": "(PANEL1_TX >> 2) - 2",
+                    "vertical": false
+                },
+                {
+                    "children": [
+                        {
+                            "align": 0,
+                            "charmapOverride": "",
+                            "children": [
+                            ],
+                            "hideRegions": [
+                            ],
+                            "hideTargets": [
+                            ],
+                            "kind": "ctTextBox",
+                            "name": "[CT] enableStereoText",
+                            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
+                            "posYExpr": "30 + 13",
+                            "provideErasing": false,
+                            "sizeHExpr": "2",
+                            "sizeWExpr": "6",
+                            "splitter": " ",
+                            "text": "ENABLE STEREO"
+                        },
+                        {
+                            "align": 0,
+                            "charmapOverride": "",
+                            "children": [
+                            ],
+                            "hideRegions": [
+                            ],
+                            "hideTargets": [
+                            ],
+                            "kind": "ctTextBox",
+                            "name": "[CT] disableStereoText",
+                            "posXExpr": "enableStereoText.pos.x",
+                            "posYExpr": "enableStereoText.pos.y",
+                            "provideErasing": false,
+                            "sizeHExpr": "2",
+                            "sizeWExpr": "7",
+                            "splitter": " ",
+                            "text": "DISABLE STEREO"
+                        }
+                    ],
+                    "defaultEnabled": true,
+                    "hasBox": true,
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                        "NES"
+                    ],
+                    "kind": "button",
+                    "name": "[B] enableStereo",
+                    "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
+                    "posYExpr": "30 + 12",
+                    "sizeHExpr": "4",
+                    "sizeWExpr": "9",
+                    "toggleable": true
+                },
+                {
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
+                    "kind": "rect",
+                    "name": "[R] audioCanvasRect",
+                    "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) -1",
+                    "posYExpr": "audioText.pos.y -1",
+                    "sizeHExpr": "VIEWPORT_TY - (30 + 5)",
+                    "sizeWExpr": "(PANEL1_TX >> 1) - 3"
                 }
             ],
-            "defaultEnabled": true,
-            "hasBox": true,
-            "hideRegions": [],
-            "hideTargets": [
-                "NES"
+            "hideRegions": [
             ],
-            "kind": "button",
-            "name": "[B] enableStereo",
-            "posXExpr": "PANEL1_X + (PANEL1_TX >> 1)",
-            "posYExpr": "30 + 12",
-            "sizeHExpr": "4",
-            "sizeWExpr": "9",
-            "toggleable": true
+            "hideTargets": [
+            ],
+            "kind": "canvas",
+            "name": "[C] audioCanvas",
+            "vertical": true
         }
     ],
+    "quadrant": 0,
     "region": "NTSC",
     "showTileGrid": true,
     "target": "DS",

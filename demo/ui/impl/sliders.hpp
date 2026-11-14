@@ -38,11 +38,12 @@ namespace ui::impl {
     }
 }
 
-namespace gen::options {
+namespace gen::options::audioCanvas {
 // NES only has no sliders, and that is the scene's decision, not this file's:
-// options.uis hides musicSlider and SFXSlider (and their MUSIC/SFX labels) on
-// it, because the mix there is a pair of on/off buttons instead --
-// disableMusic/disableSFX, which are in turn hidden on every target BUT NES.
+// options.uis hides musicSlider and SFXSlider (and the MUSIC/SFX labels that
+// now hang off them) on it, because the mix there is a pair of on/off buttons
+// instead -- disableMusic/disableSFX, which are in turn hidden on every
+// target BUT NES.
 // So the generated NES header has no slider namespace, and hooks for one
 // would not compile there.
 //
@@ -82,6 +83,7 @@ namespace gen::options {
 
         inline void Draw() {
             const Rect r = rect;
+            musicText::Draw();
             ui::impl::DrawSliderBody<!vertical>(pos + 1, r.size.x + 2);
 
             // Whatever `amount` already holds IS the starting position -- uitk
@@ -118,6 +120,7 @@ namespace gen::options {
 
         inline void Draw() {
             const Rect r = rect;
+            SFXText::Draw();
             ui::impl::DrawSliderBody<!vertical>(pos + 1, r.size.x + 2);
 
             const u8 amt = amount;

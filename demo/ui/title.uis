@@ -3,17 +3,19 @@
     "charmap": "generic",
     "data_prefix": "TITLE_DATA",
     "linker_prefix": "TITLE",
-    "nametable": 3,
     "nodes": [
         {
             "align": 1,
             "charmapOverride": "",
-            "children": [],
-            "hideRegions": [],
-            "hideTargets": [],
+            "children": [
+            ],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
             "kind": "ctTextBox",
             "name": "[CT] GameTitle",
-            "posXExpr": "1",
+            "posXExpr": "3",
             "posYExpr": "1",
             "provideErasing": false,
             "sizeHExpr": "2",
@@ -26,9 +28,12 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [],
-                    "hideRegions": [],
-                    "hideTargets": [],
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
                     "kind": "ctTextBox",
                     "name": "[CT] NewGame",
                     "posXExpr": "( ( VIEWPORT_TX >> 1 ) << 1 ) - 1 - 8",
@@ -42,9 +47,12 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [],
-                    "hideRegions": [],
-                    "hideTargets": [],
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
                     "kind": "ctTextBox",
                     "name": "[CT] Continue",
                     "posXExpr": "NewGame.pos.x",
@@ -58,9 +66,12 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [],
-                    "hideRegions": [],
-                    "hideTargets": [],
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
+                    "hideTargets": [
+                    ],
                     "kind": "ctTextBox",
                     "name": "[CT] Options",
                     "posXExpr": "NewGame.pos.x",
@@ -74,8 +85,10 @@
                 {
                     "align": 0,
                     "charmapOverride": "",
-                    "children": [],
-                    "hideRegions": [],
+                    "children": [
+                    ],
+                    "hideRegions": [
+                    ],
                     "hideTargets": [
                         "NES",
                         "GBA",
@@ -100,13 +113,21 @@
                 }
             ],
             "defaultOption": 0,
-            "hideRegions": [],
-            "hideTargets": [],
+            "hideRegions": [
+            ],
+            "hideTargets": [
+            ],
             "kind": "singlechoice",
-            "name": "[SC] TitleOptions"
+            "name": "[SC] TitleOptions",
+            "provideBounds": false,
+            "vertical": true
         }
     ],
+    "quadrant": 3,
     "region": "NTSC",
+    "showTileGrid": false,
     "target": "NES",
+    "tileGridH": 1,
+    "tileGridW": 1,
     "version": 1
 }

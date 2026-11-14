@@ -8,6 +8,7 @@
 #include "../../ui/impl/buttons.hpp"
 #include "../../ui/impl/sliders.hpp"
 #include "../../ui/impl/singleChoice.hpp"
+#include "../../ui/impl/canvas.hpp"
 #include "../main.hpp"
 #include "pnes/logger.hpp"
 #include "../banks.hpp"
@@ -27,6 +28,45 @@ namespace title {
 
     static atomic bool playModeActive = false;
     static atomic bool optionsLocked = false;
+
+    // Which of the options page's two Canvases input belongs to. The page is
+    // laid out as two columns -- VIDEO on the left, AUDIO on the right (see
+    // demo/ui/options.uis) -- and each column is a Canvas with a Pass() of its
+    // own, so "which column is live" is exactly a pointer to one of those two.
+    //
+    // A pointer rather than a bool-and-a-branch for the same reason ::pNMI is
+    // one: the loop below switches it and nothing else in this file has to
+    // know which Canvas it names. Seeded to the left column, matching the
+    // focus index each Canvas's own Make() seeds to its first component.
+    //
+    // Nothing calls through it yet -- moving focus WITHIN a column, and what
+    // that looks like, is still unimplemented (ui::impl::UpdateCanvas is an
+    // empty body). This is only the column switch.
+    static void (*pOptionsPass)(u8) = gen::options::videoCanvas::Pass;
+
+    // Whether A has handed the corner sprites over to the live Canvas. False
+    // is the column level: they bracket the column's own [R] rect and the page
+    // owns them. True is inside the Canvas: its DrawComponentSelection() and
+    // DrawUpdate() own them, and they bracket whichever component has focus.
+    //
+    // Always false by the time options is left (B comes out of the Canvas
+    // before it can leave the page), so a return starts at the column again --
+    // the column itself is what ::pOptionsPass remembers.
+    static atomic bool canvasEntered = false;
+
+    // The frame's press for the live Canvas: posted by the input loop, spent by
+    // ::nmi_handler_locked. It cannot be handed straight to Pass() from the
+    // loop, because a component's own Draw()/DrawChange() writes the nametable
+    // -- a button repaints its box and its label -- and on NES that is only
+    // legal in vblank. It is the same constraint that made the menu arrow a
+    // sprite (ui/impl/singleChoice.hpp), except here the writes are the point
+    // and cannot be designed away, so they move to the handler instead.
+    //
+    // Only the Canvas's input goes through here. The column switch and the
+    // corners are sprite work -- OAM is staged in ordinary RAM and uploaded
+    // once a frame -- so those stay in the loop, exactly as ::PlaceSelector
+    // does.
+    static atomic u8 canvasInput = 0;
 
     // Hardware sprites one character takes. The designer exported the pose
     // for 8x16 (one slot per column, each slot a vertical tile PAIR), and
@@ -65,7 +105,17 @@ namespace title {
 #else
     constexpr u8 kSelectorSlot = kPlayerOneSlot + kPlayerSprites;
 #endif
-    static_assert(kSelectorSlot < 64, "the title screen's OAM reservations run past the sprite table");
+    // The options page's focus ring: four box-corner sprites, consecutive from
+    // the first slot past the arrow, in ui::impl::eCorner order. Reserved for
+    // the same reason the arrow is one slot and not one per menu -- only one
+    // control is ever focused, so one set of corners covers both Canvases.
+    //
+    // Past the arrow rather than before it so the character slots stay at the
+    // front of OAM: on NES the slot index IS the sprite's priority, and the
+    // characters are the only thing here that can overlap anything.
+    constexpr u8 kCornerSlot = kSelectorSlot + 1;
+    static_assert(kCornerSlot + ui::impl::kCorners <= 64,
+                  "the title screen's OAM reservations run past the sprite table");
 
     // Where each character's leftmost sprite sits. The pose is kWidth tiles
     // wide, so player two is displaced by twice that -- a two-tile gap of
@@ -119,8 +169,12 @@ namespace title {
     static u16 lockAnimScanline;
 
     // How many scanlines ::nmi_handler_lockAnim/::nmi_handler_lockAnimReverse
-    // walk the scroll split by, per frame.
-    constexpr u16 kScanlinesPerFrame = 2;
+    // walk the scroll split by, per frame. Four, so the scroll half of the
+    // transition takes half the frames it used to -- the slide is the bulk of
+    // it (a ::SplitRow of 24 is 192px to cover, against the fade's handful of
+    // steps), so this is the constant that actually sets how long entering
+    // options feels.
+    constexpr u16 kScanlinesPerFrame = 4;
 
     // Where each phase below writes back to, and how long it is. BG_3 (the
     // HUD's palette, ::titleScreenColours) is deliberately absent -- the fade
@@ -141,10 +195,12 @@ namespace title {
     // ::nmi_handler_fadeFromOptions counts it back down.
     static u8 fadePhase;
 
-    // Each phase holds for this many frames before the next one -- advancing
-    // every vblank reads as a near-instant snap (only ::kFadePhaseCount - 1
-    // steps total), not a fade.
-    constexpr u8 kFadeStepFrames = 4;
+    // Each phase holds for this many frames before the next one. Two, to keep
+    // the fade in step with the doubled scroll (::kScanlinesPerFrame) -- the
+    // floor is one, where advancing every vblank reads as a near-instant snap
+    // (only ::kFadePhaseCount - 1 steps total) rather than a fade, so this is
+    // as fast as it goes while still being one.
+    constexpr u8 kFadeStepFrames = 2;
 
     // Counts frames within the current phase; wraps back to 0 (and advances
     // ::fadePhase) in ::nmi_handler_fadeToOptions/::nmi_handler_fadeFromOptions.
@@ -342,10 +398,92 @@ namespace title {
     // never overwrite it, so drawing it once was enough.
     static void DrawOptionsPanel() {
         gen::options::optionsTitle::Draw();
-        gen::options::videoOptions::Draw();
-        gen::options::reduceFlashesButton::reduceFlashesText::Draw();
         gen::options::superMarySistersText::Draw();
-        gen::options::reduceFlashesButton::Draw();
+        gen::options::videoOptions::Draw();
+        gen::options::audioText::Draw();
+
+        // The two sections, one call each. A Canvas's DrawComponents() paints
+        // every component it holds, in scene order, and the scene's own
+        // per-target hiding decides what that is -- so this is the whole of the
+        // panel's content on every target, with no #if here: the NES draws its
+        // two mix buttons, every other target the two sliders and the stereo
+        // button, and the GameCube the widescreen button on top of the video
+        // section's own. Each component's Draw() covers its label (see
+        // ui/impl/buttons.hpp and ui/impl/sliders.hpp), which is why only the
+        // four section-wide headings above are still named individually.
+        gen::options::videoCanvas::DrawComponents();
+        gen::options::audioCanvas::DrawComponents();
+    }
+
+    // The rect the focus corners bracket: the [R] node each Canvas carries for
+    // exactly this (see options.uis/options_ds.uis). Derived from
+    // ::pOptionsPass rather than tracked beside it -- one pointer is the whole
+    // of "which column is selected", and a second copy of that could disagree
+    // with it. The rect is copied out whole: on a runtime-viewport target it is
+    // `atomic Rect`, so reading it goes through Rect's volatile copy
+    // constructor once rather than per field.
+    static bool AudioCanvasSelected() {
+        return pOptionsPass == gen::options::audioCanvas::Pass;
+    }
+
+    static Rect SelectedCanvasRect() {
+        if (AudioCanvasSelected()) {
+            return gen::options::audioCanvas::audioCanvasRect::rect;
+        }
+        return gen::options::videoCanvas::videoCanvasRect::rect;
+    }
+
+    // Hands the corners to the live Canvas, around the component that holds its
+    // focus -- `index`, which its Make() seeded to 0 and its Pass() moves from
+    // there. Through the generated DrawComponentSelection() rather than
+    // straight to ui::impl: past this point the appearance is the Canvas's, and
+    // that hook is where a Canvas wanting a look of its own would get one.
+    //
+    // `components[]` is the only way to a component chosen at runtime, and its
+    // entries are pointers to each component's own rect rather than copies of
+    // it (see InvokeableComponant), so the rect is copied out through ::Rect's
+    // volatile copy constructor into a local, which is also the only way to
+    // reach the hook: `const Rect&` cannot bind a `const volatile Rect` lvalue.
+    // Exactly what a generated Pass() does with the same two pointers.
+    static void SelectFocusedComponent() {
+        if (AudioCanvasSelected()) {
+            namespace ac = gen::options::audioCanvas;
+            const Rect r = *ac::components[ac::index].rect;
+            ac::DrawComponentSelection(r);
+            return;
+        }
+        namespace vc = gen::options::videoCanvas;
+        const Rect r = *vc::components[vc::index].rect;
+        vc::DrawComponentSelection(r);
+    }
+
+    // Spends what the loop posted, in vblank -- see ::canvasInput. The guard is
+    // not just for the nametable: a Canvas's Pass() has no early-out of its own
+    // (an all-zero payload still reads `index` and still makes the one indirect
+    // call the components table costs), and most frames carry no press at all.
+    static void SpendCanvasInput() {
+        const u8 payload = canvasInput;
+        if (!payload) return;
+        canvasInput = 0;
+        pOptionsPass(payload);
+    }
+
+    static void ParkOptionsCorners() {
+        ui::impl::ParkCorners();
+    }
+
+    // Puts the four corner sprites on the selected Canvas's rect -- the page's
+    // "this column is live" indicator.
+    //
+    // Straight through ui::impl::SelectComponent, which is the same call a
+    // Canvas's own DrawComponentSelection() makes on a component's rect: one
+    // indicator, one set of slots, one placement, whichever of the two is
+    // being marked (see ui/impl/canvas.hpp). A component selection therefore
+    // takes the corners off the column rect simply by being the more recent
+    // call, which is what makes them the SAME sprites rather than two sets that
+    // have to agree.
+    static void PlaceOptionsCorners() {
+        ui::impl::SelectComponent(SelectedCanvasRect());
     }
 
     // Blanks the WHOLE bottom-panel UI band -- plane row 30 (where every
@@ -380,6 +518,15 @@ namespace title {
         kMenuNT = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
 
         oam::PopulateFromProvider(OAMBuffer, 0, oam::y, Clear, 64);
+
+        // The options page's four corner sprites: tile and attributes, once,
+        // never again. Their Y is whatever the clear above left -- parked
+        // off-screen (::Clear) -- so none of them is on screen until something
+        // places it.
+        for (u8 i = 0; i < ui::impl::kCorners; i++) {
+            OAMBuffer[kCornerSlot + i].tile       = ui::impl::kCornerTiles[i];
+            OAMBuffer[kCornerSlot + i].attributes = ui::impl::kCornerAttributes;
+        }
         pIRQ = irq_handler;
         pNMI = nmi_handler;
         log("title::main: pIRQ/pNMI set");
@@ -436,22 +583,19 @@ namespace title {
 
         BuildPaletteFadePhases();
 
-        // Make() resolves this button's rect against the viewport THIS run has
-        // and its pos to a PPU address. uitk emits it on every target -- an
+        // A Canvas's Make() makes every node under it and seeds its focus
+        // index, so these two cover the whole options scene between them:
+        // each component's rect is resolved against the viewport THIS run has
+        // and its pos to a PPU address. uitk emits them on every target -- an
         // empty stub where both are already `constexpr` (NES) -- so no #if is
-        // needed around the call. It stays here, not in ::DrawOptionsPanel: it
-        // resolves anchors and zeroes running state, which must happen once,
-        // not on every mode entry.
-        gen::options::reduceFlashesButton::Make();
+        // needed around either call, not even for the GameCube-only widescreen
+        // button, which is simply not in videoCanvas on any other target. They
+        // stay here, not in ::DrawOptionsPanel: they resolve anchors and zero
+        // running state, which must happen once, not on every mode entry.
+        gen::options::videoCanvas::Make();
+        gen::options::audioCanvas::Make();
         // Dual-screen: left unloaded until OPTIONS is picked (::ClearUiBand).
         if constexpr (!kUiOnOwnPanel) DrawOptionsPanel();
-#if TARGET_GC
-        // The #if is about the BUTTON, not about Make(): this scene hides
-        // enableWidescreenButton everywhere but the GameCube, so the namespace
-        // itself only exists there.
-        gen::options::enableWidescreenButton::Make();
-        gen::options::enableWidescreenButton::Draw();
-#endif
 
         InitTitleScreen();
 
@@ -529,8 +673,45 @@ namespace title {
                     playModeActive = false;
                     pNMI = nmi_handler_drawMenu;
                 }
-            } else if (pressed & input::B && pNMI == nmi_handler_locked) {
-                pNMI = nmi_handler_lockAnimReverse;
+            } else if (pNMI == nmi_handler_locked) {
+                // The options page, and only once it has settled: every branch
+                // below either places the corners or repaints a component, and
+                // both resolve against the resting scroll, which is not where
+                // the frame is until this handler has the screen.
+                //
+                // Two levels, nested the way the title and play-mode menus
+                // already are. At the column level LEFT/RIGHT pick a Canvas and
+                // A hands it the corners; inside a Canvas every press goes to
+                // its Pass() and B comes back out. B at the column level leaves
+                // the page.
+                //
+                // LEFT/RIGHT belong to the column level alone, and that is what
+                // the two levels buy: both Canvases are vertical, so each
+                // spends UP/DOWN on its own focus and passes LEFT/RIGHT through
+                // to the focused component -- which is how a horizontal slider
+                // is adjusted. Sharing those two bits between the column switch
+                // and the sliders is the one thing this layout cannot do, so it
+                // doesn't: outside a Canvas they switch columns, inside one they
+                // reach the slider.
+                if (!canvasEntered) {
+                    if (pressed & (input::LEFT | input::RIGHT)) {
+                        pOptionsPass = (pressed & input::LEFT) ? gen::options::videoCanvas::Pass
+                                                               : gen::options::audioCanvas::Pass;
+                        PlaceOptionsCorners();
+                    } else if (pressed & input::A) {
+                        canvasEntered = true;
+                        SelectFocusedComponent();
+                    } else if (pressed & input::B) {
+                        pNMI = nmi_handler_lockAnimReverse;
+                    }
+                } else if (pressed & input::B) {
+                    // Back to the column, corners with it. The Canvas keeps its
+                    // focus index, so A lands on the same component again.
+                    canvasEntered = false;
+                    PlaceOptionsCorners();
+                } else if (pressed) {
+                    canvasInput = pressed;
+                }
             }
 
             video::WaitForPresent();
@@ -720,6 +901,10 @@ namespace title {
         // handler just did is exactly what that state wants.
         if constexpr (kUiOnOwnPanel) {
             lockAnimScanline = 0;
+            // The page is up as of this frame, so the corners go on it now --
+            // around whichever column was selected last time, which
+            // ::pOptionsPass still holds (it outlives every visit).
+            PlaceOptionsCorners();
             pNMI = nmi_handler_locked;
             return;
         }
@@ -746,11 +931,25 @@ namespace title {
         ppu::SetScroll({0, PreviewScrollYForPixels(lockAnimScanline)});
         BankMenuTiles();
 
-        if (lockAnimScanline == 0) pNMI = nmi_handler_locked;
+        // The scroll has finished winding up, so the page is now where
+        // ::PlaceOptionsCorners resolves it to be -- see the same call in
+        // ::nmi_handler_lockOptions, which is the dual-screen path to here.
+        if (lockAnimScanline == 0) {
+            PlaceOptionsCorners();
+            pNMI = nmi_handler_locked;
+        }
     }
 
     static void nmi_handler_locked() {
         ui::impl::AnimateSelector();
+        // The only state the selection ring is on screen in: it is placed on
+        // the handover into this handler and parked on the way out
+        // (::nmi_handler_lockAnimReverse), so this is the one place a frame of
+        // its hone belongs.
+        ui::impl::AnimateCorners();
+        // Before the upload, so a focus move's corners and a component's own
+        // repaint both land on the frame the press was made.
+        SpendCanvasInput();
         oam::RefreshSprites(OAMBuffer);
 
         // ::kUiOnOwnPanel: the options panel is NOT the whole frame here. It
@@ -778,6 +977,13 @@ namespace title {
 
     static void nmi_handler_lockAnimReverse() {
         ui::impl::AnimateSelector();
+        // Off as the page starts moving away, on the same frame the scroll
+        // first steps back towards the title screen -- the corners bracket
+        // rows that are no longer the page's, exactly as a stale arrow points
+        // at rows that are no longer a menu's (::ParkSelector). What they
+        // bracketed is not forgotten: ::pOptionsPass is untouched, so the next
+        // visit comes back to the same column.
+        ParkOptionsCorners();
         oam::RefreshSprites(OAMBuffer);
 
         const u16 target = static_cast<u16>(SplitRow()) << 3;
@@ -1026,4 +1232,16 @@ namespace title {
 namespace ui::impl {
     u8 SelectorSlot() { return title::kSelectorSlot; }
     vec2<u16> SelectorScroll() { return title::MenuBandScroll(); }
+    u8 CornerSlot() { return title::kCornerSlot; }
+
+    // The scroll the options page is read at REST -- the split fully wound up
+    // on a single screen, and the frame's own bottom-anchored scroll on a
+    // dual-screen one, where that overload ignores its argument. Which is why
+    // the corners are only ever placed once the page has settled, never
+    // mid-animation.
+    //
+    // No X term, unlike ::SelectorScroll: options.uis sits in nametable
+    // quadrant 2, whose X offset is 0, and the locked frame scrolls X to 0 --
+    // the title menu's quadrant 3 is what that scroll's X is for.
+    vec2<u16> CanvasScroll() { return {0, title::PreviewScrollYForPixels(0)}; }
 }
