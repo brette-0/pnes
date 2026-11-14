@@ -108,6 +108,12 @@ bool        running = false;
 // that ever clears it back to -1), there's no partial-update to race on.
 volatile int pending_track = -1;
 
+// audio::TrackVolume's setting, as a percentage of full output. `volatile u8`
+// for ::pending_track's reasons exactly: one writer (TrackVolume, on the main
+// thread), one reader (audio_thread), a byte store the Allegrex cannot tear,
+// and volatile only to stop either side caching it in a register.
+volatile u8 volume = 100;
+
 // Fills chunk[which] with CHUNK_FRAMES stereo frames, looping back to
 // loop_frame on EOF (mirrors src/ogc/audio.cpp's fill()).
 void fill(const int which) {
@@ -157,7 +163,12 @@ int audio_thread(SceSize, void *) {
         // Blocks until the PREVIOUS sceAudioOutputBlocking() call's buffer has
         // fully drained -- this call is what paces the whole thread at the
         // hardware's real playback rate, no sleep/poll needed.
-        sceAudioOutputBlocking(CHANNEL, PSP_AUDIO_VOLUME_MAX, chunk[next]);
+        // audio::TrackVolume's setting, applied by the hardware channel rather
+        // than by scaling samples: this channel carries music alone, so there
+        // is nothing else on it for the attenuation to catch.
+        sceAudioOutputBlocking(CHANNEL,
+                               static_cast<int>(volume) * PSP_AUDIO_VOLUME_MAX / 100,
+                               chunk[next]);
         next ^= 1;
     }
     return 0;
@@ -196,6 +207,12 @@ void audio::TrackPlay(const u8 index) {
 
 void audio::TrackStop() {
     playing = false;
+}
+
+// Picked up by audio_thread() on its next chunk, like ::playing and ::paused,
+// so it takes effect within one buffer (~46ms at 44.1kHz).
+void audio::TrackVolume(const u8 percent) {
+    volume = percent > 100 ? 100 : percent;
 }
 
 void audio::TrackPause(const u8 pause) {

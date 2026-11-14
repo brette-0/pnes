@@ -26,6 +26,10 @@ void audio::Update() {}
 void audio::TrackPlay(u8 /*index*/) {}
 void audio::TrackPause(u8 /*pause*/) {}
 void audio::TrackStop() {}
+// Inert with the rest of this stub -- there is no output to scale yet. Stored
+// nowhere on purpose: a real mixer landing here reads audio.hpp's contract and
+// implements this alongside the playback it adds.
+void audio::TrackVolume(u8 /*percent*/) {}
 
 void audio::SfxPlay(u8 /*index*/, u8 /*channel*/) {}
 void audio::SfxSamplePlay(u8 /*index*/) {}

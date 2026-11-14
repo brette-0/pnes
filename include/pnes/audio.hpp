@@ -179,6 +179,39 @@ void TrackPause(u8 pause);
 void TrackStop();
 
 /**
+ * @brief Scales the music output.
+ *
+ * @p percent is a proportion of full output: 0 is silence, 100 is the
+ * backend's own unattenuated level, and anything above 100 is clamped to it --
+ * no backend here amplifies past unity, which buys clipping rather than
+ * loudness.
+ *
+ * LINEAR IN AMPLITUDE, deliberately. It is the fraction a volume slider reads
+ * out (`current / max`), not a perceptual curve: 50 is half the amplitude,
+ * which sounds rather louder than half. A game wanting a dB taper applies it
+ * to the number before passing it, where the UI that chose it can say so.
+ *
+ * MUSIC ONLY, so a sound effect still plays at full level while the music is
+ * turned down -- every backend with both keeps them on separate voices or
+ * mixes the effects in after the scale. The one exception is the PS2, whose
+ * audsrv volume is device-wide; it has no SFX path today, and the day it gets
+ * one this is where that shows up.
+ *
+ * Persistent and independent of playback state: it survives ::TrackPlay,
+ * ::TrackPause and ::TrackStop, applies to whatever plays next, and may be set
+ * before ::Init (each backend applies it when it opens its device). The
+ * default is 100, so a game that never calls this hears what it always did.
+ *
+ * A no-op where there is nothing to scale -- the silent 3DS/GBA/DS stubs -- and
+ * on the NES, whose engine has no master level at all (FamiStudio's volume
+ * lives per note in the song data, and the NES options page offers an on/off
+ * button instead of a slider for exactly that reason).
+ *
+ * @param percent 0-100. Values above 100 are clamped.
+ */
+void TrackVolume(u8 percent);
+
+/**
  * @brief Plays a sound effect on a specific mixer channel.
  *
  * A channel is a fixed voice slot: starting a new effect on a channel that

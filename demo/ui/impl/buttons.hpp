@@ -14,6 +14,30 @@ namespace ui::impl {
         Disabled
     };
 
+    // One nametable row, as a flat-address step. NOT video::viewport_tx():
+    // src/emu/ppu.cpp's xy_to_nt_addr lays a page out as `row * geo.tileW +
+    // col`, and emu::ComputeNtGeometry's tileW floors the viewport at the
+    // NES-native 32 and then rounds it UP to a whole number of attribute bytes
+    // (4 tiles). The two agree wherever the viewport is already >= 32 and a
+    // multiple of 4 -- NES/DS at 32, the GameCube's 40 and 52, the Switch's 52,
+    // the PSP's 60, and PC, whose own viewport_tx() ends in `& ~3u` for exactly
+    // this reason -- and disagree on the two where it is not: the 3DS (50 -> 52)
+    // and the GBA (30 -> 32).
+    //
+    // Stepping by the viewport width on those two walked 2 columns short per
+    // row: a 4-row button's bottom edge went to +150 instead of +156, which
+    // decodes as page row 2 column 46, and its side edges started at column 50
+    // -- inside the 2-column margin the 3DS viewport does not show at all. So
+    // the top edge was the only part of the frame that landed where it belonged.
+    //
+    // Duplicated from ComputeNtGeometry rather than shared because video.hpp
+    // exposes no page-width accessor: nametable_plane_bytes() computes this
+    // very value and keeps it to itself. That header is the right home for it.
+    constexpr u16 PageTx() {
+        const u16 txMin = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
+        return static_cast<u16>((txMin + 3) & ~3);
+    }
+
     constexpr void DrawTextBox(const u16 pos, const vec2<u8>& box) {
         // TODO: create actual graphics and use it normally
         constexpr u8 ULCornerGraphic   = windows::ui + blob::ui::box_ul;
@@ -32,29 +56,29 @@ namespace ui::impl {
         ppu::WriteSingleToNameTable(pos + box.x - 1, URCornerGraphic);
 
         // BL
-        ppu::WriteSingleToNameTable(pos + video::viewport_tx() * (box.y - 1), BLCornerGraphic);
+        ppu::WriteSingleToNameTable(pos + PageTx() * (box.y - 1), BLCornerGraphic);
 
         // BR
-        ppu::WriteSingleToNameTable(pos + box.x + video::viewport_tx() * (box.y - 1) - 1, BRCornerGraphic);
+        ppu::WriteSingleToNameTable(pos + box.x + PageTx() * (box.y - 1) - 1, BRCornerGraphic);
 
         // top row
         ppu::WriteRepeatedToNameTable(pos + 1, TopEdgeGraphic, box.x - 2, 0);
 
         // bottom row
         ppu::WriteRepeatedToNameTable(
-            pos + video::viewport_tx() * (box.y - 1) + 1, BottomEdgeGraphic,
+            pos + PageTx() * (box.y - 1) + 1, BottomEdgeGraphic,
             box.x - 2, 0
         );
 
         // left edge
         ppu::WriteRepeatedToNameTable(
-            pos + video::viewport_tx(), LeftEdgeGraphic,
+            pos + PageTx(), LeftEdgeGraphic,
             box.y - 2, 1
         );
 
         // right edge
         ppu::WriteRepeatedToNameTable(
-            pos + video::viewport_tx() + box.x - 1, RightEdgeGraphic,
+            pos + PageTx() + box.x - 1, RightEdgeGraphic,
             box.y - 2, 1
         );
     }

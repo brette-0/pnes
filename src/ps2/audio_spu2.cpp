@@ -168,6 +168,14 @@ bool           paused  = false;
 
 } // namespace
 
+// audio::TrackVolume's setting, as a percentage of full output. audsrv's own
+// scale is 0-MAX_VOLUME (audsrv.h), and its volume is DEVICE-WIDE rather than
+// per voice -- so when this backend grows an SFX path, effects will be turned
+// down with the music until that path mixes its own level instead. audio.hpp
+// documents that exception. Kept as the percentage so Init() and a later call
+// derive from one number, and so a volume set before Init() still takes.
+static u8 music_volume = 100;
+
 void audio::Init(u8) {
     SifLoadModule("rom0:LIBSD", 0, nullptr);
 
@@ -204,7 +212,7 @@ void audio::Init(u8) {
         log("audio::Init: audsrv_adpcm_init failed (%d), bailing", err);
         return;
     }
-    audsrv_set_volume(MAX_VOLUME);
+    audsrv_set_volume(static_cast<int>(music_volume) * MAX_VOLUME / 100);
 
     // Uploads the whole sample into SPU2 sound RAM. This is the one expensive
     // call in this file and it happens exactly once.
@@ -245,6 +253,13 @@ void audio::Update() {
     // backends mean: the SPU2 is decoding and looping this track in hardware,
     // so there is no per-frame work to do at all. This is the whole point of
     // this backend (see the file header).
+}
+
+// One RPC to the IOP, no per-sample work on the EE. See ::music_volume for the
+// device-wide caveat.
+void audio::TrackVolume(const u8 percent) {
+    music_volume = percent > 100 ? 100 : percent;
+    audsrv_set_volume(static_cast<int>(music_volume) * MAX_VOLUME / 100);
 }
 
 void audio::TrackPlay(const u8 index) {

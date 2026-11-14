@@ -295,6 +295,14 @@ alignas(16) u8 audio_thread_stack[0x4000];
 
 } // namespace
 
+// audio::TrackVolume's setting, as a percentage of full output. audsrv's own
+// scale is 0-MAX_VOLUME (audsrv.h), and its volume is DEVICE-WIDE rather than
+// per voice -- so when this backend grows an SFX path, effects will be turned
+// down with the music until that path mixes its own level instead. audio.hpp
+// documents that exception. Kept as the percentage so Init() and a later call
+// derive from one number, and so a volume set before Init() still takes.
+static u8 music_volume = 100;
+
 void audio::Init(u8) {
     SifLoadModule("rom0:LIBSD", 0, nullptr);
 
@@ -333,7 +341,7 @@ void audio::Init(u8) {
             SAMPLE_RATE, CHANNELS, err);
         return;
     }
-    audsrv_set_volume(MAX_VOLUME);
+    audsrv_set_volume(static_cast<int>(music_volume) * MAX_VOLUME / 100);
 
     if (totalBlocks < 1) {
         log("audio::Init: embedded ADPCM too small (%d bytes), no music", adpcm_len);
@@ -387,6 +395,13 @@ void audio::Update() {
     // Streaming is driven by the dedicated audio thread; nothing to do per
     // frame. Deliberately NOT a decode entry point -- see src/ps2/audio.cpp's
     // header for what putting a decode on this call cost.
+}
+
+// One RPC to the IOP, no per-sample work on the EE. See ::music_volume for the
+// device-wide caveat.
+void audio::TrackVolume(const u8 percent) {
+    music_volume = percent > 100 ? 100 : percent;
+    audsrv_set_volume(static_cast<int>(music_volume) * MAX_VOLUME / 100);
 }
 
 void audio::TrackPlay(const u8 index) {

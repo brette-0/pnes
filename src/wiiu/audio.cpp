@@ -76,6 +76,10 @@ static u8 *track_data = nullptr;   // whole track, converted to device format
 static u32 track_len  = 0;         // bytes
 static u32 loop_point = 0;         // byte offset to wrap to at end
 static u32 play_pos   = 0;         // current read offset into track_data
+// audio::TrackVolume's setting, as a percentage of full output. Applied in
+// software, in ::audio_callback: the music and the effects share one buffer, so
+// the scale has to land between them.
+static u8  volume     = 100;
 
 static bool playing = false;
 static bool paused  = false;
@@ -257,6 +261,17 @@ static void audio_callback(void *, u8 *stream, int len) {
     }
 
     i16 *out = reinterpret_cast<i16 *>(stream);
+
+    // Music volume, scaled BEFORE the SFX mix below so effects keep their full
+    // level (audio.hpp). Skipped at 100; the product is computed in `int`
+    // because i16 * 100 overflows 16 bits. Same arrangement as the Switch
+    // backend, which has the same one-buffer shape.
+    if (volume != 100) {
+        for (u32 i = 0; i < static_cast<u32>(len) / sizeof(i16); i++) {
+            out[i] = static_cast<i16>(static_cast<int>(out[i]) * volume / 100);
+        }
+    }
+
     for (auto &v : sfx_voices) {
         if (!v.active) continue;
         u32 avail = v.end - v.pos;
@@ -310,6 +325,14 @@ void audio::TrackPlay(const u8 index) {
 void audio::TrackStop() {
     SDL_LockAudioDevice(dev);
     playing = false;
+    SDL_UnlockAudioDevice(dev);
+}
+
+// Behind the device lock, like every other writer of callback state: the
+// callback reads ::volume, and a torn read would be an audible step mid-buffer.
+void audio::TrackVolume(const u8 percent) {
+    SDL_LockAudioDevice(dev);
+    volume = percent > 100 ? 100 : percent;
     SDL_UnlockAudioDevice(dev);
 }
 

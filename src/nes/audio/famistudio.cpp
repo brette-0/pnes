@@ -127,6 +127,24 @@ AUDIO_BANK void audio::TrackStop() {
     famistudio_music_stop();
 }
 
+// NO-OP, and not for want of trying: FamiStudio has no master level to scale.
+// Volume on the NES lives in the song data itself -- per note, and per channel
+// when FAMISTUDIO_USE_VOLUME_TRACK is on -- and the APU's own volume fields are
+// written by the engine from that data every frame, so anything this wrote
+// there would be overwritten by the next famistudio_update(). Scaling the
+// engine's output would mean re-deriving every channel's volume nibble after
+// the fact, which is a mixer this backend does not have and a cost the 2A03
+// cannot afford.
+//
+// Which is why the demo's NES options page offers DISABLE MUSIC rather than a
+// slider: on/off is the only music level this backend can actually honour, and
+// it is honoured where the song is started (demo/src/modes/level.cpp).
+// Defined rather than left out so a call site shared with every other target
+// still links here.
+AUDIO_BANK void audio::TrackVolume(const u8 percent) {
+    (void)percent;
+}
+
 AUDIO_BANK void audio::Update() {
     famistudio_update();
 }

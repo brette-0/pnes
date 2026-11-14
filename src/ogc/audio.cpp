@@ -67,6 +67,11 @@ int         next_buf   = 0;      // which half of buf[] Update() fills next
 bool        playing    = false;
 bool        paused     = false;
 bool        primed     = false;  // buf[0] was decoded ahead in Init(), not TrackPlay()
+// audio::TrackVolume's setting, as a percentage of full output. ASND's own
+// scale is 0-MAX_VOLUME (255, asndlib.h) per channel; this is kept as the
+// percentage so TrackPlay's ASND_SetVoice and a later ChangeVolumeVoice both
+// derive from one number, and so a volume set before Init() still takes.
+u8          volume     = 100;
 bool        pending    = false;  // buf[next_buf] is decoded and waiting on ASND_AddVoice()
 
 // Fills buf[which] with BUFFER_FRAMES stereo frames, looping back to
@@ -164,9 +169,10 @@ void audio::TrackPlay(const u8 index) {
     pending = false;
 
     next_buf = 0;
+    const s32 vol = static_cast<s32>(volume) * MAX_VOLUME / 100;
     ASND_SetVoice(VOICE, VOICE_STEREO_16BIT, src_rate, 0,
                   buf[0], BUFFER_SHORTS * sizeof(i16),
-                  MAX_VOLUME, MAX_VOLUME, nullptr);
+                  vol, vol, nullptr);
     playing = true;
     paused  = false;
 }
@@ -180,6 +186,19 @@ void audio::TrackPause(const u8 pause) {
     (void)pause;  // match the SDL/Wii U backends: toggle regardless of argument
     paused = !paused;
     ASND_PauseVoice(VOICE, paused);
+}
+
+// ASND scales the voice in hardware, so this costs one call and nothing per
+// sample. Voice 0 is the music voice by convention (::VOICE), so an SFX voice
+// added later is untouched by this, as audio.hpp promises.
+//
+// ASND_ChangeVolumeVoice only applies to a voice that is actually set up; when
+// it is not, ::volume alone is enough, because TrackPlay's ASND_SetVoice reads
+// it on the way in.
+void audio::TrackVolume(const u8 percent) {
+    volume = percent > 100 ? 100 : percent;
+    const s32 vol = static_cast<s32>(volume) * MAX_VOLUME / 100;
+    if (playing) ASND_ChangeVolumeVoice(VOICE, vol, vol);
 }
 
 // No SFX assets are registered for this project on non-NES targets yet (see

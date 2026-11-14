@@ -1,11 +1,18 @@
 #pragma once
 
+#include <pnes/audio.hpp>
 #include <pnes/video.hpp>
 #include STRCAT(../../gen/options/GEN_TARGET_DIR/options.hpp)
 #include "../../chr/chr.h"
 #include "../../src/graphics/windows.hpp"
 
 namespace ui::impl {
+    // @p width is the track's WHOLE footprint in cells, caps included, so it
+    // lays out exactly like ui::impl::DrawTextBox's top row: a cap at @p pos, a
+    // cap at `pos + width - 1`, and `width - 2` middles between them. The right
+    // cap used to go to `pos + width`, which both ran a cell past the footprint
+    // and left `pos + width - 1` never written -- a blank cell stranded between
+    // the end of the middle run and a detached end cap.
     template <bool orient>
     inline void DrawSliderBody(const u16 pos, const u8 width) {
         if constexpr (!orient) return;
@@ -14,8 +21,47 @@ namespace ui::impl {
         constexpr u8 MiddleGraphic    = windows::ui + blob::ui::slider_middle;
 
         ppu::WriteSingleToNameTable(pos, LeftEdgeGraphic);
-        ppu::WriteRepeatedToNameTable(pos, MiddleGraphic, width - 2, 0);
-        ppu::WriteSingleToNameTable(pos + width, RightEdgeGraphic);
+        ppu::WriteRepeatedToNameTable(pos + 1, MiddleGraphic, width - 2, 0);
+        ppu::WriteSingleToNameTable(pos + width - 1, RightEdgeGraphic);
+    }
+
+    // How far a handle may travel: the track's middle cells, and only those.
+    // The caps are NOT handle positions -- ::ClearSliderHandle has exactly one
+    // tile to put back and it is the middle one, so a handle allowed onto a cap
+    // would replace that cap with a middle the moment it moved off again and
+    // the track would lose its end for the rest of the scene. @p width is
+    // ::DrawSliderBody's, i.e. the whole footprint.
+    constexpr u8 SliderTravel(const u8 width) {
+        return static_cast<u8>(width - 2);
+    }
+
+    // The two directions between a handle position and the proportion it
+    // stands for: 0 at the left end, 100 at the right, linear in between. @p
+    // width is ::DrawSliderBody's, i.e. the whole footprint, so the division is
+    // by the LAST position rather than by the count -- the right-hand end has
+    // to read as exactly 100, not as travel-1 over travel.
+    //
+    // A degenerate one-position track reads as full rather than as silent: a
+    // slider too narrow to move is not a slider turned down, and answering 0
+    // there would mute a game whose panel happened to be too small.
+    constexpr u8 SliderPercent(const u8 width, const u8 amt) {
+        const u8 travel = SliderTravel(width);
+        if (travel <= 1) return 100;
+        const u8 last = static_cast<u8>(travel - 1);
+        if (amt >= last) return 100;
+        return static_cast<u8>(static_cast<u16>(amt) * 100 / last);
+    }
+
+    // The inverse, rounded to the nearest cell -- for restoring a proportion
+    // onto a track whose width has CHANGED (a runtime viewport, see
+    // title.cpp's ApplyWidescreenChange), where the stored position means a
+    // different fraction than it did before.
+    constexpr u8 SliderAmountFor(const u8 width, const u8 percent) {
+        const u8 travel = SliderTravel(width);
+        if (travel <= 1) return 0;
+        const u8 last = static_cast<u8>(travel - 1);
+        const u8 pct  = percent > 100 ? 100 : percent;
+        return static_cast<u8>((static_cast<u16>(pct) * last + 50) / 100);
     }
 
     // Clear/Draw rather than one UpdateSlider(pos, amt, lastAmt): the hooks
@@ -23,18 +69,23 @@ namespace ui::impl {
     // only value byte, so moving a handle reads it, clears the cell it names,
     // overwrites it, and draws the cell it now names -- two one-cell writes
     // around a single store, each of which wants its own call.
+    // @p pos is the track's own anchor, the same one ::DrawSliderBody takes,
+    // and @p amt counts from the FIRST MIDDLE cell -- hence the +1 here rather
+    // than at each of the four call sites, which is where the old `pos + 1`
+    // anchor came from and what shifted the whole track a cell right of its
+    // rect.
     template <bool orient>
     inline void ClearSliderHandle(const u16 pos, const u8 amt) {
         if constexpr (!orient) return;
         constexpr u8 MiddleGraphic = windows::ui + blob::ui::slider_middle;
-        ppu::WriteSingleToNameTable(pos + amt, MiddleGraphic);
+        ppu::WriteSingleToNameTable(pos + 1 + amt, MiddleGraphic);
     }
 
     template <bool orient>
     inline void DrawSliderHandle(const u16 pos, const u8 amt) {
         if constexpr (!orient) return;
         constexpr u8 ActiveGraphic = windows::ui + blob::ui::slider_cursor;
-        ppu::WriteSingleToNameTable(pos + amt, ActiveGraphic);
+        ppu::WriteSingleToNameTable(pos + 1 + amt, ActiveGraphic);
     }
 }
 
@@ -84,36 +135,62 @@ namespace gen::options::audioCanvas {
         inline void Draw() {
             const Rect r = rect;
             musicText::Draw();
-            ui::impl::DrawSliderBody<!vertical>(pos + 1, r.size.x + 2);
+            // The track IS the rect: `pos` is its own anchor and `r.size.x` its
+            // whole width, so it lands inside the footprint the focus ring is
+            // drawn around -- ui::impl::DrawTextBox treats a button's rect
+            // exactly the same way. It used to be drawn at `pos + 1`, two cells
+            // wider than the rect, which put it a cell right of its own left
+            // edge and three cells past its right one.
+            ui::impl::DrawSliderBody<!vertical>(pos, r.size.x);
 
             // Whatever `amount` already holds IS the starting position -- uitk
             // allocates that byte, so a caller wanting a non-zero default
             // writes it before the first Draw() instead of passing it in. The
             // guard is the same one DrawChange() applies: an out-of-range
             // value leaves the track drawn and the handle off it, rather than
-            // writing a cell outside the slider's own footprint.
+            // writing a cell outside the slider's own footprint. "In range" is
+            // ::SliderTravel, not the rect width: the caps are not positions.
             const u8 amt = amount;
-            if (amt > r.size.x) return;
-            ui::impl::DrawSliderHandle<!vertical>(pos + 1, amt);
+            if (amt >= ui::impl::SliderTravel(r.size.x)) return;
+            ui::impl::DrawSliderHandle<!vertical>(pos, amt);
         }
 
         inline void DrawChange(const u8 amt) {
             const Rect r = rect;
-            if (amt > r.size.x) return;    // caps underflow and overflow
+            // Caps overflow AND underflow: uitk's Pass() hands us `cur - 1`
+            // unclamped, so stepping left off the end arrives here as 255.
+            if (amt >= ui::impl::SliderTravel(r.size.x)) return;
 
             // Clear where the handle is, move the value, draw where it now is.
             // `amount` is atomic (volatile on NES), so it is loaded once into
             // `last` rather than read again for the second write.
             const u8 last = amount;
-            ui::impl::ClearSliderHandle<!vertical>(pos + 1, last);
+            ui::impl::ClearSliderHandle<!vertical>(pos, last);
             amount = amt;
-            ui::impl::DrawSliderHandle<!vertical>(pos + 1, amt);
+            ui::impl::DrawSliderHandle<!vertical>(pos, amt);
+
+            // The engine side of the slider, pushed from the one place the
+            // value changes rather than polled per frame. The track's leftmost
+            // position is silence and its rightmost full output, which is
+            // exactly audio::TrackVolume's 0-100 contract, so the mapping is
+            // ::SliderPercent and nothing else -- no curve, no clamp of its own.
+            //
+            // A backend with no music to scale (the 3DS/GBA/DS stubs) or no
+            // master level (NES, which has no slider either) defines this as a
+            // no-op, so this call needs no guard of its own.
+            audio::TrackVolume(ui::impl::SliderPercent(r.size.x, amt));
         }
     }
 
     namespace SFXSlider {
         // See musicSlider above -- same prohibition, checked per slider,
         // because the axis is per slider.
+        //
+        // NOTE: unlike musicSlider this pushes nothing into the audio API. The
+        // API has no SFX level yet (audio.hpp), and this project registers no
+        // non-NES SFX for one to apply to (demo/src/tracks.cpp) -- so the
+        // handle moves and nothing else happens, deliberately, rather than
+        // being wired to the music level it is not.
         static_assert(!vertical, "vertical sliders are not implemented in this project -- "
                                   "untick Vertical on this slider in uitk, or implement the "
                                   "column-walking path in ui::impl");
@@ -121,21 +198,29 @@ namespace gen::options::audioCanvas {
         inline void Draw() {
             const Rect r = rect;
             SFXText::Draw();
-            ui::impl::DrawSliderBody<!vertical>(pos + 1, r.size.x + 2);
+            // The track IS the rect: `pos` is its own anchor and `r.size.x` its
+            // whole width, so it lands inside the footprint the focus ring is
+            // drawn around -- ui::impl::DrawTextBox treats a button's rect
+            // exactly the same way. It used to be drawn at `pos + 1`, two cells
+            // wider than the rect, which put it a cell right of its own left
+            // edge and three cells past its right one.
+            ui::impl::DrawSliderBody<!vertical>(pos, r.size.x);
 
             const u8 amt = amount;
-            if (amt > r.size.x) return;
-            ui::impl::DrawSliderHandle<!vertical>(pos + 1, amt);
+            if (amt >= ui::impl::SliderTravel(r.size.x)) return;
+            ui::impl::DrawSliderHandle<!vertical>(pos, amt);
         }
 
         inline void DrawChange(const u8 amt) {
             const Rect r = rect;
-            if (amt > r.size.x) return;    // caps underflow and overflow
+            // Caps overflow AND underflow: uitk's Pass() hands us `cur - 1`
+            // unclamped, so stepping left off the end arrives here as 255.
+            if (amt >= ui::impl::SliderTravel(r.size.x)) return;
 
             const u8 last = amount;
-            ui::impl::ClearSliderHandle<!vertical>(pos + 1, last);
+            ui::impl::ClearSliderHandle<!vertical>(pos, last);
             amount = amt;
-            ui::impl::DrawSliderHandle<!vertical>(pos + 1, amt);
+            ui::impl::DrawSliderHandle<!vertical>(pos, amt);
         }
     }
 #endif

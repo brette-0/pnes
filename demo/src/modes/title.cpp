@@ -68,6 +68,41 @@ namespace title {
     // does.
     static atomic u8 canvasInput = 0;
 
+    // Auto-repeat, for the two bits a Canvas spends on a component's own axis.
+    //
+    // A slider is adjusted by LEFT/RIGHT, and a press strobe gives exactly one
+    // step per press -- fine for a button, useless for walking a handle across
+    // a track. So the payload the Canvas gets carries a REPEATED L/R in place
+    // of the raw strobe: the press itself, then nothing until the direction has
+    // been held ::kCanvasRepeatDelay frames, and one more step every
+    // ::kCanvasRepeatTick frames for as long as it stays held.
+    //
+    // Two constants, not one. The DELAY is what keeps a single tap a single
+    // step -- it has to outlast how long a player holds a button they meant to
+    // press once -- while the TICK is how fast the handle then walks, and
+    // wanting the walk faster than the wait is the normal case (the track is
+    // only a handful of cells wide, so one step per 32 frames crossed it in
+    // about three seconds).
+    //
+    // The two bits are replaced, not supplemented -- see ::CanvasRepeat and its
+    // use in ::main. Everything else in the payload is still the plain strobe,
+    // and the COLUMN-level LEFT/RIGHT (which picks a Canvas, one page apart) is
+    // deliberately left on the strobe too: holding a direction there would walk
+    // through columns several times a second.
+    constexpr u8 kCanvasRepeatBits  = input::LEFT | input::RIGHT;
+    constexpr u8 kCanvasRepeatDelay = 16;
+    constexpr u8 kCanvasRepeatTick  = 8;
+
+    // Which of the two bits currently owns the repeat, how long since it last
+    // fired, and whether the delay has already been served -- which is what
+    // picks the threshold that frame count is measured against. Plain statics,
+    // not `atomic`: unlike ::canvasInput these never leave the input loop -- it
+    // is the only reader and the only writer -- so there is no handler to
+    // synchronise with.
+    static u8   canvasRepeatHeld  = 0;
+    static u8   canvasRepeatFrame = 0;
+    static bool canvasRepeating   = false;
+
     // Hardware sprites one character takes. The designer exported the pose
     // for 8x16 (one slot per column, each slot a vertical tile PAIR), and
     // title mode runs 8x8 -- so each exported slot becomes two sprites here,
@@ -464,6 +499,46 @@ namespace title {
     // not just for the nametable: a Canvas's Pass() has no early-out of its own
     // (an all-zero payload still reads `index` and still makes the one indirect
     // call the components table costs), and most frames carry no press at all.
+    // One frame of the L/R auto-repeat: the bits to hand the Canvas THIS frame,
+    // which is the press on the frame it happens, then one step once the
+    // direction has been held ::kCanvasRepeatDelay frames, then one more every
+    // ::kCanvasRepeatTick frames while it stays held.
+    //
+    // Called once per iteration of the input loop, unconditionally, because it
+    // is a frame counter and counting only in the state that reads it would
+    // make the first repeat land however many frames after the press the player
+    // happened to enter the Canvas. @p inputs is the raw held state, @p pressed
+    // the loop's strobe.
+    //
+    // The most recent press owns the repeat: pressing the opposite direction
+    // re-arms onto it, and releasing that one stops the repeat even if the
+    // first is somehow still down. Holding both is a tie the component itself
+    // breaks -- a generated slider Pass() tests RIGHT before LEFT.
+    static u8 CanvasRepeat(const u8 inputs, const u8 pressed) {
+        if (const u8 edge = static_cast<u8>(pressed & kCanvasRepeatBits); edge) {
+            canvasRepeatHeld  = edge;
+            canvasRepeatFrame = 0;
+            canvasRepeating   = false;   // the delay is served before any tick
+            return edge;                 // the strobe itself, passed straight through
+        }
+
+        const u8 held = static_cast<u8>(inputs & canvasRepeatHeld);
+        if (!held) {
+            canvasRepeatHeld  = 0;
+            canvasRepeatFrame = 0;
+            canvasRepeating   = false;
+            return 0;
+        }
+
+        // Still held: the first repeat waits out ::kCanvasRepeatDelay from the
+        // press, every one after it ::kCanvasRepeatTick from the last repeat.
+        if (++canvasRepeatFrame < (canvasRepeating ? kCanvasRepeatTick
+                                                   : kCanvasRepeatDelay)) return 0;
+        canvasRepeatFrame = 0;
+        canvasRepeating   = true;
+        return held;
+    }
+
     static void SpendCanvasInput() {
         const u8 payload = canvasInput;
         if (!payload) return;
@@ -621,17 +696,49 @@ namespace title {
 
         BuildPaletteFadePhases();
 
-        // A Canvas's Make() makes every node under it and seeds its focus
-        // index, so these two cover the whole options scene between them:
-        // each component's rect is resolved against the viewport THIS run has
-        // and its pos to a PPU address. uitk emits them on every target -- an
-        // empty stub where both are already `constexpr` (NES) -- so no #if is
-        // needed around either call, not even for the GameCube-only widescreen
-        // button, which is simply not in videoCanvas on any other target. They
-        // stay here, not in ::DrawOptionsPanel: they resolve anchors and zero
-        // running state, which must happen once, not on every mode entry.
-        gen::options::videoCanvas::Make();
-        gen::options::audioCanvas::Make();
+        // The scene's own top-level Make(): every node's rect is resolved
+        // against the viewport THIS run has and its pos to a PPU address. uitk
+        // emits it on every target -- an empty stub where every node is already
+        // `constexpr` (NES) -- so no #if is needed here, not even for the
+        // GameCube-only widescreen button, which is simply not in the scene on
+        // any other target.
+        //
+        // The whole scene, NOT its two Canvases: a Canvas's Make() reaches only
+        // what is under it, and optionsTitle/videoOptions/superMarySistersText/
+        // audioText are not -- they were left unresolved on every
+        // runtime-viewport target, holding rect/pos zeroes. Nothing reads them
+        // today (their Draw()s compute their own coordinates inline, which is
+        // why it never showed), but "nothing may read a node's rect/pos until
+        // Make() has run" is the generator's rule and this is where it is kept.
+        //
+        // It stays here, not in ::DrawOptionsPanel: it resolves anchors and
+        // zeroes running state, which must happen once, not on every mode
+        // entry.
+        gen::options::Make();
+
+#ifndef TARGET_NES
+        // Both mix sliders open at FULL, and the audio backend is told so.
+        //
+        // `amount` is uitk's own byte and starts at 0, which under
+        // audio::TrackVolume's mapping (0 = silence, 100 = full output) would
+        // boot the game muted with a handle parked at the left end claiming
+        // exactly that. Seeded here, which is what sliders.hpp's Draw() means
+        // by "a caller wanting a non-zero default writes `amount` before the
+        // first Draw()" -- after Make() has resolved the rect this reads, and
+        // before ::DrawOptionsPanel paints the handle.
+        //
+        // The SFX slider is seeded too even though nothing reads it yet: the
+        // two are one control surface, and opening with one at full and the
+        // other at zero would read as a bug rather than as an unwired feature.
+        {
+            namespace ac = gen::options::audioCanvas;
+            const Rect mr = ac::musicSlider::rect;
+            const Rect sr = ac::SFXSlider::rect;
+            ac::musicSlider::amount = static_cast<u8>(ui::impl::SliderTravel(mr.size.x) - 1);
+            ac::SFXSlider::amount   = static_cast<u8>(ui::impl::SliderTravel(sr.size.x) - 1);
+            audio::TrackVolume(ui::impl::SliderPercent(mr.size.x, ac::musicSlider::amount));
+        }
+#endif
         // Dual-screen: left unloaded until OPTIONS is picked (::ClearUiBand).
         if constexpr (!kUiOnOwnPanel) DrawOptionsPanel();
 
@@ -639,9 +746,11 @@ namespace title {
 
         // Make() makes each member, snapshots their rects into `options`, and
         // zeroes the menu's running option -- so it has to run here rather
-        // than at static-init time.
-        gen::title::TitleOptions::Make();
-        gen::gameOptions::gameOptions::Make();
+        // than at static-init time. Scene-level again, for ::gen::options'
+        // reason above: gen::title::Make() also makes GameTitle, which
+        // TitleOptions::Make() does not reach.
+        gen::title::Make();
+        gen::gameOptions::Make();
         playModeActive = false;
 
         gen::title::TitleOptions::Draw();
@@ -663,6 +772,8 @@ namespace title {
             const u8 inputs  = port1 | port2;
             const u8 pressed = inputs & static_cast<u8>(~prevInputs); // strobe: only the frame a button goes down
             prevInputs = inputs;
+            // Every frame, whatever mode this is -- see ::CanvasRepeat.
+            const u8 repeated = CanvasRepeat(inputs, pressed);
 
             if (!optionsLocked) {
                 // Pass() repaints the arrow itself now, through the menu's own
@@ -747,8 +858,15 @@ namespace title {
                     // focus index, so A lands on the same component again.
                     canvasEntered = false;
                     PlaceOptionsCorners();
-                } else if (pressed) {
-                    canvasInput = pressed;
+                } else {
+                    // The Canvas's payload: the plain strobe for every bit but
+                    // LEFT/RIGHT, and the repeat in their place. ::CanvasRepeat
+                    // already returns the strobe on the press frame, so this
+                    // neither doubles a press nor drops one.
+                    if (const u8 payload = static_cast<u8>(
+                            (pressed & static_cast<u8>(~kCanvasRepeatBits)) | repeated); payload) {
+                        canvasInput = payload;
+                    }
                 }
             }
 
@@ -897,25 +1015,62 @@ namespace title {
 
         ppu::Flush((windows::ui + blob::ui::hud_whitespace), 0xff);
 
-        // Re-resolve every UI anchor. Each Make() also ZEROES its scene's
-        // running state, which must not happen here: the player is standing on
-        // a focused component in a selected column, and the display changing
-        // shape is no reason to throw their place in the menu away. The title
-        // and play-mode menus are off-screen in this state, but their rects are
-        // just as stale, and their option is what the player picked on the way
-        // in -- so both go through the same save/restore.
+        // Re-resolve every UI anchor, through each scene's OWN top-level
+        // Make() -- the one the generator documents as "nothing may read a
+        // node's rect/pos until this has run". Not the two Canvas Make()s:
+        // those reach only the nodes UNDER a Canvas, and this scene has four
+        // outside them (optionsTitle, videoOptions, superMarySistersText,
+        // audioText), as gen::title has GameTitle. Picking a subset by hand is
+        // what leaves a node holding anchors for the viewport that is gone,
+        // and it is not a subset anything here should be curating.
+        //
+        // Each Make() also ZEROES its scene's running state, which must not
+        // happen here: the player is standing on a focused component in a
+        // selected column, and the display changing shape is no reason to throw
+        // their place in the menu away. The title and play-mode menus are
+        // off-screen in this state, but their rects are just as stale, and
+        // their option is what the player picked on the way in -- so both go
+        // through the same save/restore.
+        // The mix sliders' PROPORTION, not their handle positions: slider
+        // travel is derived from the rect, which is derived from the viewport
+        // width, so the same `amount` means a different fraction either side of
+        // this switch (6 positions at 4:3, 9 at 16:9). Captured before the
+        // re-Make below and restored onto the new track after it -- otherwise a
+        // track the player had set to 100% would come back reading 62% and the
+        // music would quietly drop with the aspect.
+        namespace ac = gen::options::audioCanvas;
+        const u8 musicPct = [] {
+            const Rect r = ac::musicSlider::rect;
+            return ui::impl::SliderPercent(r.size.x, ac::musicSlider::amount);
+        }();
+        const u8 sfxPct = [] {
+            const Rect r = ac::SFXSlider::rect;
+            return ui::impl::SliderPercent(r.size.x, ac::SFXSlider::amount);
+        }();
+
         const u8 videoIndex  = gen::options::videoCanvas::index;
         const u8 audioIndex  = gen::options::audioCanvas::index;
         const u8 titleOption = gen::title::TitleOptions::option;
         const u8 playOption  = gen::gameOptions::gameOptions::option;
-        gen::options::videoCanvas::Make();
-        gen::options::audioCanvas::Make();
-        gen::title::TitleOptions::Make();
-        gen::gameOptions::gameOptions::Make();
+        gen::options::Make();
+        gen::title::Make();
+        gen::gameOptions::Make();
         gen::options::videoCanvas::index  = videoIndex;
         gen::options::audioCanvas::index  = audioIndex;
         gen::title::TitleOptions::option  = titleOption;
         gen::gameOptions::gameOptions::option = playOption;
+
+        // The proportions back onto the new, wider or narrower tracks. The
+        // handle snaps to the nearest cell, so the percentage the engine is
+        // given is the one the UI will read out after the snap -- not the one
+        // before it, which the handle would then disagree with.
+        {
+            const Rect mr = ac::musicSlider::rect;
+            const Rect sr = ac::SFXSlider::rect;
+            ac::musicSlider::amount = ui::impl::SliderAmountFor(mr.size.x, musicPct);
+            ac::SFXSlider::amount   = ui::impl::SliderAmountFor(sr.size.x, sfxPct);
+            audio::TrackVolume(ui::impl::SliderPercent(mr.size.x, ac::musicSlider::amount));
+        }
 
         // The preview, the logo and the panel, in ::main's own order.
         //

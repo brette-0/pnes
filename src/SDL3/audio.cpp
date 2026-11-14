@@ -17,6 +17,11 @@ static int current_track = -1;
 static int music_playing = 0;
 static int music_paused = 0;
 
+// audio::TrackVolume's setting, as a percentage of full output. Kept here
+// rather than only pushed into SDL because it may be set before Init() has
+// opened the stream -- ::OpenAudioStreams applies it on the way out.
+static u8 music_volume = 100;
+
 // Every non-NES backend leaves ::sfxs/::nSfx undefined unless the app calls
 // ::SFX(...); this weak zero-entry default keeps the link working until it
 // does (mirrors the same trick used on the Switch/Wii U ports).
@@ -239,6 +244,8 @@ static void OpenAudioStreams() {
         return;
     }
     SDL_ResumeAudioStreamDevice(music_stream);
+    // Whatever volume was set before the device existed (see ::music_volume).
+    SDL_SetAudioStreamGain(music_stream, static_cast<float>(music_volume) / 100.0f);
 
     // Bind sfx_stream to the same logical device as music_stream rather than
     // opening a second device (mixed additively by SDL, same as two real
@@ -306,4 +313,15 @@ void audio::TrackStop() {
 void audio::TrackPause(const u8 pause) {
     (void)pause;
     music_paused = !music_paused;
+}
+
+// SDL3 gives every stream its own gain, so this is one call and no per-sample
+// work at all. It lands on the MUSIC stream only: ::sfx_stream is a separate
+// stream bound to the same device (see ::OpenAudioStreams), so effects keep
+// playing at full level, which is what audio.hpp promises.
+void audio::TrackVolume(const u8 percent) {
+    music_volume = percent > 100 ? 100 : percent;
+    if (music_stream) {
+        SDL_SetAudioStreamGain(music_stream, static_cast<float>(music_volume) / 100.0f);
+    }
 }

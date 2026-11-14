@@ -117,6 +117,13 @@ std::atomic<bool> running{false};
 // than the single-core interleaving the EE and the Allegrex are limited to.
 std::atomic<int> pending_track{-1};
 
+// audio::TrackVolume's setting, as a percentage of full output. libaudio's port
+// has no level of its own, so it is applied to the float block in ::fill.
+// std::atomic, unlike the PSP/PS2 backends' `volatile`: this PPU is 2-way SMT,
+// so the two threads really are concurrent (see ::pending_track above), and a
+// relaxed byte load is free here.
+std::atomic<u8> volume{100};
+
 // Fills `frames` stereo frames of float PCM at `dst`, looping back to
 // loop_frame on EOF (mirrors src/psp/audio.cpp's fill()).
 void fill(float *dst, const int frames) {
@@ -135,6 +142,15 @@ void fill(float *dst, const int frames) {
     if (got < frames) {
         std::memset(dst + got * CHANNELS, 0,
                     static_cast<size_t>(frames - got) * CHANNELS * sizeof(float));
+    }
+
+    // Music volume. Read once per block, not per sample, so the gain cannot
+    // change halfway through one; skipped entirely at 100. There is no SFX path
+    // on this backend yet -- when there is, it mixes in AFTER this, which is
+    // what keeps effects at full level (audio.hpp).
+    if (const u8 vol = volume.load(std::memory_order_relaxed); vol != 100) {
+        const float gain = static_cast<float>(vol) / 100.0f;
+        for (int i = 0; i < frames * CHANNELS; i++) dst[i] *= gain;
     }
 }
 
@@ -314,6 +330,12 @@ void audio::TrackPlay(const u8 index) {
     // only audio_thread() may call into the decoder; see ::pending_track.
     if (!vorbis || index >= nTracks) return;
     pending_track.store(index, std::memory_order_relaxed);
+}
+
+// Takes effect on the next block the sound thread fills (~one block of
+// latency); see ::volume for why this one is a std::atomic.
+void audio::TrackVolume(const u8 percent) {
+    volume.store(percent > 100 ? 100 : percent, std::memory_order_relaxed);
 }
 
 void audio::TrackStop() {

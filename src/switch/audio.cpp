@@ -57,6 +57,10 @@ static bool    running   = false;
 static bool    playing   = false;
 static bool    paused    = false;
 static u32     play_pos  = 0;      // current read offset into track_data
+// audio::TrackVolume's setting, as a percentage of full output. Applied in
+// software -- audout has no per-stream level, and the music and the effects
+// share one chunk, so the scale has to happen between them (::fill_chunk).
+static u8      volume    = 100;
 
 // Every non-NES backend leaves ::sfxs/::nSfx undefined unless the app calls
 // ::SFX(...); this weak zero-entry default keeps the link working until it
@@ -179,6 +183,18 @@ static void fill_chunk(u8 *dst) {
     }
 
     i16 *out = reinterpret_cast<i16 *>(dst);
+
+    // Music volume, scaled BEFORE the SFX mix below -- that ordering is the
+    // whole reason this is here and not at the end: effects mixed in afterwards
+    // keep their full level, which is what audio.hpp promises. Skipped
+    // altogether at 100, so a game that never sets a volume pays nothing. The
+    // product is computed in `int`: i16 * 100 overflows 16 bits.
+    if (volume != 100) {
+        for (u32 i = 0; i < CHUNK / sizeof(i16); i++) {
+            out[i] = static_cast<i16>(static_cast<int>(out[i]) * volume / 100);
+        }
+    }
+
     for (auto &v : sfx_voices) {
         if (!v.active) continue;
         u32 avail = v.end - v.pos;
@@ -250,6 +266,15 @@ void audio::TrackPlay(const u8 index) {
 void audio::TrackStop() {
     mutexLock(&mtx);
     playing = false;
+    mutexUnlock(&mtx);
+}
+
+// Under the mutex, like every other writer of ::fill_chunk's state: the audio
+// thread reads ::volume there, and a torn read would be an audible step in the
+// middle of a chunk rather than between two.
+void audio::TrackVolume(const u8 percent) {
+    mutexLock(&mtx);
+    volume = percent > 100 ? 100 : percent;
     mutexUnlock(&mtx);
 }
 
