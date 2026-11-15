@@ -1148,8 +1148,29 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
 
     famistudio_extract(FAMISTUDIO_CFG_DPCM_SUPPORT "FAMISTUDIO_CFG_DPCM_SUPPORT[ \t]*=[ \t]*([0-9]+)")
     famistudio_extract(FAMISTUDIO_CFG_SFX_SUPPORT  "FAMISTUDIO_CFG_SFX_SUPPORT[ \t]*=[ \t]*([0-9]+)")
-    famistudio_extract(FAMISTUDIO_CFG_SFX_STREAMS  "FAMISTUDIO_CFG_SFX_STREAMS[ \t]*=[ \t]*([0-9]+)")
     famistudio_extract(FAMISTUDIO_USE_VOLUME_TRACK "FAMISTUDIO_USE_VOLUME_TRACK[ \t]*=[ \t]*([0-9]+)")
+
+    # SFX_STREAMS is NOT extracted: it goes the other way. The engine's stream
+    # count and the count the C++ side publishes as audio::sfxChannels have to
+    # be one number -- a project addressing channel 2 when the engine allocated
+    # two streams writes past the array, with no diagnostic on the NES, which
+    # does not bound-check the argument by design. So it is configured HERE and
+    # fed BOTH ways: to ca65 as -D PNES_SFX_STREAMS (numeric, which is all
+    # ca65's -D carries) and to the compiler as FAMISTUDIO_CFG_SFX_STREAMS.
+    # Same treatment, and the same justification, as the audio segment and
+    # REGION -- see famistudio_config.s's header on why those two are the
+    # exceptions to that file owning its own values.
+    set(PNES_SFX_STREAMS 2 CACHE STRING
+            "FamiStudio SFX streams: how many effects the NES can play at once \
+(1-4). Published to C++ as audio::sfxChannels and to the engine as \
+FAMISTUDIO_CFG_SFX_STREAMS, so the two cannot disagree.")
+    if(NOT PNES_SFX_STREAMS MATCHES "^[1-4]$")
+        message(FATAL_ERROR
+                "PNES_SFX_STREAMS must be 1-4 (got \"${PNES_SFX_STREAMS}\"). "
+                "FamiStudio allocates FAMISTUDIO_SFX_STRUCT_SIZE bytes of RAM "
+                "per stream and supports at most four.")
+    endif()
+    set(FAMISTUDIO_CFG_SFX_STREAMS ${PNES_SFX_STREAMS})
 
     # NTSC/PAL support are no longer literal digits in famistudio_config.s --
     # that file now computes them itself from the same REGION passed into
@@ -1223,6 +1244,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             OUTPUT ${FAMISTUDIO_OBJ}
             COMMAND ${CA65}
             -D REGION=${REGION}
+            -D PNES_SFX_STREAMS=${PNES_SFX_STREAMS}
             # Switches famistudio_config.s from its standalone literal
             # fallback to the generated pnes_audio_segment.inc. ca65's -D
             # takes NUMERIC symbols only ("Invalid definition" otherwise),
@@ -1240,30 +1262,121 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             COMMENT "Assembling FamiStudio"
     )
 
-    # demo/nes.fms (the real FamiStudio project, edited in the FamiStudio GUI)
-    # is the one source of truth for this demo's music -- demo/audio/tracks/
-    # nes_audio.s is a regenerated build artifact, not hand-edited, so it's
-    # re-exported here from the .fms on every build where the project changed
-    # rather than trusted as a stale committed copy. FamiStudio ships its own
-    # CLI under this same binary name (case as installed -- "famistudio" on
-    # Linux packages, "FamiStudio"/"FamiStudio.exe" on macOS/Windows).
+    # demo/audio/bgm.fms and demo/audio/sfx.fms (the real FamiStudio projects,
+    # edited in the FamiStudio GUI) are the one source of truth for this demo's
+    # audio -- demo/audio/tracks/nes_audio.s and demo/audio/sfx/nes_sfx.s are
+    # regenerated build artifacts, not hand-edited, so they're re-exported here
+    # from the .fms files on every build where a project changed rather than
+    # trusted as stale committed copies. FamiStudio ships its own CLI under this
+    # same binary name (case as installed -- "famistudio" on Linux packages,
+    # "FamiStudio"/"FamiStudio.exe" on macOS/Windows).
+    #
+    # TWO projects, not one, because FamiStudio has no separate "sound effect"
+    # object: its SFX exporter re-encodes whole SONGS as effect streams. Point
+    # it at a project holding real music and every track comes back as one
+    # enormous "effect". Selecting songs within a single project is possible
+    # (-export-songs: takes zero-based indices) but the indices are positional,
+    # so reordering a song in the GUI would silently repoint both exports --
+    # splitting the projects means each export takes its whole input and needs
+    # no index list at all. FamiStudio's own demo splits the same way.
     find_program(FAMISTUDIO NAMES famistudio FamiStudio REQUIRED)
 
-    set(NES_FMS ${CMAKE_SOURCE_DIR}/demo/nes.fms)
+    set(NES_BGM_FMS ${CMAKE_SOURCE_DIR}/demo/audio/bgm.fms)
     set(NES_AUDIO_ASM ${CMAKE_SOURCE_DIR}/demo/audio/tracks/nes_audio.s)
     add_custom_command(
             OUTPUT ${NES_AUDIO_ASM}
-            COMMAND ${FAMISTUDIO} ${NES_FMS} famistudio-asm-export ${NES_AUDIO_ASM}
+            COMMAND ${FAMISTUDIO} ${NES_BGM_FMS} famistudio-asm-export ${NES_AUDIO_ASM}
                     -famistudio-asm-format:ca65
-            DEPENDS ${NES_FMS}
-            COMMENT "Exporting FamiStudio music: nes.fms -> nes_audio.s (ca65)"
+            DEPENDS ${NES_BGM_FMS}
+            COMMENT "Exporting FamiStudio music: bgm.fms -> nes_audio.s (ca65)"
     )
-    # nes_sfx.s is NOT regenerated the same way yet: demo/nes.fms currently has
-    # no dedicated sound-effect bank matching it (famistudio-asm-sfx-export
-    # against the project as it stands today produces each full song
-    # re-encoded as one giant synthesized "effect" instead, nothing like the
-    # small hand-curated SFX this file actually holds) -- wire it in once the
-    # project's SFX bank is sorted out, the same way nes_audio.s is above.
+
+    # Same seam for the effects, with one difference that drives where the
+    # output lands: SFX data is REGION-BAKED and song data is not. The exported
+    # `sounds` table opens with a two-word header -- NTSC table, then PAL table
+    # -- and -famistudio-asm-sfx-mode: decides which of the two actually holds
+    # data. The engine picks a slot by region at init, so a single-mode export
+    # built for the other region still links and still plays, just at the wrong
+    # rate, with no diagnostic anywhere. Hence the mode below is derived from
+    # REGION, exactly as famistudio_config.s derives its own NTSC/PAL flags
+    # from it: the two cannot be allowed to disagree. DUAL is deliberately not
+    # an option here -- it needs the runtime region detection this project
+    # rejects outright above (FAMISTUDIO_CFG_NTSC_SUPPORT's FATAL_ERROR).
+    #
+    # AND THAT IS WHY THIS ONE GOES IN THE BINARY DIR, unlike nes_audio.s.
+    # Region-dependent output cannot live at a region-independent path. The
+    # nes and nes_pal configurations have separate build dirs but share one
+    # source tree, so a generated demo/audio/sfx/nes_sfx.s would be written by
+    # whichever configuration built last and then found "newer than sfx.fms",
+    # hence up to date, by the other -- silently linking NTSC effects into a
+    # PAL ROM or the reverse. Per-build-dir output has no such collision: this
+    # directory is only ever one region's. Named sfx.s rather than nes_sfx.s
+    # because a build dir is always a NES build dir; the prefix distinguished
+    # nothing. Being outside demo/ also keeps it out of the source .s glob
+    # below with no exclusion needed, unlike nes_audio.s.
+    set(NES_SFX_FMS ${CMAKE_SOURCE_DIR}/demo/audio/sfx.fms)
+    set(NES_SFX_ASM ${CMAKE_BINARY_DIR}/sfx.s)
+    set(NES_SFX_MODE ntsc)
+    if(REGION)
+        set(NES_SFX_MODE pal)
+    endif()
+    # SECOND OUTPUT, not a byproduct: -famistudio-asm-sfx-generate-list makes
+    # the exporter write the effect NAME->index mapping beside the data, and
+    # the filename is the exporter's choice, not ours -- it is the output path
+    # with its extension dropped and "_sfxlist.inc" appended. Naming it as an
+    # OUTPUT is what lets the enum step below depend on it directly.
+    set(NES_SFX_LIST ${CMAKE_BINARY_DIR}/sfx_sfxlist.inc)
+    add_custom_command(
+            OUTPUT ${NES_SFX_ASM} ${NES_SFX_LIST}
+            COMMAND ${FAMISTUDIO} ${NES_SFX_FMS} famistudio-asm-sfx-export ${NES_SFX_ASM}
+                    -famistudio-asm-format:ca65
+                    -famistudio-asm-sfx-mode:${NES_SFX_MODE}
+                    # NOT -famistudio-ASM-sfx-generate-list, which is what
+                    # `famistudio -help` prints and what the other options in
+                    # this command really are spelled. The CLI tests this one
+                    # with HasOption($"{engineName}-sfx-generate-list"), with
+                    # no "asm-", while the mode option beside it uses
+                    # ParseOption($"{engineName}-asm-sfx-mode") -- so the
+                    # documented spelling parses as an unknown option, is
+                    # ignored WITHOUT a diagnostic, and the export still
+                    # succeeds minus its list file. Verified both ways against
+                    # the installed CLI; upstream's help text is simply wrong.
+                    -famistudio-sfx-generate-list
+            DEPENDS ${NES_SFX_FMS}
+            COMMENT "Exporting FamiStudio SFX: sfx.fms -> sfx.s + sfx_sfxlist.inc (ca65, ${NES_SFX_MODE})"
+    )
+
+    # ------------------------------------------------------------------
+    # Effect names -> C++ enum, so call sites pass sfx::select, not 1.
+    #
+    # The transform lives in tools/sfx_list_to_hpp.cmake rather than here:
+    # it is NES-only (the indices describe one FamiStudio export; non-NES
+    # backends index a project's own audio::SetSfx table instead), and it is
+    # pure text work with no business in the middle of a platform branch.
+    # See that file's header for the format it reads and why generating the
+    # names beats hand-writing them.
+    #
+    # A BUILD STEP, NOT A CONFIGURE STEP, because its input does not exist at
+    # configure time -- sfx_sfxlist.inc is written by the export above, which
+    # runs during the build. Hence `cmake -P` driven by a custom command,
+    # the same shape tools/measure_sections.cmake and cmake/ps2_check_adpcm_size
+    # .cmake already use, rather than a file(STRINGS) read up here.
+    # ------------------------------------------------------------------
+    set(NES_SFX_LIST_HPP ${CMAKE_BINARY_DIR}/gen/sfx.hpp)
+    add_custom_command(
+            OUTPUT ${NES_SFX_LIST_HPP}
+            COMMAND ${CMAKE_COMMAND}
+                    -DSFX_LIST_INC=${NES_SFX_LIST}
+                    -DOUT_HPP=${NES_SFX_LIST_HPP}
+                    -P ${CMAKE_SOURCE_DIR}/tools/sfx_list_to_hpp.cmake
+            DEPENDS ${NES_SFX_LIST}
+                    ${CMAKE_SOURCE_DIR}/tools/sfx_list_to_hpp.cmake
+            COMMENT "Generating sfx.hpp from sfx_sfxlist.inc (effect name enum)"
+    )
+    # NOTE: nothing DEPENDS on ${NES_SFX_ASM} yet, so this command does not
+    # actually fire -- the generated-file dependency that drives it (the
+    # assembly loop's DEPENDS, below, which lists ${NES_AUDIO_ASM} for the music
+    # wrapper) is still an open question.
 
     # demo/famistudio_config.s is handled explicitly above (assembled once
     # into FAMISTUDIO_OBJ) -- excluded here so it isn't ALSO picked up and
@@ -1277,15 +1390,24 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # Assembling it directly here as well would define every music symbol
     # twice, exactly the clash famistudio_config.s is excluded for above.
     list(REMOVE_ITEM DEMO_ASM_SOURCES ${NES_AUDIO_ASM})
-    # nes_sfx.s: same treatment, same reason -- assembled only through
-    # demo/audio/sfx/nes_sfx_bank.s, which puts it in the audio DATA bank
-    # alongside the music. Engine-read data cannot stay in the resident image:
-    # a paired farcall banks that region out for the duration of the call.
-    list(REMOVE_ITEM DEMO_ASM_SOURCES ${CMAKE_SOURCE_DIR}/demo/audio/sfx/nes_sfx.s)
+    # The SFX export needs no equivalent exclusion: it is written to the BINARY
+    # dir (see NES_SFX_ASM above for why) and so never appears in this
+    # source-tree glob at all.
     set(DEMO_ASM_OBJECTS "")
     foreach(ASM_SRC ${DEMO_ASM_SOURCES})
         get_filename_component(ASM_NAME ${ASM_SRC} NAME_WE)
         set(ASM_OBJ ${CMAKE_BINARY_DIR}/${ASM_NAME}.o)
+        # The SFX export is reached ONLY from here. add_custom_command(OUTPUT)
+        # declares a rule, it does not schedule one: with nothing in the graph
+        # asking for ${NES_SFX_ASM}, FamiStudio would never run and the file
+        # nes_sfx_bank.s .includes would simply not exist, failing assembly.
+        # So this dependency is what CREATES the file, not merely what keeps it
+        # fresh -- and it hangs off the ONE object that includes it rather than
+        # off all of them, unlike ${NES_AUDIO_ASM} below.
+        set(ASM_EXTRA_DEPS "")
+        if(ASM_SRC STREQUAL "${CMAKE_SOURCE_DIR}/demo/audio/sfx/nes_sfx_bank.s")
+            set(ASM_EXTRA_DEPS ${NES_SFX_ASM})
+        endif()
         add_custom_command(
                 OUTPUT ${ASM_OBJ}
                 COMMAND ${CA65}
@@ -1295,12 +1417,18 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
                 # this directory; ca65 resolves .include against its -I paths.
                 -I ${CMAKE_SOURCE_DIR}/demo/audio/tracks
                 -I ${CMAKE_SOURCE_DIR}/demo/audio/sfx
+                # nes_sfx_bank.s .includes the GENERATED sfx.s, which lives in
+                # the binary dir rather than beside its wrapper -- see
+                # NES_SFX_ASM above for why that output is per-build-dir.
+                -I ${CMAKE_BINARY_DIR}
                 -o ${ASM_OBJ}
                 ${ASM_SRC}
                 # NES_AUDIO_ASM: the wrapper's .include makes every music
                 # object depend on the generated export, which no scan of
-                # ${ASM_SRC} alone would reveal.
-                DEPENDS ${ASM_SRC} ${NES_AUDIO_ASM}
+                # ${ASM_SRC} alone would reveal. ASM_EXTRA_DEPS carries the
+                # same relationship for the SFX export, narrowed to the single
+                # object that has it -- see its comment above.
+                DEPENDS ${ASM_SRC} ${NES_AUDIO_ASM} ${ASM_EXTRA_DEPS}
                 COMMENT "Assembling ${ASM_NAME}"
         )
         list(APPEND DEMO_ASM_OBJECTS ${ASM_OBJ})
@@ -1341,14 +1469,28 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             ${CMAKE_SOURCE_DIR}/include/umbrella
             ${CMAKE_BINARY_DIR}/famistudio_include
     )
-    target_compile_definitions(pnes PUBLIC
-            ${PLATFORM_DEFINE}
+    # ONE LIST, because two compile paths see pnes/audio.hpp: the `pnes` and
+    # `demo` targets (which inherit these as PUBLIC definitions), and the
+    # hand-rolled PASS1_ELF compiler invocation further down, which bypasses
+    # every CMake target property and so inherits nothing. audio.hpp's
+    # audio::sfxChannels #errors without FAMISTUDIO_CFG_SFX_STREAMS -- on
+    # purpose, since a guessed channel count is worse than a stopped build --
+    # which makes a path that forgets these a hard failure rather than a
+    # subtle one. Exactly the reasoning DEMO_PLACEMENT_DEFINES below is
+    # written up with; same trap, same fix, one list each.
+    set(FAMISTUDIO_CFG_DEFINES
             FAMISTUDIO_CFG_NTSC_SUPPORT=${FAMISTUDIO_CFG_NTSC_SUPPORT}
             FAMISTUDIO_CFG_PAL_SUPPORT=${FAMISTUDIO_CFG_PAL_SUPPORT}
             FAMISTUDIO_CFG_DPCM_SUPPORT=${FAMISTUDIO_CFG_DPCM_SUPPORT}
             FAMISTUDIO_CFG_SFX_SUPPORT=${FAMISTUDIO_CFG_SFX_SUPPORT}
             FAMISTUDIO_CFG_SFX_STREAMS=${FAMISTUDIO_CFG_SFX_STREAMS}
-            FAMISTUDIO_USE_VOLUME_TRACK=${FAMISTUDIO_USE_VOLUME_TRACK}
+            FAMISTUDIO_USE_VOLUME_TRACK=${FAMISTUDIO_USE_VOLUME_TRACK})
+    list(TRANSFORM FAMISTUDIO_CFG_DEFINES PREPEND "-D"
+            OUTPUT_VARIABLE FAMISTUDIO_CFG_FLAGS)
+
+    target_compile_definitions(pnes PUBLIC
+            ${PLATFORM_DEFINE}
+            ${FAMISTUDIO_CFG_DEFINES}
             # No FAMISTUDIO_SEGMENT here: famistudio.cpp used to need the engine's
             # segment name for a BANKED_EXTERN tag, and no longer does
             # anything with it -- it reaches the engine with a plain call now
@@ -1407,7 +1549,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             # forces the C++ frontend for the source inputs.
             -std=gnu++23 -Wno-c23-extensions -x c++
             -include ${CMAKE_SOURCE_DIR}/demo/src/graphics/charmaps.hpp
-            -Os ${PLATFORM_DEFINE_FLAGS} ${DEMO_PLACEMENT_FLAGS} -DGEN_TARGET_DIR=nes -D${ORIENTATION}
+            -Os ${PLATFORM_DEFINE_FLAGS} ${DEMO_PLACEMENT_FLAGS} ${FAMISTUDIO_CFG_FLAGS} -DGEN_TARGET_DIR=nes -D${ORIENTATION}
             # mos-nes.cfg defaults to -mlto-zp=224 (the whole region), letting
             # mos-zero-page-alloc opportunistically promote ordinary globals into
             # zero page with no source-level opt-in. Capped to 0 so zero page is
@@ -1423,6 +1565,11 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             -I${CMAKE_SOURCE_DIR}/include
             -I${CMAKE_SOURCE_DIR}/include/umbrella
             -I${CMAKE_BINARY_DIR}/famistudio_include
+            # Same reason as the -D flags above: this invocation inherits none
+            # of the demo target's include directories, so the generated
+            # effect-name enum has to be found here too or any demo source
+            # that includes <sfx.hpp> breaks this diagnostic build alone.
+            -I${CMAKE_BINARY_DIR}/gen
             -I${intsh_SOURCE_DIR}
             -I${tuple_SOURCE_DIR}
             -I${consh_SOURCE_DIR}
@@ -1438,6 +1585,11 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
             ${FAMISTUDIO_OBJ}
             ${DEMO_ASM_OBJECTS}
             ${DEMO_C_SOURCES}
+            # The generated effect-name enum, for the same reason its -I is
+            # above: this invocation is outside the demo target, so the
+            # add_dependencies() that orders it for everyone else does not
+            # cover it.
+            ${NES_SFX_LIST_HPP}
             COMMENT "Linking diagnostic ELF for ZP/BSS measurement"
             # DEMO_PLACEMENT_FLAGS' entries carry literal ()/" characters
             # (CREATE_SEGMENT_KEYWORD("...")) -- without VERBATIM, CMake
@@ -1486,6 +1638,14 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
 
     target_link_libraries(demo PRIVATE pnes)
 
+    # So demo sources can `#include <sfx.hpp>` for the generated effect-name
+    # enum. It lives in the BINARY dir, not demo/gen: that directory is uitk's
+    # output and is rewritten at configure time, whereas this is a per-build-dir
+    # artifact of the SFX export, which is itself region-dependent (see
+    # NES_SFX_ASM above). add_dependencies(demo demo_famistudio_asm) further
+    # down is what guarantees it exists before any demo source compiles.
+    target_include_directories(demo PRIVATE ${CMAKE_BINARY_DIR}/gen)
+
     # Bareword (unquoted) macro naming this target's own demo/gen/*/<dir>
     # subdirectory -- consumed via ::STRCAT (pnes/technology.hpp) for
     # a computed #include, e.g. `#include STRCAT(../../gen/title/GEN_TARGET_DIR/title.hpp)`,
@@ -1513,6 +1673,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # part of a normal build; nothing downstream reads its output.
     add_custom_target(demo_famistudio_asm
             DEPENDS ${FAMISTUDIO_OBJ} ${DEMO_ASM_OBJECTS} ${CA65_PADDING}
+                    ${NES_SFX_LIST_HPP}
     )
 
     # ------------------------------------------------------------------

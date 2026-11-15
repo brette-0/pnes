@@ -37,3 +37,5 @@ void audio::TrackVolume(u8 /*percent*/) {}
 
 void audio::SfxPlay(u8 /*index*/, u8 /*channel*/) {}
 void audio::SfxSamplePlay(u8 /*index*/) {}
+void audio::SfxStop(u8 /*channel*/) {}
+void audio::SfxPause(u8 /*channel*/, u8 /*pause*/) {}

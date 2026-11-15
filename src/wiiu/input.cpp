@@ -10,9 +10,21 @@
  *
  * A/B map to the face buttons (SDL's SOUTH/EAST), Back/Start to Select/Start,
  * and the D-pad to the four directions.
+ *
+ * The GamePad's touch screen fills ::input::click. It comes through SDL2's own
+ * touch device rather than wut's VPAD: the wiiu SDL2 port's joystick driver is
+ * already calling VPADRead/VPADGetTPCalibratedPoint and feeding the result to
+ * SDL_SendTouch, so reading VPAD a second time here would be two consumers of
+ * one sample stream. SDL_GameControllerUpdate() below is what runs that driver,
+ * which is why the touch read sits after it.
+ *
+ * The GamePad mirrors the TV frame, so a normalized touch maps straight onto
+ * the viewport with no panel offset -- unlike the dual-screen handhelds, where
+ * ::video::panel_rect decides where the digitizer's panel sits.
  */
 #include "internal.hpp"
 #include <pnes/input.hpp>
+#include <pnes/video.hpp>
 
 #include <SDL2/SDL.h>
 
@@ -62,4 +74,30 @@ void input::PollControllers(u8 *port1, u8 *port2) {
     } else {
         *port1 = r0; *port2 = r1;
     }
+
+    // One finger, the first, on the first touch device -- the GamePad is the
+    // only one the port registers, and a UI hit test has one point to spend
+    // (see ::input::Click). Every step is guarded because a device with no
+    // finger down reports zero fingers, and SDL_GetTouchFinger returns null
+    // for an index it does not have.
+    bool touching = false;
+    vec2<u16> at{0, 0};
+    if (SDL_GetNumTouchDevices() > 0) {
+        const SDL_TouchID dev = SDL_GetTouchDevice(0);
+        if (const SDL_Finger* finger = SDL_GetTouchFinger(dev, 0)) {
+            touching = true;
+            // SDL_Finger carries NORMALIZED coordinates (0..1), so the
+            // viewport is the only scale needed -- and the clamp is for the
+            // exact 1.0f a touch on the last column reports, which would
+            // otherwise land one pixel past the viewport and inside no rect.
+            const float fx = finger->x * static_cast<float>(video::viewport_px());
+            const float fy = finger->y * static_cast<float>(video::viewport_py());
+            const u32 x = fx < 0.0f ? 0u : static_cast<u32>(fx);
+            const u32 y = fy < 0.0f ? 0u : static_cast<u32>(fy);
+            at = {static_cast<u16>(x < video::viewport_px() ? x : video::viewport_px() - 1),
+                  static_cast<u16>(y < video::viewport_py() ? y : video::viewport_py() - 1)};
+        }
+    }
+
+    input::click.Set(at, touching);
 }

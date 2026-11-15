@@ -22,7 +22,7 @@
  * runs on SDL's own audio thread, independent of the 60Hz render loop, so
  * Update() is a no-op.
  *
- * SFX (declared via ::SFX in audio.hpp) are decoded once at init and mixed
+ * SFX (registered via ::audio::SetSfx) are decoded once at init and mixed
  * additively into the same callback, on one of ::N_SFX_VOICES fixed voice
  * slots -- starting a new effect on a busy channel cuts the old one off.
  * Unlike the music track, SFX are NOT #embedded: an app can declare an
@@ -84,20 +84,21 @@ static u8  volume     = 100;
 static bool playing = false;
 static bool paused  = false;
 
-// Every non-NES backend leaves ::sfxs/::nSfx undefined unless the app calls
-// ::SFX(...); this weak zero-entry default keeps the link working until it
-// does (mirrors the SDL3/Switch backends).
-__attribute__((weak)) extern const audio::sfx_t sfxs[1] = {};
-__attribute__((weak)) extern const u8 nSfx = 0;
-
 // One-shot SFX PCM, decoded and converted to the same device format as the
 // track and concatenated into its own buffer.
 struct sfx_runtime_t { u32 offset; u32 length; };   // byte offset/length into sfx_data
 static sfx_runtime_t sfx_info[256];
 static u8            *sfx_data = nullptr;
 
-static constexpr int N_SFX_VOICES = 4;
-struct sfx_voice_t { u32 pos; u32 end; bool active; };
+// The voice-slot count, taken from audio.hpp rather than declared here, so
+// the number this backend allocates is the same one audio::sfxChannels
+// publishes to callers -- see its comment on why it differs from the NES's.
+static constexpr int N_SFX_VOICES = audio::sfxChannels;
+// `paused` is a separate flag and not the absence of `active`, because
+// clearing `active` is already how a voice reports that it FINISHED -- the
+// mixer drops it and the cursor goes with it. A pause has to keep the cursor
+// to be distinguishable from audio::SfxStop.
+struct sfx_voice_t { u32 pos; u32 end; bool active; bool paused; };
 static sfx_voice_t sfx_voices[N_SFX_VOICES];
 
 // Decode one /vol/content-relative Vorbis file into the device format,
@@ -181,6 +182,22 @@ void audio::SfxPlay(const u8 index, const u8 channel) {
 }
 
 void audio::SfxSamplePlay(const u8 index) { audio::SfxPlay(index, 1); }
+
+// Exact here, unlike the NES driver: a voice is a cursor this backend owns, so
+// releasing or freezing one is local state (see audio.hpp's ::SfxStop on why
+// the NES cannot). Both ignore an out-of-range channel rather than clamping
+// into someone else's slot; the range is audio::sfxChannels.
+void audio::SfxStop(const u8 channel) {
+    if (channel >= N_SFX_VOICES) return;
+    sfx_voices[channel].active = false;
+    sfx_voices[channel].paused = false;
+}
+
+void audio::SfxPause(const u8 channel, const u8 pause) {
+    if (channel >= N_SFX_VOICES) return;
+    sfx_voices[channel].paused = pause != 0;
+}
+
 
 // Decode the embedded OGG and convert it to the 48k/2ch/s16 device format.
 static void load_track() {
@@ -273,7 +290,7 @@ static void audio_callback(void *, u8 *stream, int len) {
     }
 
     for (auto &v : sfx_voices) {
-        if (!v.active) continue;
+        if (!v.active || v.paused) continue;
         u32 avail = v.end - v.pos;
         u32 n = static_cast<u32>(len) < avail ? static_cast<u32>(len) : avail;
         const i16 *src = reinterpret_cast<const i16 *>(sfx_data + v.pos);

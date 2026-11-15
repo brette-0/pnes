@@ -15,7 +15,7 @@
  * means audio is never coupled to (and never stalls) the 60Hz frame loop --
  * Update() is therefore a no-op here.
  *
- * SFX (declared via ::SFX in audio.hpp, same RomFS raw-PCM pipeline as
+ * SFX (registered via ::audio::SetSfx, same RomFS raw-PCM pipeline as
  * tracks) are loaded once into their own buffer and played on one of
  * ::N_SFX_VOICES fixed voice slots; fill_chunk() additively mixes every
  * active voice into the same chunk the track streams from, same as any two
@@ -62,12 +62,6 @@ static u32     play_pos  = 0;      // current read offset into track_data
 // share one chunk, so the scale has to happen between them (::fill_chunk).
 static u8      volume    = 100;
 
-// Every non-NES backend leaves ::sfxs/::nSfx undefined unless the app calls
-// ::SFX(...); this weak zero-entry default keeps the link working until it
-// does (mirrors the SDL3 desktop backend).
-__attribute__((weak)) extern const audio::sfx_t sfxs[1] = {};
-__attribute__((weak)) extern const u8 nSfx = 0;
-
 // One-shot SFX PCM: same 48k/2ch/s16 RomFS raw format as tracks, loaded
 // once at init and concatenated into its own buffer (mtx also guards this
 // state -- audio_thread reads it every chunk while the game thread calls
@@ -76,8 +70,15 @@ struct sfx_runtime_t { u32 offset; u32 length; };   // byte offset/length into s
 static sfx_runtime_t sfx_info[256];
 static u8            *sfx_data = nullptr;
 
-static constexpr int N_SFX_VOICES = 4;
-struct sfx_voice_t { u32 pos; u32 end; bool active; };
+// The voice-slot count, taken from audio.hpp rather than declared here, so
+// the number this backend allocates is the same one audio::sfxChannels
+// publishes to callers -- see its comment on why it differs from the NES's.
+static constexpr int N_SFX_VOICES = audio::sfxChannels;
+// `paused` is a separate flag and not the absence of `active`, because
+// clearing `active` is already how a voice reports that it FINISHED -- the
+// mixer drops it and the cursor goes with it. A pause has to keep the cursor
+// to be distinguishable from audio::SfxStop.
+struct sfx_voice_t { u32 pos; u32 end; bool active; bool paused; };
 static sfx_voice_t sfx_voices[N_SFX_VOICES];
 
 // Translate "tracks/foo.wav" -> "romfs:/tracks/foo.raw" (the build re-encodes
@@ -163,6 +164,22 @@ void audio::SfxPlay(const u8 index, const u8 channel) {
 
 void audio::SfxSamplePlay(const u8 index) { audio::SfxPlay(index, 1); }
 
+// Exact here, unlike the NES driver: a voice is a cursor this backend owns, so
+// releasing or freezing one is local state (see audio.hpp's ::SfxStop on why
+// the NES cannot). Both ignore an out-of-range channel rather than clamping
+// into someone else's slot; the range is audio::sfxChannels.
+void audio::SfxStop(const u8 channel) {
+    if (channel >= N_SFX_VOICES) return;
+    sfx_voices[channel].active = false;
+    sfx_voices[channel].paused = false;
+}
+
+void audio::SfxPause(const u8 channel, const u8 pause) {
+    if (channel >= N_SFX_VOICES) return;
+    sfx_voices[channel].paused = pause != 0;
+}
+
+
 // Fill one chunk from the track (or silence when stopped/paused/absent),
 // then additively mix in every active SFX voice (s16, clamped).
 static void fill_chunk(u8 *dst) {
@@ -196,7 +213,7 @@ static void fill_chunk(u8 *dst) {
     }
 
     for (auto &v : sfx_voices) {
-        if (!v.active) continue;
+        if (!v.active || v.paused) continue;
         u32 avail = v.end - v.pos;
         u32 n = CHUNK < avail ? CHUNK : avail;
         const i16 *src = reinterpret_cast<const i16 *>(sfx_data + v.pos);

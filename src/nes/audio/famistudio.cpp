@@ -78,6 +78,15 @@ extern "C" FASTCALL famistudio_music_stop(void);
 #if FAMISTUDIO_CFG_SFX_SUPPORT
 extern "C" FASTCALL famistudio_sfx_play(u8 sfx_index, u8 channel);
 #endif
+// GUARDED ON DPCM, NOT SFX, because it is a different capability: this routine
+// triggers the DMC channel from the sample list the engine was initialised
+// with, so FAMISTUDIO_CFG_DPCM_SUPPORT is what has to be on, independently of
+// whether the regular effect streams are compiled in. One argument, like
+// famistudio_music_play above, and for the same reason -- the engine wants the
+// index in A and nothing in X.
+#if FAMISTUDIO_CFG_DPCM_SUPPORT
+extern "C" FASTCALL famistudio_sfx_sample_play(u8 sample_index);
+#endif
 extern "C" FASTCALL famistudio_update(void);
 
 // famistudio_init wants its region byte in A: zero for PAL, non-zero for
@@ -89,6 +98,30 @@ extern "C" FASTCALL famistudio_update(void);
 extern "C" {
 __attribute__((used)) u8 famistudio_region_scratch;
 }
+
+#if FAMISTUDIO_CFG_SFX_SUPPORT
+/*
+ * The effect bank, named HERE rather than by the project.
+ *
+ * FamiStudio's sound-effect exporter hardcodes this symbol: the table is
+ * always `sounds`, always re-exported as `_sounds`, whatever the project or
+ * its songs are called. So this backend can name it unaided, and a project
+ * gets effects by having the export in the ROM and nothing else -- no table,
+ * no macro, no binding line of its own. ::tracks is the opposite case and
+ * stays the project's to define: FamiStudio names the music export after the
+ * project (`music_data_<name>`), which this file cannot know.
+ *
+ * constexpr, SO IT OCCUPIES NO BYTES AT ALL. audio::Init hands the value to
+ * famistudio_sfx_init through an inline-asm "i" (immediate) operand, so what
+ * is needed is a link-time constant, not storage holding one -- the address
+ * folds straight into `ldx #<` / `ldy #>` and no variable is emitted. That
+ * also means there is nothing here for a placement keyword to place, which is
+ * why this backend owning the symbol does not take a memory decision away
+ * from the project (see audio.hpp's ::tracks on why that distinction matters).
+ */
+extern "C" { extern const u8 _sounds[]; }
+static constexpr const u8* sfx = _sounds;
+#endif
 
 AUDIO_BANK void audio::Init(const u8 region) {
     famistudio_region_scratch = region ? 0 : 1;
@@ -157,9 +190,42 @@ AUDIO_BANK void audio::SfxPlay(const u8 index, const u8 channel) {
 #endif
 }
 
+// NO-OPS, AND NOT FOR WANT OF LOOKING. FamiStudio's engine exposes eight
+// public entry points; famistudio_music_pause and famistudio_music_stop are
+// among them and there is NO effect equivalent -- once famistudio_sfx_play has
+// written a stream, nothing in the public API takes it back. So these are the
+// honest implementation, not placeholders waiting on effort here.
+//
+// THE WARNING IS AT THE CALL SITE, not in this file: audio.hpp declares both
+// with ::PNES_SFX_UNSUPPORTED, so a project calling either gets told by the
+// compiler while this body stays genuinely free -- a runtime log would spend
+// ROM to report a function that does nothing. Workarounds that would make
+// these real (a silencing effect authored into the project, or poking the
+// engine's own stream state) are written up in
+// .ignore/famistudio-sfx-stop/NOTES.md; both cost more than they are worth
+// today, and a replacement NES driver is free to implement them, which is why
+// the two entry points exist in the API at all.
+AUDIO_BANK void audio::SfxStop(const u8 channel) {
+    (void)channel;
+}
+
+AUDIO_BANK void audio::SfxPause(const u8 channel, const u8 pause) {
+    (void)channel; (void)pause;
+}
+
+// NOT A WRAPPER FOR SfxPlay, which is what this used to be: it called
+// famistudio_sfx_play(index, 1), i.e. REGULAR effect `index` on stream 1, so
+// the one entry point in this API documented as playing DPCM was the one that
+// could not. The engine has a separate routine for it, declared above.
+//
+// THE INDEX IS NOT AN EFFECT INDEX. It selects from the DPCM sample list the
+// engine holds -- which comes from the MUSIC export (the `.word @samples-4`
+// header in the generated song data), not from the SFX export, which has no
+// sample section at all. So this and ::SfxPlay take numbers from two
+// different tables that happen to share a type.
 AUDIO_BANK void audio::SfxSamplePlay(const u8 index) {
-#if FAMISTUDIO_CFG_SFX_SUPPORT
-    famistudio_sfx_play(index, 1);
+#if FAMISTUDIO_CFG_DPCM_SUPPORT
+    famistudio_sfx_sample_play(index);
 #else
     (void)index;
 #endif

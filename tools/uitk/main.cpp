@@ -2264,6 +2264,65 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
                       "}")
                  .arg(scBack, scFwd);
 
+    // The pointer hook. Takes a point in the same TILE space the `options`
+    // table is in -- plane tiles from the world origin -- and reports whether
+    // it landed on one of this menu's options.
+    //
+    // Tested against each OPTION's rect, not the menu's own derived bounds
+    // (`rect` above): the bounds are the smallest box covering every option,
+    // which on a menu with uneven label widths includes space no option
+    // occupies, and a click there belongs to nothing. Per-option is also what
+    // makes the hit meaningful at all -- WHICH option was clicked is the whole
+    // answer, where a Button's hit is just "yes".
+    //
+    // A click selects outright rather than stepping towards, exactly as a
+    // Slider's Click() lands the handle where the point is instead of nudging
+    // it (see genSliderDecl). So there is no clamp and no end-stop here: every
+    // index this can produce came from the table itself.
+    //
+    // DrawChange() only on a real move, the same rule ::Pass follows and for
+    // the same reason -- `from == to` is reserved for a scene's cold paint,
+    // and a click on the already-selected option has nothing to unpaint. It
+    // still reports the hit, because the point WAS this menu's and a Canvas
+    // must not go on offering it to the components after this one.
+    //
+    // On a runtime-viewport target `options` is `atomic Rect[]` (volatile),
+    // which ::Rect::Contains cannot be called on, so each entry is copied into
+    // a local through ::Rect's volatile copy constructor -- the same thing a
+    // Canvas's Pass() does with its own components table. On a fixed-viewport
+    // target the table is `constexpr Rect[]` and is indexed in place, for
+    // genButtonDecl's Click() reason: a six-byte copy per option tested, to
+    // ask about compile-time constants, is the one cost here that scales with
+    // the option count.
+    lines << (runtimePos
+                  ? QString("inline AI bool Click(const vec2<u16> at) {\n"
+                             "    const u8 from = option;\n"
+                             "\n"
+                             "    for (u8 i = 0; i < nOptions; i++) {\n"
+                             "        const Rect r = options[i];\n"
+                             "        if (!r.Contains(at)) continue;\n"
+                             "        if (i == from) return true;\n"
+                             "        option = i;\n"
+                             "        DrawChange(from, i);\n"
+                             "        return true;\n"
+                             "    }\n"
+                             "\n"
+                             "    return false;\n"
+                             "}")
+                  : QString("inline AI bool Click(const vec2<u16> at) {\n"
+                             "    const u8 from = option;\n"
+                             "\n"
+                             "    for (u8 i = 0; i < nOptions; i++) {\n"
+                             "        if (!options[i].Contains(at)) continue;\n"
+                             "        if (i == from) return true;\n"
+                             "        option = i;\n"
+                             "        DrawChange(from, i);\n"
+                             "        return true;\n"
+                             "    }\n"
+                             "\n"
+                             "    return false;\n"
+                             "}"));
+
     // Draw()/Erase(): the whole option list's labels in one call. Each member's
     // own Draw()/Erase() only exists on the targets that don't hide it (see
     // generateCode), so a caller wanting "every option this target shows" would
@@ -2445,6 +2504,54 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
                           "    Toggle();\n"
                           "    Draw();\n"
                           "}");
+
+        // The pointer hook, and the click half of ::Pass above. Takes a point
+        // in the same TILE space this node's own `rect` is in -- plane tiles
+        // from the world origin, which is what ::Rect::Contains compares
+        // against -- and reports whether that point was this button's.
+        //
+        // A press on a button is a flip and nothing else, whichever device
+        // made it (see ::Pass's own comment), so a hit does exactly what a
+        // press does: Toggle() then the one Draw() there is. That is the whole
+        // of why this can be generated at all, and why a slider's equivalent
+        // cannot be the same shape -- there, WHERE in the rect the point
+        // landed is the value (see genSliderDecl).
+        //
+        // Emitted only for a toggleable button, on the same condition and for
+        // the same reason ::Pass is: a button that cannot flip has no press
+        // this tool could define for it, and a click is still a press.
+        //
+        // The return value is what lets a Canvas stop at the first component
+        // that claims the point instead of testing the rest (see
+        // genCanvasDecl's PassClick), and it is the only thing that could
+        // report a hit -- the state after a flip says nothing about whether
+        // this button is the one that moved.
+        //
+        // On a runtime-viewport target `rect` is `atomic Rect` (volatile, see
+        // genGeometryStorage) and ::Rect::Contains is a non-volatile member
+        // that cannot be called on it, so the rect is copied into a local
+        // first -- ::Rect has a volatile copy constructor for exactly this.
+        //
+        // On a fixed-viewport target it is a `constexpr Rect` and Contains is
+        // called on it directly. Not merely tidier: ::Rect is six bytes, and
+        // on the one target where that copy is real work (NES, which is always
+        // fixed) it is six bytes onto the stack to ask a question about a
+        // compile-time constant. The direct form folds the whole test against
+        // literals instead.
+        lines << (runtimePos
+                      ? QString("inline AI bool Click(const vec2<u16> at) {\n"
+                                 "    const Rect r = rect;\n"
+                                 "    if (!r.Contains(at)) return false;\n"
+                                 "    Toggle();\n"
+                                 "    Draw();\n"
+                                 "    return true;\n"
+                                 "}")
+                      : QString("inline AI bool Click(const vec2<u16> at) {\n"
+                                 "    if (!rect.Contains(at)) return false;\n"
+                                 "    Toggle();\n"
+                                 "    Draw();\n"
+                                 "    return true;\n"
+                                 "}"));
     }
 
     return lines.join("\n") + "\n";
@@ -2552,6 +2659,34 @@ QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     lines << QString("void Draw();");
     lines << QString("void DrawChange(u8 amt);");
 
+    // The third forced-to-define hook, and the only one a POINTER needs: which
+    // cell of this slider's own footprint was clicked, counted from `rect.pos`
+    // along the slider's axis -- 0 for the first, `rect.size - 1` for the last.
+    //
+    // A cell and not an `amount`, which is the whole reason this exists rather
+    // than Click() calling DrawChange() directly. `amount` is a position in
+    // whatever the implementation's HANDLE can occupy, and that is not the same
+    // span as the rect: an implementation that caps its track draws an end
+    // graphic at each extreme and lets the handle travel only between them (see
+    // ui::impl::SliderTravel and DrawSliderBody, demo/ui/impl/sliders.hpp), so
+    // its `amount` 0 sits one cell INSIDE the rect and its last amount one cell
+    // short of the far edge. uitk cannot know that inset. It is a property of
+    // the graphics, it differs per implementation -- a capless track would have
+    // none at all -- and inventing one here would silently land every click a
+    // cell off on exactly the layout this toolkit's own demo uses.
+    //
+    // So this hands over the one thing uitk does know for certain, the cell the
+    // point fell in, and the implementation maps it onto its own range. That
+    // mapping is also where a click on a cap gets to mean something: a cell the
+    // handle cannot occupy is still a direction to travel in, and the nearest
+    // position to it is the natural answer (ui::impl::SliderAmountForCell).
+    //
+    // Which is the other half of why this is not DrawChange(): a PRESS past the
+    // end must do nothing (Pass() leans on DrawChange's own guard to reject
+    // it), while a CLICK past the end should approach it. Two different answers
+    // to an out-of-range value, so two different entry points.
+    lines << QString("void DrawClick(u8 cell);");
+
     // The input hook -- the same uniform entry point a Button and a
     // SingleChoice get (see genButtonDecl), so a menu loop can route the
     // frame's input to whatever has focus without a per-kind signature to
@@ -2591,6 +2726,66 @@ QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
                       "    else if (payload & %2) DrawChange(static_cast<u8>(cur - 1));\n"
                       "}")
                  .arg(slFwd, slBack);
+
+    // The pointer hook. Takes a point in the same TILE space this node's own
+    // `rect` is in -- plane tiles from the world origin, what ::Rect::Contains
+    // compares against -- and reports whether that point was this slider's.
+    //
+    // A click on a slider is NOT the press ::Pass spends. A press is a nudge
+    // and carries only a direction, so it steps one cell; a click names a cell
+    // outright, so the handle goes THERE. That is the whole difference between
+    // the two hooks, and it is why this one cannot forward to Pass() the way a
+    // Button's Click() can forward to a flip.
+    //
+    // The cell is the offset of the point along the slider's own axis
+    // (kSliderVerticalRole): a track running along a row measures `at.x` from
+    // `rect.pos.x`, one down a column `at.y` from `rect.pos.y` -- the same
+    // dimension `vertical` tells a hook to measure, and the same dimension
+    // Pass() bakes its two input bits from.
+    //
+    // No clamp, and none needed, which is the point of testing Contains first:
+    // a point inside the rect is at most `size - 1` cells along it and at
+    // least 0, so the subtraction cannot leave the track in either direction.
+    // DrawChange()'s own guard (demo/ui/impl/sliders.hpp) is therefore never
+    // what stops this one, unlike the +1/-1 in Pass() which deliberately
+    // leans on it.
+    //
+    // `amount` is not read here at all, and not written either: DrawChange()
+    // is the hook that stores the new value (see the `amount` comment above),
+    // exactly as it is when Pass() calls it.
+    //
+    // The cell is the offset of the point along the slider's own axis
+    // (kSliderVerticalRole) from the rect's own anchor: a track running along a
+    // row measures `at.x` from `rect.pos.x`, one down a column `at.y` from
+    // `rect.pos.y`. Testing Contains() first is what bounds it -- a point
+    // inside the rect is at most `size - 1` cells along it and at least 0, so
+    // the subtraction cannot leave the footprint and ::DrawClick is never
+    // handed a cell this slider does not have.
+    //
+    // Note this is NOT an `amount`, and the unit change is the point: see
+    // ::DrawClick's own comment above for why uitk hands over a cell and lets
+    // the implementation place the handle.
+    //
+    // On a runtime-viewport target `rect` is `atomic Rect` (volatile), and
+    // both ::Rect::Contains and the `pos` read are non-volatile members -- so
+    // it is copied into a local once, through ::Rect's volatile copy
+    // constructor, and that one copy serves both uses. On a fixed-viewport
+    // target it is a `constexpr Rect` used in place, for the reason
+    // genButtonDecl's Click() spells out: the copy would be six bytes of stack
+    // to ask about a compile-time constant.
+    const QString slAxis = vertical ? QStringLiteral("y") : QStringLiteral("x");
+    lines << (runtimePos
+                  ? QString("inline AI bool Click(const vec2<u16> at) {\n"
+                             "    const Rect r = rect;\n"
+                             "    if (!r.Contains(at)) return false;\n"
+                             "    DrawClick(static_cast<u8>(at.%1 - r.pos.%1));\n"
+                             "    return true;\n"
+                             "}").arg(slAxis)
+                  : QString("inline AI bool Click(const vec2<u16> at) {\n"
+                             "    if (!rect.Contains(at)) return false;\n"
+                             "    DrawClick(static_cast<u8>(at.%1 - rect.pos.%1));\n"
+                             "    return true;\n"
+                             "}").arg(slAxis));
 
     return lines.join("\n") + "\n";
 }
@@ -2852,6 +3047,16 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
         lines << QString("inline AI void Pass(const u8 payload) {\n"
                           "    components[0].func(payload);\n"
                           "}");
+
+        // The pointer half of the same thing, and the same shortcut: with one
+        // component there is nowhere for focus to move, so a hit needs no
+        // ::Focus call and the whole hook is that component's own Click().
+        // `index` is 0 and cannot be anything else -- Make() seeds it there
+        // and no Pass() above ever leaves it.
+        lines << QString("inline AI bool PassClick(const vec2<u16> at) {\n"
+                          "    return %1::Click(at);\n"
+                          "}")
+                     .arg(bareName(comps[0]));
         return lines.join("\n") + "\n";
     }
 
@@ -2881,6 +3086,82 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
                       "    components[from].func(payload);\n"
                       "}")
                  .arg(back, fwd);
+
+    // Moves the focus to a component chosen by INDEX, and repaints the ring
+    // that marks it.
+    //
+    // What ::Pass does on a direction press, minus the direction: Pass knows
+    // focus can only go one step either way and bakes that in, while a pointer
+    // can land anywhere, so the move has to be expressible as a destination.
+    // Both go through the same DrawUpdate() hook with the same two rects, so
+    // the ring cannot tell which drove it.
+    //
+    // Early-outs when the destination already has focus. That is not just an
+    // optimisation: DrawUpdate()'s contract is a MOVE, and an indicator that
+    // unpaints `last` before painting `current` (see genCanvasDecl's own
+    // DrawUpdate comment) would be handed the same rect twice and could blank
+    // what it then redraws. A scene wanting a cold paint has
+    // DrawComponentSelection() for it.
+    //
+    // Not bounds-checked, deliberately: nothing outside this namespace is
+    // meant to call it, and the one caller below passes a literal index from
+    // the generated chain. A `to >= size` guard would be dead code on every
+    // scene uitk emits.
+    lines << QString("inline AI void Focus(const u8 to) {\n"
+                      "    const u8 from = index;\n"
+                      "    if (from == to) return;\n"
+                      "\n"
+                      "    index = to;\n"
+                      "    const Rect last = *components[from].rect;\n"
+                      "    const Rect current = *components[to].rect;\n"
+                      "    DrawUpdate(last, current);\n"
+                      "}");
+
+    // The pointer hook, and the counterpart to ::Pass: one call a scene can
+    // hand a clicked point to without knowing which control is under it, or
+    // what kind of control it is.
+    //
+    // @p at is in TILE space -- plane tiles from the world origin, the space
+    // every component's `rect` is in. A caller holding a viewport pixel (what
+    // ::input::click reports) puts it there by adding the scroll its scene is
+    // read under and dividing by the tile size; the scroll is the scene's and
+    // cannot be known here (see demo/ui/impl/canvas.hpp's CanvasScroll).
+    //
+    // Unrolled direct calls, not a walk over `components[]`: that table
+    // carries rects and Pass() only, and giving it a Click() pointer per entry
+    // would cost ROM and force an out-of-line copy of every component's
+    // Click -- the same trade DrawComponents() already describes, and here
+    // there is likewise nothing to buy with it. Each component's Click() tests
+    // its own rect and so needs no entry in any table to be reachable.
+    //
+    // First claim wins, and the rest are not tested. Two components whose
+    // rects overlap is a layout the editor permits and this resolves in
+    // document order -- the same order ::Pass walks focus in, so a click
+    // behaves like the press the player could have reached that control with.
+    //
+    // ACTS FIRST, then moves the focus. A component's Click() has already
+    // repainted itself by the time ::Focus runs, which is the order an
+    // indicator that paints into the scene needs: the ring goes on over the
+    // component's own fresh tiles, where the reverse order would let the
+    // component's Draw() wipe it. For the demo's sprite ring the order is
+    // immaterial -- both land before the one OAM upload that frame -- and it
+    // costs nothing to be right for both.
+    //
+    // Reports whether ANY component took the point, so a scene can tell a
+    // click that hit this Canvas from one that landed in the gaps between its
+    // controls (the row a focus ring needs, the padding inside the Canvas's
+    // own rect) or on a different Canvas entirely. A scene with two of them
+    // offers the point to each in turn and stops at the first that says yes.
+    {
+        QStringList clickBody;
+        for (int i = 0; i < comps.size(); ++i) {
+            clickBody << QString("    if (%1::Click(at)) { Focus(%2); return true; }")
+                             .arg(bareName(comps[i]))
+                             .arg(i);
+        }
+        lines << QString("inline AI bool PassClick(const vec2<u16> at) {\n%1\n\n    return false;\n}")
+                     .arg(clickBody.join("\n"));
+    }
 
     return lines.join("\n") + "\n";
 }

@@ -73,13 +73,6 @@ static constexpr int CHANNELS    = 2;
 float *audio::pcm_buffer = nullptr;
 u32 audio::pcm_buffer_size = 0;
 
-// Every non-NES backend leaves ::sfxs/::nSfx undefined unless the app calls
-// ::SFX(...); this weak zero-entry default keeps the link working until it
-// does (mirrors the SDL3/Switch/Wii U/PSP backends), even though this backend
-// doesn't act on it (see the file header).
-__attribute__((weak)) extern const audio::sfx_t sfxs[1] = {};
-__attribute__((weak)) extern const u8 nSfx = 0;
-
 namespace {
 
 stb_vorbis *vorbis     = nullptr;
@@ -350,3 +343,5 @@ void audio::TrackPause(const u8 pause) {
 // See the file header: no non-NES SFX table exists in this project yet.
 void audio::SfxPlay(u8 /*index*/, u8 /*channel*/) {}
 void audio::SfxSamplePlay(u8 /*index*/) {}
+void audio::SfxStop(u8 /*channel*/) {}
+void audio::SfxPause(u8 /*channel*/, u8 /*pause*/) {}

@@ -7,8 +7,9 @@
 #   * cc65 (ca65)   -- assembles the FamiStudio sound engine. The Debian package
 #                      puts ca65 on PATH, which is where CMakeLists.txt looks for
 #                      it (find_program(CA65 ca65 ...) falls back to PATH).
-#   * FamiStudio CLI -- regenerates demo/audio/tracks/nes_audio.s from
-#                       demo/nes.fms (find_program(FAMISTUDIO ...) in
+#   * FamiStudio CLI -- regenerates demo/audio/tracks/nes_audio.s and the
+#                       build dir's sfx.s from demo/audio/bgm.fms and
+#                       demo/audio/sfx.fms (find_program(FAMISTUDIO ...) in
 #                       CMakeLists.txt). Runs fine headless off just the .NET
 #                       runtime -- the asm-export command never touches
 #                       audio/display, even though the bundled libglfw.so/

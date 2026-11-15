@@ -35,6 +35,40 @@ namespace ui::impl {
         return static_cast<u8>(width - 2);
     }
 
+    // Which handle position a CLICKED CELL means. @p cell is uitk's, counted
+    // from the rect's own anchor along the track (see a generated slider's
+    // DrawClick), and @p width is ::DrawSliderBody's whole footprint.
+    //
+    // The -1 is the cap: cell 0 is the left end graphic, so the first position
+    // the handle can occupy is cell 1, and an `amount` is therefore always one
+    // less than the cell it is drawn in (::DrawSliderHandle's own `pos + 1 +
+    // amt`). Without it every click would land the handle one cell to the
+    // RIGHT of the pointer -- visible on a short track, and worst exactly where
+    // a player aims most precisely, at the ends.
+    //
+    // Both caps resolve to the position nearest them rather than to nothing.
+    // A cap is not somewhere the handle may sit (::SliderTravel), but it is
+    // unambiguously a direction -- clicking the left end graphic can only mean
+    // "as far left as this goes" -- and travelling there is what a player who
+    // clicked it is asking for. Rejecting the click instead would make the two
+    // most obvious targets on the whole widget the only dead ones.
+    //
+    // This is also why a click needs its own mapping rather than sharing the
+    // one a nudge uses: ::DrawChange DROPS an out-of-range amount, which is
+    // right for a press walking off the end and wrong for a pointer aimed at
+    // it. The clamp lives here, so DrawChange keeps its guard and its meaning.
+    //
+    // A track with no travel at all (a 2-cell footprint: two caps and nothing
+    // between) has no position to name, so it answers 0 and ::DrawChange's
+    // guard rejects it -- the handle stays off a track that cannot hold one.
+    constexpr u8 SliderAmountForCell(const u8 width, const u8 cell) {
+        const u8 travel = SliderTravel(width);
+        if (!travel) return 0;
+        if (cell == 0) return 0;                                  // left cap
+        const u8 amt = static_cast<u8>(cell - 1);
+        return amt >= travel ? static_cast<u8>(travel - 1) : amt;  // right cap clamps
+    }
+
     // The two directions between a handle position and the proportion it
     // stands for: 0 at the left end, 100 at the right, linear in between. @p
     // width is ::DrawSliderBody's, i.e. the whole footprint, so the division is
@@ -180,6 +214,18 @@ namespace gen::options::audioCanvas {
             // no-op, so this call needs no guard of its own.
             audio::TrackVolume(ui::impl::SliderPercent(r.size.x, amt));
         }
+
+        // The pointer's way in, from the generated Click(). All the layout
+        // knowledge is in ::SliderAmountForCell -- which cell is a cap, and
+        // which handle position a cell stands for -- so this is the same
+        // DrawChange() a press makes, reached with the position the click
+        // named. Which means a click and a nudge share one repaint path, one
+        // guard and one volume push; only the way the amount was arrived at
+        // differs.
+        inline void DrawClick(const u8 cell) {
+            const Rect r = rect;
+            DrawChange(ui::impl::SliderAmountForCell(r.size.x, cell));
+        }
     }
 
     namespace SFXSlider {
@@ -221,6 +267,14 @@ namespace gen::options::audioCanvas {
             ui::impl::ClearSliderHandle<!vertical>(pos, last);
             amount = amt;
             ui::impl::DrawSliderHandle<!vertical>(pos, amt);
+        }
+
+        // See musicSlider::DrawClick -- same mapping, same reason it is per
+        // slider rather than shared: the hooks are duplicated in this file by
+        // design and only the layout MATHS is common.
+        inline void DrawClick(const u8 cell) {
+            const Rect r = rect;
+            DrawChange(ui::impl::SliderAmountForCell(r.size.x, cell));
         }
     }
 #endif

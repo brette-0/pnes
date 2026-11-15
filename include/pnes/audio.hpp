@@ -9,8 +9,10 @@
  * - **SDL3**: decodes PCM from disk and mixes it into a shared output
  *   buffer.
  *
- * Application code should use the ::TRACKS and ::SFX macros to register
- * assets at file scope, then call the play/update helpers at runtime.
+ * Application code defines ::tracks (and its ::nTracks count off-NES) at file
+ * scope itself, registers effects with ::audio::SetSfx off-NES (on the NES the
+ * backend names the effect bank itself), then calls the play/update helpers at
+ * runtime.
  */
 #pragma once
 #include <intsh>
@@ -32,41 +34,98 @@ using namespace br0::intsh;
  * needs to know that either -- see famistudio.cpp's own header comment.
  */
 
+/**
+ * @brief Marks an entry point the current backend cannot honour.
+ *
+ * Expands to a function attribute that warns AT THE CALL SITE, so it costs
+ * nothing unless the call actually exists -- unlike a `#warning`, which fires
+ * on every translation unit that merely includes this header, or a runtime
+ * log, which would spend ROM on a function whose whole body is a no-op.
+ * Empty where the backend does implement the call, and empty where the
+ * compiler has no such attribute.
+ */
+#if defined(TARGET_NES) && defined(__has_attribute)
+#  if __has_attribute(warning)
+#    define PNES_SFX_UNSUPPORTED __attribute__((warning( \
+         "this NES audio driver cannot stop or pause an effect: FamiStudio's " \
+         "engine has no entry point for it, so the call does nothing -- see " \
+         ".ignore/famistudio-sfx-stop/NOTES.md")))
+#  endif
+#endif
+#ifndef PNES_SFX_UNSUPPORTED
+#  define PNES_SFX_UNSUPPORTED
+#endif
+
 namespace audio {
 
+#ifndef TARGET_NES
 /**
  * @brief A single music track.
  *
- * On the NES, a track is a pointer to FamiStudio song data baked into
- * ROM. On desktop builds, a track is a filesystem path plus a loop
- * point expressed as a byte offset (0 means "loop the whole song").
+ * A filesystem path plus a loop point expressed as a byte offset (0 means
+ * "loop the whole song").
+ *
+ * NO NES FORM, for the same reason ::sfx_t has none: it used to carry a
+ * `pTracks` pointer under `#ifdef TARGET_NES`, but nothing on the NES ever
+ * read a ::music_t. Songs there are not a table -- ::tracks is a single
+ * pointer at one FamiStudio export holding every song, and
+ * ::TrackPlay's index selects within that export, not within an array
+ * this library knows about.
  */
 typedef struct {
-#ifdef TARGET_NES
-    const u8 *pTracks;       /**< Pointer to FamiStudio song data in ROM. */
-#else
     const char* fp;               /**< Filesystem path to the PCM/ogg/wav source. */
     float    loop_start;          /**< Byte offset where the loop begins (0 = loop the whole song). */
-#endif
 } music_t;
 
 /**
  * @brief A single sound effect.
  *
- * NES effects reference two FamiStudio sound banks (regular and
- * sample). Desktop/console-port effects are a filesystem path to a
- * one-shot PCM/ogg/wav source, mirroring ::music_t's desktop shape;
- * each backend decodes it once at init into its own internal mixing
- * buffer, the same way it does for ::tracks.
+ * A filesystem path to a one-shot PCM/ogg/wav source, mirroring ::music_t's
+ * desktop shape; each backend decodes it once at init into its own internal
+ * mixing buffer, the same way it does for ::tracks.
+ *
+ * THERE IS NO NES FORM OF THIS TYPE, and there never was a working one. It
+ * used to carry `pSFX` and `pSSFX` under `#ifdef TARGET_NES` -- the regular
+ * and sample FamiStudio banks -- but nothing on the NES ever read a ::sfx_t:
+ * effects there are not a per-effect table at all, just the one engine-wide
+ * `sounds` bank that src/nes/audio/famistudio.cpp names for itself. The
+ * second pointer was wrong in shape besides, since famistudio_sfx_init takes
+ * one bank and the engine reaches DPCM samples through the MUSIC data it was
+ * initialised with, not through anything per-effect.
  */
 typedef struct {
-#ifdef TARGET_NES
-    const u8* pSFX;          /**< Pointer to the FamiStudio SFX bank. */
-    const u8* pSSFX;         /**< Pointer to the FamiStudio sample-SFX bank. */
-#else
     const char* fp;          /**< Filesystem path to the PCM/ogg/wav source. */
-#endif
 } sfx_t;
+#endif
+
+/**
+ * @brief How many sound effects this platform can play at once.
+ *
+ * The ::SfxPlay channel argument is a slot index, so the valid range is
+ * `0 .. sfxChannels - 1`. NOTHING CHECKS IT, on any backend worth relying on:
+ * the NES driver passes it straight to the engine, and the backends that do
+ * guard it drop the call silently, which is no more useful. The number is
+ * published here so callers can be written against it -- `static_assert`, a
+ * channel enum, a compile-time round-robin -- rather than guess it.
+ *
+ * IT DIFFERS BY PLATFORM, DELIBERATELY. On the NES it is the engine's stream
+ * count, configured once as PNES_SFX_STREAMS (see CMakeLists.txt, which feeds
+ * the same number to demo/famistudio_config.s so the two cannot disagree).
+ * Elsewhere it is the fixed voice-slot count the mixing backends allocate.
+ * These are not the same quantity and are not worth forcing to agree: an APU
+ * stream costs the NES real channel hardware, while a desktop voice costs a
+ * cursor and an add.
+ */
+#ifdef TARGET_NES
+#if !defined(FAMISTUDIO_CFG_SFX_STREAMS)
+#error "FAMISTUDIO_CFG_SFX_STREAMS is not defined. CMakeLists.txt passes it \
+as a compile definition, derived from PNES_SFX_STREAMS -- the same value it \
+feeds to the engine's own config. audio::sfxChannels cannot be honest without it."
+#endif
+constexpr u8 sfxChannels = FAMISTUDIO_CFG_SFX_STREAMS;
+#else
+constexpr u8 sfxChannels = 4;
+#endif
 
 } // namespace audio
 
@@ -77,87 +136,100 @@ extern float *pcm_buffer;
 /** @brief Size of ::pcm_buffer, in samples. */
 extern u32 pcm_buffer_size;
 }
-/** @brief Application-defined track table; defined via ::TRACKS. */
+/**
+ * @brief Application-defined track table.
+ *
+ * DEFINED BY THE APPLICATION, in ordinary C++ -- there is no macro for it.
+ * One array of ::audio::music_t and its count, at file scope, once:
+ *
+ * @code
+ *   const audio::music_t tracks[] = {
+ *     { "assets/title.ogg", 0.0f },
+ *     { "assets/stage1.ogg", 12.5f },
+ *   };
+ *   const u8 nTracks = sizeof(tracks) / sizeof(audio::music_t);
+ * @endcode
+ *
+ * There used to be a ::TRACKS macro wrapping exactly those two lines. It was
+ * removed because it wrapped them DIFFERENTLY per platform -- the NES build's
+ * version took a symbol and defined a pointer, nothing like a table -- so one
+ * name meant two unrelated things and hid which one a project was getting. A
+ * plain definition is self-evident, and the count is one obvious line.
+ */
 extern const audio::music_t tracks[];
 /** @brief Number of entries in ::tracks. */
 extern const u8 nTracks;
 
 /**
- * @brief Declares the application's track table (desktop build).
+ * @brief The registered SFX table, and its entry count.
  *
- * Expands to definitions of ::tracks and ::nTracks. Use once at file
- * scope with a brace-enclosed list of ::audio::music_t initialisers.
+ * LIBRARY STATE, NOT APPLICATION API. These are owned by src/all/audio.cpp
+ * and written only by ::audio::SetSfx; they are declared here because every
+ * backend reads them from its own translation unit. An application never
+ * defines or assigns them -- it calls ::audio::SetSfx and the table it passes
+ * is the one these point at.
  *
- * @code
- *   TRACKS(
- *     { "assets/title.ogg", 0.0f },
- *     { "assets/stage1.ogg", 12.5f },
- *   )
- * @endcode
+ * A POINTER AND A COUNT, not an array and a sizeof. There used to be an ::SFX
+ * macro that defined `sfxs[]`/`nSfx` in the application, plus a weak
+ * zero-entry default in every backend to keep the link working for apps that
+ * never invoked it. Registration replaces both: nothing is weak, nothing is
+ * defined twice, and an app with no effects simply never calls ::SetSfx --
+ * the pointer stays null and the count stays zero.
+ *
+ * Both are null/zero until ::SetSfx runs, so every reader must bound-check
+ * against ::nSfx before indexing ::sfxs.
  */
-#define TRACKS(...)                         \
-    const audio::music_t  tracks[] = {__VA_ARGS__ }; \
-    const u8 nTracks = sizeof(tracks) / sizeof(audio::music_t);
-
-/** @brief Application-defined SFX table; defined via ::SFX. Each backend
- *         provides a weak zero-entry default, so apps that declare no SFX
- *         still link. */
-extern const audio::sfx_t sfxs[];
-/** @brief Number of entries in ::sfxs. */
-extern const u8 nSfx;
-
-/**
- * @brief Declares the application's one-shot SFX table (desktop/console-port build).
- *
- * Expands to definitions of ::sfxs and ::nSfx. Use once at file scope with
- * a brace-enclosed list of ::audio::sfx_t initialisers.
- *
- * @code
- *   SFX(
- *     { "assets/jump.wav" },
- *     { "assets/hit.wav" },
- *   )
- * @endcode
- */
-#define SFX(...)                            \
-    const audio::sfx_t sfxs[] = {__VA_ARGS__ }; \
-    const u8 nSfx = sizeof(sfxs) / sizeof(audio::sfx_t);
+extern const audio::sfx_t* sfxs;
+/** @brief Number of entries in ::sfxs; zero until ::audio::SetSfx runs. */
+extern u8 nSfx;
 #else
-/** @brief Pointer to the FamiStudio music bank (NES build). */
-extern const u8* tracks;
-/** @brief Pointer to the FamiStudio SFX bank (NES build). */
-extern const u8* sfx;
 /**
- * @brief Binds a FamiStudio music bank for the NES build.
+ * @brief Pointer to the FamiStudio music bank (NES build).
  *
- * Expands to a plain global definition with NO placement of its own -- this
- * header owns no memory. Prefix the invocation with whatever placement
- * keyword the project's mapper defines (e.g. mmc3.hpp's ::CARTMEM/::SYSMEM),
- * so the project decides where these two bytes live, same as it decides for
- * everything else it defines:
+ * DEFINED BY THE APPLICATION, in ordinary C++ -- there is no macro for it.
+ * The export's own symbol is named after the FamiStudio project, so only the
+ * project can name it:
  *
- *     CARTMEM TRACKS(_music_data);
+ *     extern const u8 _music_data_my_songs[];
+ *     CARTMEM const u8* const tracks = _music_data_my_songs;
  *
- * With no prefix at all, the pointer falls through to whatever the linker
- * script's default rule catches -- a project choice made in its own link.ld,
- * never a default this header picks for you.
+ * THE PLACEMENT KEYWORD IS NOT OPTIONAL DECORATION, and this header owns no
+ * memory: prefix the definition with whatever the project's mapper defines
+ * (e.g. mmc3.hpp's ::CARTMEM/::SYSMEM) so the project decides where these two
+ * bytes live, same as it decides for everything else it defines. With no
+ * prefix the pointer falls through to whatever the linker script's default
+ * rule catches -- a project choice made in its own link.ld, never a default
+ * this header picks.
  *
- * @param ptr Symbol or address of the FamiStudio music export.
+ * THE POINTER ITSELF IS const, not merely the bytes it points at, and that is
+ * load-bearing. audio::Init hands this value to famistudio_init through an
+ * inline-asm "i" (immediate) operand, so it has to be a link-time constant
+ * that folds into `ldx #<` / `ldy #>`. A mutable pointer only folds as far as
+ * the optimiser can prove nothing writes it -- true today, but true by luck.
+ * Top-level const makes it a guarantee, and makes a stray assignment a
+ * compile error instead of a silently de-optimised immediate.
+ *
+ * WHICH IS ALSO WHY THE DECLARATION ABOVE MATTERS. A namespace-scope const
+ * object has internal linkage by default; it gets external linkage here only
+ * because this `extern` declaration precedes the definition. Define ::tracks
+ * without including this header first and it becomes a private copy, leaving
+ * the real symbol undefined at link time.
+ *
+ * A runtime setter is the other thing this rules out: the pointer would become
+ * RAM the engine must load through, and "assign before Init" an unenforced
+ * ordering contract instead of a link-time fact.
  */
-#define TRACKS(ptr)                     \
-    const u8* tracks = (const u8*)(ptr)
+extern const u8* const tracks;
 
-/**
- * @brief Binds a FamiStudio SFX bank for the NES build.
- *
- * Same placement contract as ::TRACKS -- prefix with a placement keyword:
- *
- *     CARTMEM SFX(_sounds);
- *
- * @param ptr Symbol or address of the FamiStudio SFX export.
+/* THERE IS NO `sfx` HERE, deliberately, and the asymmetry with ::tracks above
+ * is the whole point. FamiStudio hardcodes its sound-effect symbol -- always
+ * `sounds`, exported as `_sounds`, whatever the project is called -- so the
+ * backend can name it without being told, and src/nes/audio/famistudio.cpp
+ * does exactly that, privately. The music symbol carries the project's name
+ * (`music_data_<project>`), so only the project can name that one, which is
+ * why ::tracks stays an extern the application defines.
  */
-#define SFX(ptr)                        \
-    const u8* sfx = (const u8*)(ptr)
+
 
 #endif
 
@@ -224,10 +296,90 @@ void TrackVolume(u8 percent);
 void SfxPlay(u8 index, u8 channel) ;
 
 /**
- * @brief Plays a sample-based sound effect (DPCM on NES).
- * @param index SFX sample index.
+ * @brief Stops the effect on a channel, discarding its position.
+ *
+ * NOT SUPPORTED ON THE NES, and a call site there gets a compiler warning via
+ * ::PNES_SFX_UNSUPPORTED rather than silence. FamiStudio's engine exposes
+ * eight entry points and not one of them cancels an effect -- music gets
+ * ::TrackStop and ::TrackPause, effects get nothing, so the NES driver is a
+ * no-op by necessity, not by choice. Workarounds exist and are written up in
+ * .ignore/famistudio-sfx-stop/NOTES.md; a different NES audio driver could
+ * implement this for real, which is why it lives in the API rather than only
+ * in the backends that manage it.
+ *
+ * Elsewhere it is exact: the channel's voice slot is released and the effect
+ * stops at once. Stopping an idle channel does nothing and is not an error.
+ *
+ * @param channel Slot to stop, `0 .. sfxChannels - 1`. Unchecked.
+ */
+PNES_SFX_UNSUPPORTED void SfxStop(u8 channel);
+
+/**
+ * @brief Pauses or resumes the effect on a channel, keeping its position.
+ *
+ * Same NES caveat as ::SfxStop, and the same warning on a call site there.
+ * Note that pause is the weaker loss on the NES even in principle: effects
+ * are a handful of frames each, so a paused one is indistinguishable from a
+ * stopped one.
+ *
+ * Elsewhere the voice keeps its cursor while paused and resumes from it, so
+ * it is distinct from ::SfxStop. Pausing an idle channel does nothing.
+ *
+ * @param channel Slot to act on, `0 .. sfxChannels - 1`. Unchecked.
+ * @param pause   Non-zero to pause, zero to resume.
+ */
+PNES_SFX_UNSUPPORTED void SfxPause(u8 channel, u8 pause);
+
+/**
+ * @brief Plays a sample-based sound effect.
+ *
+ * ON THE NES THIS IS A GENUINELY DIFFERENT ROUTINE, not ::SfxPlay with a
+ * fixed channel: it calls the engine's DPCM entry point, which drives the DMC
+ * channel. @p index therefore selects from the DPCM SAMPLE LIST the engine
+ * was initialised with -- carried by the MUSIC export, not the SFX export --
+ * so it is NOT an index into the same table ::SfxPlay uses. It is a no-op
+ * unless FAMISTUDIO_CFG_DPCM_SUPPORT is enabled.
+ *
+ * EVERYWHERE ELSE THERE IS NO SEPARATE SAMPLE BANK: every effect is already a
+ * decoded one-shot. The backends that implement it forward to
+ * ::SfxPlay(index, 1), so @p index means the same thing it does there, and the
+ * silent stubs ignore it. Portable code that wants one sound on both should
+ * therefore call ::SfxPlay, and reserve this for a NES build's DPCM effects.
+ *
+ * @param index DPCM sample index on the NES; an ::sfxs index elsewhere.
  */
 void SfxSamplePlay(u8 index);
+
+#ifndef TARGET_NES
+/**
+ * @brief Registers the application's one-shot SFX table.
+ *
+ * CALL IT BEFORE ::Init, NOT AFTER. Backends that decode their effects up
+ * front do so inside ::Init, reading whatever this has registered; register
+ * nothing and they load nothing, and no later call makes them go back. The
+ * table itself must outlive every audio call, so it is normally a file-scope
+ * array, never a local:
+ *
+ * @code
+ *   constexpr audio::sfx_t mySfx[] = {
+ *     { "assets/jump.wav" },
+ *     { "assets/hit.wav" },
+ *   };
+ *   audio::SetSfx(mySfx, std::size(mySfx));
+ *   audio::Init();
+ * @endcode
+ *
+ * NOT DECLARED ON THE NES, where the effect bank is a ROM symbol the backend
+ * names for itself -- see the ::tracks comment above for why that works for
+ * effects and not for music. Portable code guards the call with
+ * `#ifndef TARGET_NES`, the same way it already guards the table.
+ *
+ * @param table Entries to register, or nullptr for none. Not copied: the
+ *              caller keeps ownership and must keep it alive.
+ * @param count Number of entries in @p table.
+ */
+void SetSfx(const sfx_t* table, u8 count);
+#endif
 
 /**
  * @brief Initializes the audio backend; must be called before any other audio function.

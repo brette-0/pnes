@@ -22,12 +22,6 @@ static int music_paused = 0;
 // opened the stream -- ::OpenAudioStreams applies it on the way out.
 static u8 music_volume = 100;
 
-// Every non-NES backend leaves ::sfxs/::nSfx undefined unless the app calls
-// ::SFX(...); this weak zero-entry default keeps the link working until it
-// does (mirrors the same trick used on the Switch/Wii U ports).
-__attribute__((weak)) extern const audio::sfx_t sfxs[1] = {};
-__attribute__((weak)) extern const u8 nSfx = 0;
-
 // One-shot SFX PCM, converted to the same F32LE/2ch/48kHz format as music
 // and concatenated into its own buffer (kept separate from pcm_buffer so
 // loading zero SFX costs nothing).
@@ -45,8 +39,15 @@ static SDL_AudioStream *sfx_stream = nullptr;
 // A channel is a fixed voice slot: playing a new SFX on a busy channel cuts
 // the old one off, same as FamiStudio's own SFX engine on the NES. Voices
 // mix additively in UpdateSfx() below.
-static constexpr int N_SFX_VOICES = 4;
-struct sfx_voice_t { u32 pos; u32 end; bool active; };
+// The voice-slot count, taken from audio.hpp rather than declared here, so
+// the number this backend allocates is the same one audio::sfxChannels
+// publishes to callers -- see its comment on why it differs from the NES's.
+static constexpr int N_SFX_VOICES = audio::sfxChannels;
+// `paused` is a separate flag and not the absence of `active`, because
+// clearing `active` is already how a voice reports that it FINISHED -- the
+// mixer drops it and the cursor goes with it. A pause has to keep the cursor
+// to be distinguishable from audio::SfxStop.
+struct sfx_voice_t { u32 pos; u32 end; bool active; bool paused; };
 static sfx_voice_t sfx_voices[N_SFX_VOICES];
 
 static u32 track_offsets[256];
@@ -202,6 +203,22 @@ void audio::SfxSamplePlay(const u8 index) {
     SfxPlay(index, 1);
 }
 
+// Exact here, unlike the NES driver: a voice is a cursor this backend owns, so
+// releasing or freezing one is local state (see audio.hpp's ::SfxStop on why
+// the NES cannot). Both ignore an out-of-range channel rather than clamping
+// into someone else's slot; the range is audio::sfxChannels.
+void audio::SfxStop(const u8 channel) {
+    if (channel >= N_SFX_VOICES) return;
+    sfx_voices[channel].active = false;
+    sfx_voices[channel].paused = false;
+}
+
+void audio::SfxPause(const u8 channel, const u8 pause) {
+    if (channel >= N_SFX_VOICES) return;
+    sfx_voices[channel].paused = pause != 0;
+}
+
+
 // Sum every active voice into one chunk and push it to sfx_stream (a second
 // device stream, mixed with music_stream by the OS/SDL the same way two
 // independent audio sources ever mix -- additively, at the device).
@@ -214,7 +231,7 @@ static void UpdateSfx() {
         bool any_active = false;
 
         for (auto &v : sfx_voices) {
-            if (!v.active) continue;
+            if (!v.active || v.paused) continue;
             any_active = true;
             const u32 avail = v.end - v.pos;
             const u32 take = avail < static_cast<u32>(CHUNK_FLOATS) ? avail : static_cast<u32>(CHUNK_FLOATS);

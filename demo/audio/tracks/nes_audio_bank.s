@@ -1,11 +1,11 @@
 ; Places the exported FamiStudio song data into its own PRG-ROM bank.
 ;
 ; demo/audio/tracks/nes_audio.s is a GENERATED artifact (re-exported from
-; demo/nes.fms on every build, see CMakeLists.txt) and carries no .segment
-; directive of its own, so its data would otherwise land in ca65's default
-; CODE segment and be merged into ordinary .text. This wrapper is the seam:
-; it opens the target segment and pulls the generated file in, leaving the
-; generator's output untouched and re-exportable.
+; demo/audio/bgm.fms on every build, see CMakeLists.txt) and carries no
+; .segment directive of its own, so its data would otherwise land in
+; ca65's default CODE segment and be merged into ordinary .text. This
+; wrapper is the seam: it opens the target segment and pulls the generated
+; file in, leaving the generator's output untouched and re-exportable.
 ;
 ; _pprg__rom__music decodes to the ELF section ".prg_rom_music" -- ld.lld's
 ; XO65 reader reads '_' as an escape ('_p' -> '.', '__' -> a literal '_'); see

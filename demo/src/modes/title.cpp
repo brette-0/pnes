@@ -68,6 +68,30 @@ namespace title {
     // does.
     static atomic u8 canvasInput = 0;
 
+    // The frame's CLICK for the options page: posted by the input loop, spent
+    // by ::nmi_handler_locked, in plane TILE space (see ::ClickTile).
+    //
+    // Posted rather than spent in the loop for ::canvasInput's reason exactly
+    // -- a component's Click() repaints itself, and a button's repaint writes
+    // the nametable, which on NES is only legal in vblank. The ring the click
+    // then moves is sprite work and would not need the wait; the component's
+    // own tiles are what does.
+    //
+    // Three scalars and not one `atomic vec2<u16>`: `atomic` is `volatile` on
+    // every C++ build (technology.hpp), and a volatile ::vec2 can neither be
+    // copied out nor assigned without going through its volatile operator=
+    // field by field. The focus ring's own cross-boundary state is split the
+    // same way and for the same reason (ui::impl::ringLeft and friends).
+    //
+    // A pending flag rather than a sentinel coordinate: (0,0) is a real tile,
+    // and on a dual-screen target it is a real tile of the page. Nothing else
+    // can stand in for "no click this frame" -- which is also why
+    // ::input::click reports a flag of its own instead of parking its position
+    // somewhere impossible.
+    static atomic u16  canvasClickX = 0;
+    static atomic u16  canvasClickY = 0;
+    static atomic bool canvasClickPending = false;
+
     // Auto-repeat, for the two bits a Canvas spends on a component's own axis.
     //
     // A slider is adjusted by LEFT/RIGHT, and a press strobe gives exactly one
@@ -539,29 +563,124 @@ namespace title {
         return held;
     }
 
+#if TARGET_GC
+    // The widescreen button's bit, as one call both spenders below read it
+    // through. uitk's generated Pass()/Click() flip the bit and repaint the
+    // box -- that is the whole of what either can do, because the ENGINE-side
+    // consequence of the flip is the game's to own (video.hpp's
+    // SetWidescreen: the GameCube is told, not asked). So it is noticed by
+    // comparing the bit across the call, wherever that call is made.
+    //
+    // Not hooked in the button's own Draw() in ui/impl/buttons.hpp, which is
+    // the other place hand-written code meets this button: that runs on every
+    // ordinary repaint of the panel, including the repaint this very change
+    // performs, and re-striding VRAM from inside a paint call would be both
+    // wrong and re-entrant.
+    static bool WidescreenBit() {
+        return gen::options::videoCanvas::enableWidescreenButton::Enabled();
+    }
+#endif
+
     static void SpendCanvasInput() {
         const u8 payload = canvasInput;
         if (!payload) return;
         canvasInput = 0;
 #if TARGET_GC
-        // The widescreen bit BEFORE the press. uitk's generated Pass() flips
-        // the bit and repaints the box -- that is the whole of what it can do,
-        // because the ENGINE-side consequence of the flip is the game's to
-        // own (video.hpp's SetWidescreen: the GameCube is told, not asked). So
-        // it is noticed here, at the one place a component press is ever
-        // spent, by comparing the bit across the call.
-        //
-        // Not hooked in the button's own Draw() in ui/impl/buttons.hpp, which
-        // is the other place hand-written code meets this button: that runs on
-        // every ordinary repaint of the panel, including the repaint this very
-        // change performs, and re-striding VRAM from inside a paint call would
-        // be both wrong and re-entrant.
-        const bool wideBefore = gen::options::videoCanvas::enableWidescreenButton::Enabled();
+        const bool wideBefore = WidescreenBit();
 #endif
         pOptionsPass(payload);
 #if TARGET_GC
-        if (const bool wideNow = gen::options::videoCanvas::enableWidescreenButton::Enabled();
-            wideNow != wideBefore) {
+        if (const bool wideNow = WidescreenBit(); wideNow != wideBefore) {
+            ApplyWidescreenChange(wideNow);
+        }
+#endif
+    }
+
+    // Where the pointer is, in the plane TILE space every generated node's
+    // `rect` is in -- which is what a Canvas's PassClick() and every
+    // component's Click() compare against.
+    //
+    // ::input::click reports viewport pixels; a plane coordinate is that plus
+    // the scroll those rows are read under, divided down by the tile size. The
+    // scroll comes from ui::impl::CanvasScroll rather than being recomputed
+    // here on purpose: that is the exact value the focus ring's own forward
+    // transform uses to decide where a component APPEARS
+    // (ui::impl::SelectComponent's `pos.x * 8 - scroll.x`), so taking it from
+    // the same place is what guarantees the point this resolves to is the
+    // component the player can see under their finger. Two copies of that
+    // scroll could disagree; one cannot.
+    //
+    // The add comes BEFORE the shift, which is the whole of why this is exact
+    // rather than approximate. Every rect is tile-ALIGNED in plane space, so
+    // flooring a plane pixel lands in the tile that contains it and the test
+    // is lossless at the edges. Shifting first -- `(px >> 3) + (scroll >> 3)`
+    // -- would quantize the scroll separately and lose up to a whole tile
+    // whenever it is not a multiple of 8, which on a scrolled page is most of
+    // the time.
+    static vec2<u16> ClickTile() {
+        const vec2<u16> px = input::click.Get();
+        const vec2<u16> scroll = ui::impl::CanvasScroll();
+        return { static_cast<u16>((px.x + scroll.x) >> 3),
+                 static_cast<u16>((px.y + scroll.y) >> 3) };
+    }
+
+    // Hands the page over to the Canvas a click landed in.
+    //
+    // A click does not navigate: it arrives at a component directly, whichever
+    // column that component is in and whether or not the d-pad had entered a
+    // column at all. So this does what the two presses it replaces would have
+    // done between them -- the LEFT/RIGHT that selects the column, and the A
+    // that steps into it -- and does them from the destination rather than
+    // towards it.
+    //
+    // The ring is only re-placed when it is actually in the wrong place. The
+    // generated Focus() has already moved it if the click changed which
+    // component holds focus WITHIN this Canvas, so the cases left are the ones
+    // it cannot know about: the corners were bracketing the column's own [R]
+    // rect rather than a component (not yet entered), or they were bracketing a
+    // component of the OTHER column. Both are placements this page owns, not
+    // the Canvas.
+    static void EnterCanvasFromClick(void (* const pass)(u8)) {
+        const bool switched = pOptionsPass != pass;
+        pOptionsPass = pass;
+        if (switched || !canvasEntered) {
+            canvasEntered = true;
+            SelectFocusedComponent();
+        }
+    }
+
+    // Spends what the loop posted, in vblank -- see ::canvasClickPending.
+    //
+    // Both Canvases are offered the point, in page order, and the first to
+    // claim it wins: a point is in at most one of them, and a point in neither
+    // (the gap between the two columns, a heading, the frame around the page)
+    // is a click on nothing and leaves the page exactly as it was. That is why
+    // PassClick() reports whether it took the point -- without it this could
+    // not tell "nothing there" from "handled".
+    //
+    // Deliberately not routed through ::pOptionsPass the way
+    // ::SpendCanvasInput is. That pointer is which column the D-PAD is on, and
+    // a click is not required to respect it -- the whole point of a pointer is
+    // that it reaches the other column without walking there first. So the
+    // click picks the Canvas and the pointer follows it, rather than the other
+    // way around.
+    static void SpendCanvasClick() {
+        if constexpr (!input::has_click) return;
+
+        if (!canvasClickPending) return;
+        canvasClickPending = false;
+
+        const vec2<u16> at{canvasClickX, canvasClickY};
+#if TARGET_GC
+        const bool wideBefore = WidescreenBit();
+#endif
+        if (gen::options::videoCanvas::PassClick(at)) {
+            EnterCanvasFromClick(gen::options::videoCanvas::Pass);
+        } else if (gen::options::audioCanvas::PassClick(at)) {
+            EnterCanvasFromClick(gen::options::audioCanvas::Pass);
+        }
+#if TARGET_GC
+        if (const bool wideNow = WidescreenBit(); wideNow != wideBefore) {
             ApplyWidescreenChange(wideNow);
         }
 #endif
@@ -842,7 +961,43 @@ namespace title {
                 // and the sliders is the one thing this layout cannot do, so it
                 // doesn't: outside a Canvas they switch columns, inside one they
                 // reach the slider.
-                if (!canvasEntered) {
+                //
+                // A click is offered the page FIRST, and only on a frame the
+                // controller said nothing: the two are alternative ways to
+                // reach the same controls, and a frame that carries both is a
+                // player whose thumb and finger disagree. Deferring to the
+                // controller is the safer of the two readings -- a press is
+                // unambiguous about which control it means (whatever has
+                // focus), where a click still has to be resolved against a
+                // layout.
+                //
+                // `repeated` is in the guard as well as `pressed`. A held
+                // direction walking a slider's handle produces no strobe on
+                // most of its frames (see ::CanvasRepeat), so testing the
+                // strobe alone would let a stray touch land in the middle of a
+                // deliberate adjustment.
+                //
+                // Posted, not spent: ::SpendCanvasClick does the work in
+                // vblank. See ::canvasClickPending.
+                //
+                // `if constexpr` so this costs nothing at all on a target with
+                // no pointing device -- `clickPosted` is then a false constant
+                // and the branch below is the only one left (pnes/input.hpp,
+                // ::input::has_click).
+                bool clickPosted = false;
+                if constexpr (input::has_click) {
+                    if (!pressed && !repeated && input::click.Down()) {
+                        const vec2<u16> at = ClickTile();
+                        canvasClickX = at.x;
+                        canvasClickY = at.y;
+                        canvasClickPending = true;
+                        clickPosted = true;
+                    }
+                }
+
+                if (clickPosted) {
+                    // Nothing more this frame: the click owns it.
+                } else if (!canvasEntered) {
                     if (pressed & (input::LEFT | input::RIGHT)) {
                         pOptionsPass = (pressed & input::LEFT) ? gen::options::videoCanvas::Pass
                                                                : gen::options::audioCanvas::Pass;
@@ -1239,6 +1394,12 @@ namespace title {
         // Before the upload, so a focus move's corners and a component's own
         // repaint both land on the frame the press was made.
         SpendCanvasInput();
+        // Beside the press for the same reason the press is here: a click
+        // repaints a component's own tiles, and on NES that is vblank work.
+        // After it, so a frame carrying both spends the press first -- which
+        // cannot happen (the loop posts at most one of the two, see ::main)
+        // but costs nothing to make true in the order as well.
+        SpendCanvasClick();
         oam::RefreshSprites(OAMBuffer);
 
         // ::kUiOnOwnPanel: the options panel is NOT the whole frame here. It

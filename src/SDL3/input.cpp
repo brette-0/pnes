@@ -1,6 +1,13 @@
-﻿#include <SDL3/SDL.h>
-#include <pnes/input.hpp>
+﻿// internal.hpp FIRST, which is the order every other backend's input.cpp
+// already uses. It pulls in <atomic>, and ::atomic is a MACRO on every engine
+// header's side (technology.hpp: `volatile` on NES, `_Atomic` elsewhere, and
+// pnes/input.hpp and pnes/video.hpp both reach it) -- so a pnes header seen
+// first turns libstdc++'s own `std::atomic` declarations into syntax errors.
 #include "internal.hpp"
+
+#include <SDL3/SDL.h>
+#include <pnes/input.hpp>
+#include <pnes/video.hpp>
 
 
 static SDL_Gamepad *gamepads[2] = {nullptr};
@@ -75,4 +82,37 @@ static u8 read_gamepad(SDL_Gamepad *pad) {
 void input::PollControllers(u8* port1, u8* port2) {
     *port1 = read_gamepad(gamepads[0]);
     *port2 = read_gamepad(gamepads[1]);
+
+    // The mouse fills ::input::click. The window is the only scale involved:
+    // present_frame() blits the whole viewport texture to the whole window
+    // (SDL_RenderTexture with a null destination rect, video.cpp), so there is
+    // no letterbox to subtract and window space maps to viewport space by a
+    // plain ratio. Whenever that blit gains a destination rect, this is the
+    // other half that has to learn about it.
+    //
+    // Position is read whether or not a button is down, unlike every touch
+    // backend: a mouse always has one, and ::input::Click::Set keeps it so a
+    // game can follow the pointer without a click (see ::input::Click::Get).
+    float mx = 0.0f, my = 0.0f;
+    const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&mx, &my);
+
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(window, &ww, &wh);
+
+    vec2<u16> at{0, 0};
+    if (ww > 0 && wh > 0) {
+        // Clamped at both ends: the pointer is reported outside the window
+        // while a drag is in progress, and SDL hands back negative values for
+        // it. Clamping to the last pixel rather than the width keeps the
+        // result inside the viewport, which is where every rect a hit test
+        // could match lives.
+        const float sx = mx * static_cast<float>(video::viewport_px()) / static_cast<float>(ww);
+        const float sy = my * static_cast<float>(video::viewport_py()) / static_cast<float>(wh);
+        const u32 x = sx < 0.0f ? 0u : static_cast<u32>(sx);
+        const u32 y = sy < 0.0f ? 0u : static_cast<u32>(sy);
+        at = {static_cast<u16>(x < video::viewport_px() ? x : video::viewport_px() - 1),
+              static_cast<u16>(y < video::viewport_py() ? y : video::viewport_py() - 1)};
+    }
+
+    input::click.Set(at, (buttons & SDL_BUTTON_LMASK) != 0);
 }

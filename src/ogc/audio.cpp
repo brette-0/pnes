@@ -206,3 +206,5 @@ void audio::TrackVolume(const u8 percent) {
 // than building an unused decode path for a table that's currently empty.
 void audio::SfxPlay(u8 /*index*/, u8 /*channel*/) {}
 void audio::SfxSamplePlay(u8 /*index*/) {}
+void audio::SfxStop(u8 /*channel*/) {}
+void audio::SfxPause(u8 /*channel*/, u8 /*pause*/) {}

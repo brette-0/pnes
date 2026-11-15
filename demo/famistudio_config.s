@@ -77,7 +77,18 @@ FAMISTUDIO_CFG_NTSC_SUPPORT = 1 - REGION
 FAMISTUDIO_CFG_PAL_SUPPORT  = REGION
 FAMISTUDIO_CFG_DPCM_SUPPORT = 1
 FAMISTUDIO_CFG_SFX_SUPPORT  = 1
-FAMISTUDIO_CFG_SFX_STREAMS  = 2
+; PNES_SFX_STREAMS comes in from CMake (-D PNES_SFX_STREAMS=<n>), the SAME
+; value it hands the C++ side as audio::sfxChannels -- the third of this
+; file's CMake-fed values, and fed in for the same reason as the other two:
+; it is not a free choice of this file's, because both sides have to agree on
+; how many streams exist. Pick 3 here while the library still believes 2 and
+; a project's third channel addresses a stream the engine never allocated,
+; with nothing to say so. Same .ifndef standalone fallback as REGION above,
+; at the value this project actually uses.
+.ifndef PNES_SFX_STREAMS
+    PNES_SFX_STREAMS = 2
+.endif
+FAMISTUDIO_CFG_SFX_STREAMS  = PNES_SFX_STREAMS
 FAMISTUDIO_USE_VOLUME_TRACK = 1
 
 .include "famistudio_ca65.s"
