@@ -34,4 +34,15 @@ extern int quit;
 /** @brief Opens the SDL game controllers (called once from video init()). */
 void input_init();
 
+/**
+ * @brief Forwards one SDL event to the input backend.
+ *
+ * Only device add/remove is acted on, but it MUST be forwarded: the wiiu SDL2
+ * joystick driver removes and re-adds a Wii Remote whenever its extension
+ * changes (a Nunchuk pushed on or pulled off), because the button map differs
+ * per extension. A backend that only enumerates at startup therefore loses the
+ * pad -- not just on a genuine disconnect, but on any Nunchuk swap.
+ */
+void input_handle_event(const union SDL_Event *e);
+
 #endif // WIIU_INTERNAL_H

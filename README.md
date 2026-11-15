@@ -15,10 +15,10 @@ project is designed in c++23 with LTO oriented design with a demo ready to demon
 of the existing functions all of which are documented at the [docsite](https://platform-nes.readthedocs.io/en/latest/).
 Which will demonstrate how you can easily begin using this project.
 
-> At this point in time, `pnes` recognises the following as dependancies:
+> At this point in time, `pnes` recognises the following as dependencies:
 > 
 > **NES**:
->   1. [Famistudio](https://github.com/BleuBleu/FamiStudio) Engine (ca65)
+>   1. [Famistudio](https://github.com/BleuBleu/FamiStudio) Engine (ca65) (if using `famistudio` as the driver on NES)
 >   
 > **SDL3**:
 >   1. SDL3
@@ -42,6 +42,7 @@ Which will demonstrate how you can easily begin using this project.
 - Windows
 - Mac
 - Linux
+- PS2
 
 >  *performance issues have been found on GBA and PSP  
 >  Web Assembly support is disabled pending a rewrite

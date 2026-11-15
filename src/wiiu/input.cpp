@@ -6,7 +6,10 @@
  * through the standard SDL_GameController API, so this maps them onto the same
  * NES button bitmask the rest of the engine expects (see ::Buttons in
  * input.hpp) -- identical layout to the SDL3 desktop backend. Two players are
- * wired (the first two opened controllers); absent controllers read as idle.
+ * wired, assigned by DEVICE IDENTITY rather than enumeration order: the
+ * GamePad is always player 1 and the lowest-numbered Wii Remote / Pro
+ * Controller is player 2. See ::rebuild_pads for why identity is the right key
+ * and enumeration index is not.
  *
  * A/B map to the face buttons (SDL's SOUTH/EAST), Back/Start to Select/Start,
  * and the D-pad to the four directions.
@@ -30,13 +33,68 @@
 
 static SDL_GameController *pads[2] = { nullptr, nullptr };
 
-void input_init() {
-    int opened = 0;
-    for (int i = 0; i < SDL_NumJoysticks() && opened < 2; i++) {
-        if (SDL_IsGameController(i)) {
-            pads[opened] = SDL_GameControllerOpen(i);
-            if (pads[opened]) opened++;
+/**
+ * @brief Re-derives both port slots from the driver's device identities.
+ *
+ * The wiiu SDL2 joystick driver keeps a five-entry table mapping an SDL
+ * device_index to a stable identity: 0 is the GamePad, 1..4 are Wii Remote
+ * #1..#4 (a Remote, a Remote + Nunchuk, a Classic Controller or a Wii U Pro
+ * Controller -- the driver carries a separate button map per extension). That
+ * identity is what SDL_JoystickGetDevicePlayerIndex returns, and it is the only
+ * reliable key: device_index is merely a position in the registration list, so
+ * "slot 0" means "whoever registered first", not "the GamePad".
+ *
+ * Called on every add/remove rather than incrementally patched. The table holds
+ * five entries at most, so a full rescan costs nothing and removes any need to
+ * reason about which slot a vanished device left behind.
+ */
+static void rebuild_pads() {
+    for (auto &pad : pads) {
+        if (pad) {
+            SDL_GameControllerClose(pad);
+            pad = nullptr;
         }
+    }
+
+    int gamepad_dev = -1;   // device_index holding identity 0
+    int wpad_dev    = -1;   // device_index of the lowest-numbered Remote
+    int wpad_id     = 0;    // that Remote's identity, 0 = none found yet
+
+    const int n = SDL_NumJoysticks();
+    for (int i = 0; i < n; i++) {
+        if (!SDL_IsGameController(i)) continue;
+
+        const int id = SDL_JoystickGetDevicePlayerIndex(i);
+        if (id == 0) {
+            gamepad_dev = i;
+        } else if (id >= 1 && id <= 4 && (wpad_id == 0 || id < wpad_id)) {
+            wpad_dev = i;
+            wpad_id  = id;
+        }
+    }
+
+    if (gamepad_dev >= 0) pads[0] = SDL_GameControllerOpen(gamepad_dev);
+    if (wpad_dev    >= 0) pads[1] = SDL_GameControllerOpen(wpad_dev);
+
+    // No GamePad -- asleep, flat, or out of range -- but a Remote is present.
+    // Promote it, rather than leaving port 1 dead and the game unplayable on a
+    // controller the player is actively holding.
+    if (!pads[0] && pads[1]) {
+        pads[0] = pads[1];
+        pads[1] = nullptr;
+    }
+}
+
+void input_init() {
+    rebuild_pads();
+}
+
+void input_handle_event(const union SDL_Event *e) {
+    // Joystick-level events, not SDL_CONTROLLERDEVICE*: the driver posts
+    // SDL_PrivateJoystickAdded/Removed, and these are the events that are
+    // guaranteed to arrive for every one of its devices.
+    if (e->type == SDL_JOYDEVICEADDED || e->type == SDL_JOYDEVICEREMOVED) {
+        rebuild_pads();
     }
 }
 
@@ -56,24 +114,17 @@ static u8 read_pad(SDL_GameController *gc) {
 }
 
 void input::PollControllers(u8 *port1, u8 *port2) {
+    // Runs the driver's own device scan, which is what posts the add/remove
+    // events input_handle_event acts on -- so a controller connected mid-game
+    // is picked up on the next pumped frame (video.cpp's WaitForPresent).
     SDL_GameControllerUpdate();
-    // TEMP DIAGNOSTIC: SDL enumeration order does not reliably put the
-    // controller actually in use into slot 0 -- a second, idle/phantom
-    // SDL_GameController object (real second controller, or a wiiu-sdl2
-    // enumeration artifact) can occupy pads[0] while the pad you're actually
-    // pressing lands in pads[1], silently driving player2 (no camera
-    // coupling) instead of player1 (drives cameraX). Fix that by ACTIVITY,
-    // not slot: whichever pad has a nonzero reading this frame drives port1.
-    // If both are active at once, fall back to slot order (real 2P co-op).
-    const u8 r0 = read_pad(pads[0]);
-    const u8 r1 = read_pad(pads[1]);
-    if (r0 && !r1) {
-        *port1 = r0; *port2 = 0;
-    } else if (r1 && !r0) {
-        *port1 = r1; *port2 = 0;
-    } else {
-        *port1 = r0; *port2 = r1;
-    }
+
+    // Straight by slot now that the slots mean something: rebuild_pads has
+    // already put the GamePad in pads[0] and the lowest Remote in pads[1].
+    // An absent controller reads as idle, and a player who sets their pad down
+    // for a moment no longer gets their port reassigned under them.
+    *port1 = read_pad(pads[0]);
+    *port2 = read_pad(pads[1]);
 
     // One finger, the first, on the first touch device -- the GamePad is the
     // only one the port registers, and a UI hit test has one point to spend

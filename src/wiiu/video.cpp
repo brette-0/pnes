@@ -123,6 +123,9 @@ void WaitForPresent() {
             quit = 1;
             return;
         }
+        // Controller add/remove, which includes a Wii Remote's extension being
+        // swapped -- the driver re-registers the device for a new button map.
+        input_handle_event(&ev);
     }
 
     if (ppu::PPUMASK & (ppu::mask::BG | ppu::mask::SPRITE)) {
