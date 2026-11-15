@@ -396,7 +396,7 @@ namespace title {
         return {static_cast<u16>(kUiOnOwnPanel ? 0 : (kMenuNT << 3)), PreviewScrollY()};
     }
 
-    constexpr u8 kSplitDelay = REGION ? 90 : 100;
+    constexpr u8 kSplitDelay = REGION ? 60 : 100;
     static void ApplySplit();
 
     constexpr u8 kSplitLatency = REGION ? 5 : 4;
@@ -809,37 +809,20 @@ namespace title {
     // switched, $8000-$BFFF is audio and nothing else (mmc3.hpp's
     // ::CallPairedBlock). Two calls into those banks and one volatile byte of
     // RAM is the whole of it.
-    // The level every UI effect is played at, as audio::SfxPlay's per-call
-    // volume byte wants it.
-    //
-    // THE SFX SLIDER'S OWN POSITION, read at the moment of playing rather than
-    // pushed when the handle moved -- which is what makes the handle the only
-    // copy of this setting (see sliders.hpp's SFXSlider note). An effect
-    // already sounding keeps the level it started with, because the backends
-    // latch it per voice; the next one picks up wherever the slider is now.
-    //
-    // A CONSTANT ON NES, and the value is irrelevant: that driver discards the
-    // byte (FamiStudio has no per-effect level, see src/nes/audio/famistudio.cpp)
-    // and the scene has no SFX slider there to read -- options.uis hides it,
-    // so the namespace does not exist to name. The NES offers a disableSFX
-    // on/off button in its place, which nothing reads yet.
-    static u8 SfxLevel() {
-#ifdef TARGET_NES
-        return 0;
-#else
-        namespace ac = gen::options::audioCanvas;
-        const Rect r = ac::SFXSlider::rect;
-        return ui::impl::SliderCoefficient(r.size.x, ac::SFXSlider::amount);
-#endif
-    }
-
     static void DriveAudio() {
         mmc3::CallPairedBlock<audio_tag, audio_data_tag>([] {
             audio::Update();
             if (const u8 queued = ui::impl::pendingSfx) {
+                // DRAINED WHETHER OR NOT IT PLAYS, which is why the clear sits
+                // above the gate rather than inside it. A posted effect
+                // describes something that has ALREADY happened on screen; held
+                // back while effects are off, it would fire the instant they
+                // were switched on, announcing a menu move made minutes ago.
                 ui::impl::pendingSfx = 0;
-                audio::SfxPlay(static_cast<u8>(queued - 1), ui::impl::kSfxChannel,
-                               SfxLevel());
+                if (ui::impl::SfxEnabled()) {
+                    audio::SfxPlay(static_cast<u8>(queued - 1), ui::impl::kSfxChannel,
+                                   ui::impl::SfxLevel());
+                }
             }
         });
     }
@@ -1852,4 +1835,45 @@ namespace ui::impl {
     // quadrant 2, whose X offset is 0, and the locked frame scrolls X to 0 --
     // the title menu's quadrant 3 is what that scroll's X is for.
     vec2<u16> CanvasScroll() { return {0, title::PreviewScrollYForPixels(0)}; }
+
+    // The SFX on/off button, NES only -- and the bit reads as "the feature is
+    // ON", so effects play exactly while it is set: set is what paints DISABLE
+    // SFX, i.e. the action the box offers (ui/impl/buttons.hpp), and
+    // button_state's 0x07 seed has it set at boot. The identical polarity, and
+    // the identical reading, as the music bit level.cpp checks before TrackPlay.
+    //
+    // ALWAYS ON EVERYWHERE ELSE, because there is no such button to read:
+    // options.uis hides disableSFX on every target but NES, so the namespace
+    // does not exist off it. Not a gap -- those targets get a SFX SLIDER
+    // instead, and a slider wound to zero is their mute, expressed through
+    // ::SfxLevel rather than through this.
+    bool SfxEnabled() {
+#ifdef TARGET_NES
+        return gen::options::audioCanvas::disableSFX::Enabled();
+#else
+        return true;
+#endif
+    }
+
+    // The level an effect plays at, as audio::SfxPlay's per-call volume byte.
+    //
+    // THE SFX SLIDER'S OWN POSITION, read at the moment of playing rather than
+    // pushed when the handle moved -- which is what makes the handle the only
+    // copy of this setting (see sliders.hpp's SFXSlider note). An effect already
+    // sounding keeps the level it started with, because the backends latch it
+    // per voice; the next one picks up wherever the slider is now.
+    //
+    // A CONSTANT ON NES, and the value is irrelevant: that driver discards the
+    // byte entirely (FamiStudio has no per-effect level, see
+    // src/nes/audio/famistudio.cpp) and the scene has no slider there to read.
+    // The on/off button above is that platform's whole SFX control.
+    u8 SfxLevel() {
+#ifdef TARGET_NES
+        return 0;
+#else
+        namespace ac = gen::options::audioCanvas;
+        const Rect r = ac::SFXSlider::rect;
+        return SliderCoefficient(r.size.x, ac::SFXSlider::amount);
+#endif
+    }
 }

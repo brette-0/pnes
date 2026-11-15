@@ -152,4 +152,37 @@ namespace ui::impl {
     inline void PostSfx(const u8 effect) {
         pendingSfx = static_cast<u8>(effect + 1);
     }
+
+    /**
+     * @brief Whether sound effects are switched on at all.
+     *
+     * THE GATE EVERY EFFECT PASSES. Nothing in this project may call
+     * ::audio::SfxPlay without asking this first -- the NES options page has a
+     * SFX on/off button (gen::options::audioCanvas::disableSFX), and a button
+     * nothing reads is worse than no button. It is the exact counterpart of
+     * the music one level.cpp already honours before ::audio::TrackPlay.
+     *
+     * ASKED AT THE PLAY, NOT AT THE POST, and that ordering is what gives the
+     * button the behaviour a player expects. The bit is already flipped by the
+     * time the mailbox is spent -- the toggle happens in vblank
+     * (::SpendCanvasInput) and the spend afterwards -- so switching effects OFF
+     * silences its own toggle sound, while switching them ON lets that toggle
+     * through as the confirmation that they are back. Gating the post instead
+     * would get both of those backwards.
+     *
+     * Declared here and defined by the mode, like ::SelectorSlot and
+     * ::CanvasScroll: the answer reads the generated options scene, which needs
+     * `charmap_generic` in scope, and the one place that already holds is a TU
+     * that includes demo/src/graphics/strings.hpp. It is NOT a per-mode answer
+     * though -- it is one global setting, so every caller gets the same one.
+     */
+    bool SfxEnabled();
+
+    /**
+     * @brief The level to play an effect at, as ::audio::SfxPlay's volume byte.
+     *
+     * Declared beside ::SfxEnabled and defined with it, for the same reason.
+     * See the definition for what feeds it per platform.
+     */
+    u8 SfxLevel();
 }
