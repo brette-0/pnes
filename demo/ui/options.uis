@@ -85,7 +85,7 @@
                 {
                     "children": [
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -97,14 +97,14 @@
                             "name": "[CT] reduceFlashesText",
                             "posXExpr": "reduceFlashesButton.pos.x + 1",
                             "posYExpr": "reduceFlashesButton.pos.y + 1",
-                            "provideErasing": false,
+                            "provideErasing": true,
                             "sizeHExpr": "2",
                             "sizeWExpr": "7",
                             "splitter": " ",
                             "text": "REDUCE FLASHES"
                         },
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -140,7 +140,7 @@
                 {
                     "children": [
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -240,7 +240,7 @@
                             "text": "DISABLE MUSIC"
                         },
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -254,7 +254,7 @@
                             "posYExpr": "disableMusicText.pos.y",
                             "provideErasing": false,
                             "sizeHExpr": "2",
-                            "sizeWExpr": "6",
+                            "sizeWExpr": "7",
                             "splitter": " ",
                             "text": "ENABLE MUSIC"
                         }
@@ -341,7 +341,7 @@
                             "text": "DISABLE SFX"
                         },
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -355,7 +355,7 @@
                             "posYExpr": "disableSFXText.pos.y",
                             "provideErasing": false,
                             "sizeHExpr": "2",
-                            "sizeWExpr": "6",
+                            "sizeWExpr": "7",
                             "splitter": " ",
                             "text": "ENABLE SFX"
                         }
@@ -423,7 +423,7 @@
                 {
                     "children": [
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -435,14 +435,14 @@
                             "name": "[CT] enableStereoText",
                             "posXExpr": "(VIEWPORT_TX >> 1) + 1",
                             "posYExpr": "16",
-                            "provideErasing": false,
+                            "provideErasing": true,
                             "sizeHExpr": "2",
-                            "sizeWExpr": "6",
+                            "sizeWExpr": "7",
                             "splitter": " ",
                             "text": "ENABLE STEREO"
                         },
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],

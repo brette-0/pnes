@@ -10,6 +10,7 @@
 // reference rather than by a second copy of the literal, so a palette change
 // there moves both (see ::kCornerAttributes).
 #include "singleChoice.hpp"
+#include "sounds.hpp"
 
 // hand written uitk canvas impls
 namespace ui::impl {
@@ -222,6 +223,34 @@ namespace ui::impl {
     // `inline` for the same reason every hook in buttons.hpp/sliders.hpp is:
     // this header is includable from more than one TU.
     inline void UpdateCanvas(const Rect&, const Rect& current) {
+        // The sound of the ring MOVING, which is this hook and nothing else:
+        // uitk calls it only when focus actually changed hands (a generated
+        // Pass() early-outs at either end of the components table before it
+        // gets here, and its Focus() early-outs when a click lands on the
+        // component that already had focus), so a walk off the end of a
+        // section is silent and a press that moves the ring is not.
+        //
+        // One effect for both directions, unlike a slider's two
+        // (sliders.hpp): a slider's ends are a VALUE going up or down, where
+        // this is a cursor arriving somewhere, and UP/DOWN through a section
+        // reads as the same gesture either way.
+        PostSfx(sfx::selectnext);
+        SelectComponent(current);
+    }
+
+    // What STEPPING INTO a Canvas looks and sounds like: the ring placed on
+    // the component that holds its focus, and the sound of a selection being
+    // made.
+    //
+    // Separate from ::SelectComponent, which it otherwise only wraps, because
+    // that one has a second caller with nothing to announce: title.cpp's
+    // ::PlaceOptionsCorners brackets the COLUMN's own rect with the same four
+    // sprites (see the note on these being one indicator, not two), and it is
+    // reached when the page is first shown and whenever B backs out of a
+    // section. Putting the effect in ::SelectComponent would sound a selection
+    // on both -- including on the frame B had just sounded a deselection.
+    inline void ConfirmComponent(const Rect& current) {
+        PostSfx(sfx::select);
         SelectComponent(current);
     }
 }
@@ -239,13 +268,20 @@ namespace gen::options {
     // focus ring's worth of appearance, drawn the same way, and the moment one
     // wants its own look it gets a body of its own here rather than a flag
     // passed into a shared one.
+    //
+    // DrawComponentSelection goes to ::ConfirmComponent rather than straight
+    // to ::SelectComponent, which is what makes the selection SOUND: this hook
+    // is only ever reached by the page handing a Canvas the ring (title.cpp's
+    // ::SelectFocusedComponent, on A or on a click that entered a section), so
+    // every call to it is a player choosing a component. The column-level
+    // placement that shares these sprites does not come through here at all.
     namespace videoCanvas {
         inline void DrawUpdate(const Rect& last, const Rect& current) {
             ui::impl::UpdateCanvas(last, current);
         }
 
         inline void DrawComponentSelection(const Rect& current) {
-            ui::impl::SelectComponent(current);
+            ui::impl::ConfirmComponent(current);
         }
     }
 
@@ -255,7 +291,7 @@ namespace gen::options {
         }
 
         inline void DrawComponentSelection(const Rect& current) {
-            ui::impl::SelectComponent(current);
+            ui::impl::ConfirmComponent(current);
         }
     }
 }

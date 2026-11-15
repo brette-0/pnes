@@ -2,6 +2,27 @@
 #include <pnes/technology.hpp>
 #include <SDL3/SDL.h>
 
+#include <cstdlib>
+
+/*
+ * THE SAME DECODER FIVE CONSOLE BACKENDS ALREADY USE -- src/ogc, src/wiiu,
+ * src/psp, src/ps2 and src/ps3 each #include <stb_vorbis.c> under exactly
+ * these two flags, and each has its own FetchContent_MakeAvailable(stb) in
+ * its CMakeLists.txt branch; the desktop branch now has one too. Vendoring a
+ * second Vorbis implementation for the one platform that already links a
+ * media library would be the worse trade: SDL3's core decodes RIFF/WAVE and
+ * nothing else (SDL_LoadWAV), and the Ogg decoders live in SDL_mixer, a whole
+ * extra dependency for one function.
+ *
+ * NO_PUSHDATA_API because nothing here feeds the decoder incrementally, and
+ * NO_STDIO because ::LoadOgg hands it bytes SDL already read -- the
+ * stb_vorbis_decode_filename path is the only one that needs a FILE*, and
+ * taking it would mean two file-access APIs in one function for no gain.
+ */
+#define STB_VORBIS_NO_PUSHDATA_API
+#define STB_VORBIS_NO_STDIO
+#include <stb_vorbis.c>
+
 typedef struct {
     u32 offset;
     u32 length;
@@ -47,7 +68,12 @@ static constexpr int N_SFX_VOICES = audio::sfxChannels;
 // clearing `active` is already how a voice reports that it FINISHED -- the
 // mixer drops it and the cursor goes with it. A pause has to keep the cursor
 // to be distinguishable from audio::SfxStop.
-struct sfx_voice_t { u32 pos; u32 end; bool active; bool paused; };
+// `gain` is this backend's reading of audio.hpp's uninterpreted volume byte:
+// a linear amplitude coefficient, 0 silent and 255 unity, divided out once at
+// ::SfxPlay rather than per sample in the mixer. Stored per VOICE and not per
+// effect, because the level belongs to this playing of it -- the same effect
+// can be loud on one channel and quiet on another.
+struct sfx_voice_t { u32 pos; u32 end; float gain; bool active; bool paused; };
 static sfx_voice_t sfx_voices[N_SFX_VOICES];
 
 static u32 track_offsets[256];
@@ -55,10 +81,96 @@ static u32 track_lengths[256];
 
 #define BYTES_PER_SECOND (48000 * 2 * sizeof(float))
 
+// Whether `fp` is an Ogg stream, by its own first four bytes rather than by
+// its extension: the container is a fact about the file, and a mislabelled one
+// should play rather than be rejected for its name. Four bytes at Init per
+// entry (six files in this demo), which is why reading them separately costs
+// nothing worth saving.
+//
+// Unreadable or shorter than four bytes answers "not Ogg", which hands the
+// file to SDL_LoadWAV -- whose failure is the one that gets logged, with the
+// path in it, by the caller. A missing file therefore reports as a missing
+// file and not as a container question.
+static bool IsOggFile(const char *fp) {
+    SDL_IOStream *io = SDL_IOFromFile(fp, "rb");
+    if (!io) return false;
+
+    char magic[4];
+    const size_t got = SDL_ReadIO(io, magic, sizeof(magic));
+    SDL_CloseIO(io);
+    return got == sizeof(magic) && SDL_memcmp(magic, "OggS", 4) == 0;
+}
+
+// One Ogg Vorbis file, decoded whole into interleaved S16 at its own sample
+// rate and channel count.
+//
+// WHOLE, NOT STREAMED, which is the right shape here and not a shortcut: the
+// caller converts whatever this returns to the mixer's F32LE/2ch/48kHz and
+// concatenates it into one buffer at Init (::BuildPCMBuffer /
+// ::BuildSfxPCMBuffer), so a streaming decoder would be pulled dry in that
+// same loop anyway. The console backends that DO stream do it because 24-64MB
+// of console RAM cannot hold the decoded result (see src/ogc/audio.cpp's own
+// header); a desktop can.
+//
+// THE COPY INTO SDL_malloc'd MEMORY IS NOT WASTE. stb_vorbis allocates its
+// output with the CRT's malloc, and this function's contract -- the one
+// ::LoadTrack documents and SDL_LoadWAV sets -- is that *data is SDL_malloc'd
+// and the caller SDL_free's it. Those are only the same allocator by
+// coincidence on most platforms, and handing SDL_free a malloc'd pointer is
+// undefined wherever they differ. One memcpy of a UI blip at startup buys a
+// contract that holds everywhere, and keeps every caller unchanged.
+static bool LoadOgg(const char *fp, SDL_AudioSpec *spec, u8 **data, u32 *len) {
+    size_t fileLen = 0;
+    void *file = SDL_LoadFile(fp, &fileLen);
+    if (!file) return false;
+
+    int channels = 0;
+    int rate = 0;
+    short *pcm = nullptr;
+    const int frames = stb_vorbis_decode_memory(
+        static_cast<const unsigned char *>(file), static_cast<int>(fileLen),
+        &channels, &rate, &pcm);
+    SDL_free(file);
+
+    // Negative is stb_vorbis's own failure report; zero frames is a valid
+    // decode of an empty stream, which has nothing to play and must not reach
+    // SDL_malloc(0).
+    if (frames <= 0 || !pcm || channels <= 0) {
+        if (pcm) free(pcm);
+        SDL_SetError("stb_vorbis could not decode %s", fp);
+        return false;
+    }
+
+    const u32 bytes = static_cast<u32>(frames) * static_cast<u32>(channels)
+                      * static_cast<u32>(sizeof(short));
+    u8 *out = static_cast<u8 *>(SDL_malloc(bytes));
+    if (!out) {
+        free(pcm);
+        return false;
+    }
+    SDL_memcpy(out, pcm, bytes);
+    free(pcm);
+
+    spec->format   = SDL_AUDIO_S16LE;
+    spec->channels = channels;
+    spec->freq     = rate;
+    *data = out;
+    *len  = bytes;
+    return true;
+}
+
 // Load one track's source audio into an SDL_LoadWAV-shaped (spec,data,len)
 // triple. On success *data is SDL_malloc'd and must be SDL_free'd by the
 // caller, exactly like SDL_LoadWAV.
+//
+// The seam this comment always described: every caller hands the result to
+// SDL_ConvertAudioSamples, so a decoder only has to answer in that triple to
+// be usable, and which one ran is nothing the rest of this file knows. The WAV
+// path is still the plain SDL_LoadWAV call it always was, taken whenever the
+// file is not an Ogg stream -- so music that already worked takes byte for
+// byte the same route it did before.
 static bool LoadTrack(const char *fp, SDL_AudioSpec *spec, u8 **data, u32 *len) {
+    if (IsOggFile(fp)) return LoadOgg(fp, spec, data, len);
     return SDL_LoadWAV(fp, spec, data, len);
 }
 
@@ -157,7 +269,20 @@ static void BuildSfxPCMBuffer() {
             SDL_free(data);
         }
     }
-    if (total == 0) return;
+    // SILENT UNTIL NOW, and that silence is what made this hard to diagnose:
+    // zero total with effects registered means every single one failed to load,
+    // which is indistinguishable at the speaker from "no effects registered"
+    // and from "effects play but are inaudible". Each of those wants a
+    // different fix, so each says so.
+    if (total == 0) {
+        if (nSfx) {
+            SDL_Log("AUDIO: all %u registered SFX failed to load -- nothing will play. "
+                    "Paths are relative to the CURRENT WORKING DIRECTORY, not the "
+                    "executable, and the build copies them next to the executable.",
+                    static_cast<unsigned>(nSfx));
+        }
+        return;
+    }
 
     sfx_pcm_buffer = static_cast<float *>(SDL_malloc(total));
     sfx_pcm_buffer_size = total / sizeof(float);
@@ -188,19 +313,56 @@ static void BuildSfxPCMBuffer() {
 
         SDL_free(data);
     }
+
+    u8 decoded = 0;
+    for (u8 i = 0; i < nSfx; i++) {
+        if (sfx_info[i].length) decoded++;
+    }
+    SDL_Log("AUDIO: %u/%u SFX decoded into %u frames on %d voices",
+            static_cast<unsigned>(decoded), static_cast<unsigned>(nSfx),
+            sfx_pcm_buffer_size / 2u, N_SFX_VOICES);
 }
 
-void audio::SfxPlay(const u8 index, const u8 channel) {
-    if (index >= nSfx || channel >= N_SFX_VOICES || sfx_info[index].length == 0) return;
+// @p volume is a linear amplitude coefficient here: 0 silence, 255 unity. That
+// reading is THIS BACKEND'S, declared here because audio.hpp deliberately
+// declines to (see its own note) -- a float is the natural shape for it once
+// the mixer is floats anyway, and a desktop pays nothing for the multiply.
+void audio::SfxPlay(const u8 index, const u8 channel, const u8 volume) {
+    // Each rejection named, rather than one shared early-out. All three mean
+    // "no sound", and from the outside they are the same event -- but one is a
+    // bad index, one a bad channel, and one an effect that never loaded, and
+    // only the last of those is an asset problem.
+    if (index >= nSfx) {
+        SDL_Log("AUDIO: SfxPlay(%u) past the %u registered effects",
+                static_cast<unsigned>(index), static_cast<unsigned>(nSfx));
+        return;
+    }
+    if (channel >= N_SFX_VOICES) {
+        SDL_Log("AUDIO: SfxPlay channel %u past this backend's %d voices",
+                static_cast<unsigned>(channel), N_SFX_VOICES);
+        return;
+    }
+    if (sfx_info[index].length == 0) {
+        SDL_Log("AUDIO: SfxPlay(%u) has no decoded samples (\"%s\" did not load)",
+                static_cast<unsigned>(index), sfxs[index].fp);
+        return;
+    }
     sfx_voices[channel] = {
         .pos    = sfx_info[index].offset,
         .end    = sfx_info[index].offset + sfx_info[index].length,
+        // 255 is unity, so the divisor is 255 and not 256: a byte of 0xFF has
+        // to come out as exactly 1.0f, or full volume would be imperceptibly
+        // short of the level the same sound plays at through ::SfxSamplePlay.
+        .gain   = static_cast<float>(volume) / 255.0f,
         .active = true
     };
 }
 
+// Unity, spelled out: there is no sample bank to carry a level of its own off
+// NES (audio.hpp's ::SfxSamplePlay), so this plays the effect at the level the
+// asset was authored at.
 void audio::SfxSamplePlay(const u8 index) {
-    SfxPlay(index, 1);
+    SfxPlay(index, 1, 0xFF);
 }
 
 // Exact here, unlike the NES driver: a voice is a cursor this backend owns, so
@@ -236,7 +398,10 @@ static void UpdateSfx() {
             const u32 avail = v.end - v.pos;
             const u32 take = avail < static_cast<u32>(CHUNK_FLOATS) ? avail : static_cast<u32>(CHUNK_FLOATS);
             const float *src = sfx_pcm_buffer + v.pos;
-            for (u32 i = 0; i < take; i++) mix[i] += src[i];
+            // Additive as before, scaled by this voice's own gain. Read into a
+            // local so the loop does not reload it per sample.
+            const float gain = v.gain;
+            for (u32 i = 0; i < take; i++) mix[i] += src[i] * gain;
             v.pos += take;
             if (v.pos >= v.end) v.active = false;
         }
@@ -264,17 +429,35 @@ static void OpenAudioStreams() {
     // Whatever volume was set before the device existed (see ::music_volume).
     SDL_SetAudioStreamGain(music_stream, static_cast<float>(music_volume) / 100.0f);
 
-    // Bind sfx_stream to the same logical device as music_stream rather than
-    // opening a second device (mixed additively by SDL, same as two real
-    // devices).
-    sfx_stream = SDL_CreateAudioStream(&spec, &spec);
+    // OPENED THE SAME WAY MUSIC IS, and that symmetry is the point.
+    //
+    // This used to be SDL_CreateAudioStream + SDL_BindAudioStream onto
+    // music_stream's own logical device -- which is a legal arrangement, but it
+    // made the effects path differ from the music path in the one place neither
+    // could be observed: a plain stream is created UNBOUND and silent, and
+    // whether binding it to a logical device that another stream already owns
+    // leaves it fed is a question about SDL's device plumbing rather than about
+    // this file. Music worked and effects did not, and that was the only
+    // structural difference between them.
+    //
+    // So there is no difference any more. SDL_OpenAudioDeviceStream opens the
+    // device, creates the stream and binds the two together as one act, and
+    // SDL_ResumeAudioStreamDevice starts it -- exactly the four lines above,
+    // against the same default playback device and the same spec. Two device
+    // streams on one physical device is the ordinary way to mix two
+    // independent sources; the OS does it for two applications, and it does it
+    // here for music and effects.
+    //
+    // Callback nullptr on both, so both are fed by pushing: ::Update refills
+    // music and ::UpdateSfx refills this one, both from the frame loop, with no
+    // audio-thread callback to make either reentrant.
+    sfx_stream = SDL_OpenAudioDeviceStream(
+        SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
     if (!sfx_stream) {
         SDL_Log("AUDIO: SFX stream creation failed: %s", SDL_GetError());
-    } else if (!SDL_BindAudioStream(SDL_GetAudioStreamDevice(music_stream), sfx_stream)) {
-        SDL_Log("AUDIO: SFX stream bind failed: %s", SDL_GetError());
-        SDL_DestroyAudioStream(sfx_stream);
-        sfx_stream = nullptr;
+        return;
     }
+    SDL_ResumeAudioStreamDevice(sfx_stream);
 }
 
 void audio::Init(u8) {

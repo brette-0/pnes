@@ -3552,6 +3552,22 @@ else()
     target_link_libraries(pnes PUBLIC SDL3::SDL3-static)
     target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
+    # stb_vorbis, for src/SDL3/audio.cpp's Ogg Vorbis path. SDL3's core decodes
+    # RIFF/WAVE and nothing else (SDL_LoadWAV), so without this the desktop
+    # backend silently loads no .ogg at all -- which is what demo/audio/sfx
+    # ships. Declared here rather than once at the top for the same reason the
+    # gc/wii, wiiu, psp, ps2 and ps3 branches each declare their own: every
+    # branch is self-contained, and only the ones that actually decode Vorbis
+    # pay the fetch. PRIVATE because nothing outside the library includes it.
+    FetchContent_Declare(
+            stb
+            GIT_REPOSITORY https://github.com/nothings/stb.git
+            GIT_TAG        master
+            GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(stb)
+    target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
+
     if(TARGET_PLATFORM STREQUAL "linux")
         target_link_libraries(pnes PUBLIC PkgConfig::LibUSB)
     endif()

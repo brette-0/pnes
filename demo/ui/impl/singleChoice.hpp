@@ -6,6 +6,7 @@
 #include "../../chr/chr.h"
 #include "../../src/main.hpp"
 #include "../../src/graphics/windows.hpp"
+#include "sounds.hpp"
 
 // Hand-written SingleChoice hooks -- the selection indicator uitk declares and
 // refuses to draw (`void DrawChange(u8 from, u8 to);`, see genSingleChoiceDecl).
@@ -178,7 +179,20 @@ namespace gen::title::TitleOptions {
                              "retick Vertical on this menu in uitk, or implement the above-the-option "
                              "indicator placement in ui::impl");
 
-    inline void DrawChange(const u8, const u8 to) {
+    // Sounds its movement, exactly as gameOptions below does -- the two menus
+    // are alternative content for the same rows, so a player walking one and
+    // then the other has to hear the same thing or the quieter one reads as
+    // broken.
+    //
+    // GUARDED ON A REAL MOVE for the reason spelled out on gameOptions'
+    // DrawChange, and it matters MORE here: this menu has three cold-paint
+    // call sites to that one's one (title.cpp's ::DrawTitleSelector, reached
+    // from the initial draw, ::nmi_handler_drawMenu and the fade back from
+    // options). Each is a frame where something else has already posted --
+    // notably the B that leaves the play-mode menu, whose sfx::deselect an
+    // unguarded post here would replace with a movement sound.
+    inline void DrawChange(const u8 from, const u8 to) {
+        if (from != to) ui::impl::PostSfx(sfx::selectnext);
         ui::impl::DrawSelectorChange(options, to);
     }
 }
@@ -190,7 +204,26 @@ namespace gen::gameOptions::gameOptions {
                              "retick Vertical on this menu in uitk, or implement the above-the-option "
                              "indicator placement in ui::impl");
 
-    inline void DrawChange(const u8, const u8 to) {
+    // The one menu that sounds its own movement, which is why `from` is named
+    // here and not in TitleOptions above -- the two hooks are no longer
+    // identical, and this is exactly the divergence the duplication in this
+    // file exists to allow.
+    //
+    // GUARDED ON A REAL MOVE, and that guard is load-bearing rather than
+    // defensive. A generated Pass()/Click() only ever calls this when the
+    // option actually changed (an end-stop press returns before it, see
+    // genSingleChoiceDecl), so `from == to` means one thing: the COLD PAINT
+    // the scene makes itself to place the arrow, title.cpp's
+    // ::DrawPlayModeSelector. That paint happens on the very frame A opened
+    // this menu -- which has already posted sfx::select for the confirm -- and
+    // ::pendingSfx is one slot, so an unguarded post here would replace that
+    // select with a selectnext and the confirm would never be heard.
+    //
+    // One effect for both directions, as a Canvas's focus move has
+    // (ui/impl/canvas.hpp): an arrow stepping between options is one gesture,
+    // and only a slider's value has a direction worth hearing.
+    inline void DrawChange(const u8 from, const u8 to) {
+        if (from != to) ui::impl::PostSfx(sfx::selectnext);
         ui::impl::DrawSelectorChange(options, to);
     }
 }

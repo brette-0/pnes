@@ -8,6 +8,7 @@
 #include "modes/level.hpp"
 #include "modes/title.hpp"
 #include "modes/world.hpp"
+#include "../ui/impl/sounds.hpp"
 #include "banks.hpp"
 #include <pnes/logger.hpp>
 
@@ -72,6 +73,14 @@ RESET {
     // and buffers the whole music + SFX library). Must run exactly once at
     // boot, not per level -- see level.cpp's EnterLevelSetup for why it used
     // to live there and what that cost.
+    //
+    // The effect table is registered BEFORE that, not after: the backends that
+    // decode their effects do it inside audio::Init, reading whatever has been
+    // registered by then, and no later call makes them go back
+    // (include/pnes/audio.hpp). A no-op on NES, where the bank is a ROM symbol
+    // the backend names itself -- which is why there is no #if here.
+    ui::impl::RegisterSfx();
+
     log("RESET: audio::Init starting");
     mmc3::CallInBlock<audio_tag>([] {
         mmc3::CallInBlock<audio_data_tag>([] {

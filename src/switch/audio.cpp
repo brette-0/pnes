@@ -78,7 +78,12 @@ static constexpr int N_SFX_VOICES = audio::sfxChannels;
 // clearing `active` is already how a voice reports that it FINISHED -- the
 // mixer drops it and the cursor goes with it. A pause has to keep the cursor
 // to be distinguishable from audio::SfxStop.
-struct sfx_voice_t { u32 pos; u32 end; bool active; bool paused; };
+// `gain` is this backend's reading of audio.hpp's uninterpreted volume byte: a
+// linear amplitude coefficient, 0 silent and 255 unity. Kept as the byte it
+// arrived as rather than converted up front -- this mixer is integer, so the
+// scale happens per sample in the mix below and a float here would only buy a
+// conversion back.
+struct sfx_voice_t { u32 pos; u32 end; u8 gain; bool active; bool paused; };
 static sfx_voice_t sfx_voices[N_SFX_VOICES];
 
 // Translate "tracks/foo.wav" -> "romfs:/tracks/foo.raw" (the build re-encodes
@@ -151,18 +156,25 @@ static void load_sfx() {
     }
 }
 
-void audio::SfxPlay(const u8 index, const u8 channel) {
+// @p volume is a linear amplitude coefficient here: 0 silence, 255 unity --
+// this backend's reading of the byte audio.hpp deliberately leaves
+// uninterpreted, and the same one SDL3 and Wii U use, since all three are the
+// same voice-mixing shape.
+void audio::SfxPlay(const u8 index, const u8 channel, const u8 volume) {
     if (index >= nSfx || channel >= N_SFX_VOICES || sfx_info[index].length == 0) return;
     mutexLock(&mtx);
     sfx_voices[channel] = {
         .pos    = sfx_info[index].offset,
         .end    = sfx_info[index].offset + sfx_info[index].length,
+        .gain   = volume,
         .active = true
     };
     mutexUnlock(&mtx);
 }
 
-void audio::SfxSamplePlay(const u8 index) { audio::SfxPlay(index, 1); }
+// Unity: there is no separate sample bank off NES to carry a level of its own
+// (audio.hpp's ::SfxSamplePlay), so this plays the asset as authored.
+void audio::SfxSamplePlay(const u8 index) { audio::SfxPlay(index, 1, 0xFF); }
 
 // Exact here, unlike the NES driver: a voice is a cursor this backend owns, so
 // releasing or freezing one is local state (see audio.hpp's ::SfxStop on why
@@ -217,8 +229,16 @@ static void fill_chunk(u8 *dst) {
         u32 avail = v.end - v.pos;
         u32 n = CHUNK < avail ? CHUNK : avail;
         const i16 *src = reinterpret_cast<const i16 *>(sfx_data + v.pos);
+        // Scaled by this voice's own gain, then added and clamped as before.
+        // `/ 255` and not `>> 8` because 255 is unity: a shift would make full
+        // volume 255/256 of the asset's level, which is inaudible on its own
+        // but means SfxPlay(..., 0xFF) and SfxSamplePlay disagree. The divisor
+        // is a constant, so the compiler turns it into a multiply and a shift.
+        // Gain is hoisted out of the loop -- it cannot change mid-chunk.
+        const int gain = v.gain;
         for (u32 i = 0; i < n / sizeof(i16); i++) {
-            const int mixed = static_cast<int>(out[i]) + static_cast<int>(src[i]);
+            const int scaled = static_cast<int>(src[i]) * gain / 255;
+            const int mixed = static_cast<int>(out[i]) + scaled;
             out[i] = static_cast<i16>(mixed < -32768 ? -32768 : (mixed > 32767 ? 32767 : mixed));
         }
         v.pos += n;

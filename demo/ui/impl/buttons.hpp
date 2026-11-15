@@ -113,12 +113,38 @@ namespace gen::options {
     // and a child's namespace is nested inside its parent's, so the label is
     // named unqualified from here. The first child is the enabled appearance
     // throughout -- the order the scene lists them in (see options.uis).
+    //
+    // AND IT BLANKS THE FIELD FIRST, which is the other half of the choice.
+    // The two labels are different lengths -- DISABLE is seven cells and ENABLE
+    // six -- so drawing one straight over the other leaves the tail of the
+    // longer one on screen (an "ENABLEE" for the one frame it takes to read it,
+    // and every frame after). Both labels of a pair now share one rect in the
+    // scene (same pos, same sizeW, both centred), so ONE Erase() clears the
+    // field for either of them: the scene ticks Provide Erasing on the first of
+    // the pair only, and that one's generated Erase() is what every call below
+    // uses, whichever label is about to be drawn.
+    //
+    // Unconditional rather than only on a real change, because this hook cannot
+    // tell the two apart: uitk's generated Pass()/Click() call Draw() after a
+    // flip, and a Canvas's DrawComponents() calls the same Draw() on a cold
+    // paint of the whole page. Erasing on the cold paint is wasted but correct
+    // -- and that path runs with rendering off (title.cpp's panel handlers blank
+    // PPUMASK around it), so it is not vblank work there at all.
+    //
+    // THE COST, since this is NMI work on the one path that matters: a flip goes
+    // through ::nmi_handler_locked with rendering ON, so it is real vblank time.
+    // Erase is two rows of the field -- 14 cells, roughly 180 cycles -- on top of
+    // the ~520 this hook already spends on the box and the label, against 513 for
+    // the OAM DMA beside it and ~2273 of NTSC vblank in total. It fits with room
+    // to spare, which is why this is a plain erase-then-draw and not something
+    // cleverer that only touched the cells that actually differ.
     namespace videoCanvas {
         namespace reduceFlashesButton {
             inline void Draw() {
                 const Rect r = rect;
                 ui::impl::DrawTextBox(pos, r.size);
                 ui::impl::UpdateTextBox(Enabled() ? ui::impl::Enabled : ui::impl::Disabled, pos, r.size);
+                reduceFlashesText::Erase();
                 if (Enabled()) reduceFlashesText::Draw();
                 else           enableFlashesText::Draw();
             }
@@ -151,6 +177,7 @@ namespace gen::options {
                 const Rect r = rect;
                 ui::impl::DrawTextBox(pos, r.size);
                 ui::impl::UpdateTextBox(Enabled() ? ui::impl::Enabled : ui::impl::Disabled, pos, r.size);
+                disableMusicText::Erase();
                 if (Enabled()) disableMusicText::Draw();
                 else           enableMusicText::Draw();
             }
@@ -161,6 +188,7 @@ namespace gen::options {
                 const Rect r = rect;
                 ui::impl::DrawTextBox(pos, r.size);
                 ui::impl::UpdateTextBox(Enabled() ? ui::impl::Enabled : ui::impl::Disabled, pos, r.size);
+                disableSFXText::Erase();
                 if (Enabled()) disableSFXText::Draw();
                 else           enableSFXText::Draw();
             }
@@ -173,6 +201,7 @@ namespace gen::options {
                 const Rect r = rect;
                 ui::impl::DrawTextBox(pos, r.size);
                 ui::impl::UpdateTextBox(Enabled() ? ui::impl::Enabled : ui::impl::Disabled, pos, r.size);
+                enableStereoText::Erase();
                 if (Enabled()) enableStereoText::Draw();
                 else           disableStereoText::Draw();
             }

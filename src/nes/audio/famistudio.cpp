@@ -182,7 +182,16 @@ AUDIO_BANK void audio::Update() {
     famistudio_update();
 }
 
-AUDIO_BANK void audio::SfxPlay(const u8 index, const u8 channel) {
+// @p volume IS DISCARDED, which is this driver's answer to audio.hpp's
+// deliberately meaningless byte and not an omission. FamiStudio's engine has
+// no per-effect level: an effect's volume lives per note inside the effect
+// data the exporter produced, so there is no entry point to scale it through
+// and nothing here to hand the byte to. famistudio_sfx_play takes an index and
+// a stream offset, and that is the whole of its interface.
+//
+// Unnamed, so the parameter costs nothing to ignore -- and the caller's own
+// setup for it is one immediate, since any value does.
+AUDIO_BANK void audio::SfxPlay(const u8 index, const u8 channel, const u8) {
 #if FAMISTUDIO_CFG_SFX_SUPPORT
     famistudio_sfx_play(index, channel);
 #else

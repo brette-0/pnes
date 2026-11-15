@@ -85,7 +85,7 @@
                 {
                     "children": [
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -97,14 +97,14 @@
                             "name": "[CT] reduceFlashesText",
                             "posXExpr": "reduceFlashesButton.pos.x + 1",
                             "posYExpr": "reduceFlashesButton.pos.y + 1",
-                            "provideErasing": false,
+                            "provideErasing": true,
                             "sizeHExpr": "2",
                             "sizeWExpr": "7",
                             "splitter": " ",
                             "text": "REDUCE FLASHES"
                         },
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -140,7 +140,7 @@
                 {
                     "children": [
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -293,7 +293,7 @@
                 {
                     "children": [
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],
@@ -305,14 +305,14 @@
                             "name": "[CT] enableStereoText",
                             "posXExpr": "PANEL1_X + (PANEL1_TX >> 1) + 1",
                             "posYExpr": "30 + 13",
-                            "provideErasing": false,
+                            "provideErasing": true,
                             "sizeHExpr": "2",
-                            "sizeWExpr": "6",
+                            "sizeWExpr": "7",
                             "splitter": " ",
                             "text": "ENABLE STEREO"
                         },
                         {
-                            "align": 0,
+                            "align": 1,
                             "charmapOverride": "",
                             "children": [
                             ],

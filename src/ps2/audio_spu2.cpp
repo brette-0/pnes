@@ -303,7 +303,7 @@ void audio::TrackPause(const u8 pause) {
 
 // See the file header: no non-NES SFX table exists in this project yet. This
 // is the backend where implementing them would be nearly free, though.
-void audio::SfxPlay(u8 /*index*/, u8 /*channel*/) {}
+void audio::SfxPlay(u8 /*index*/, u8 /*channel*/, u8 /*volume*/) {}
 void audio::SfxSamplePlay(u8 /*index*/) {}
 void audio::SfxStop(u8 /*channel*/) {}
 void audio::SfxPause(u8 /*channel*/, u8 /*pause*/) {}

@@ -204,7 +204,7 @@ void audio::TrackVolume(const u8 percent) {
 // No SFX assets are registered for this project on non-NES targets yet (see
 // demo/src/tracks.cpp); leave these as the same no-ops the stub had rather
 // than building an unused decode path for a table that's currently empty.
-void audio::SfxPlay(u8 /*index*/, u8 /*channel*/) {}
+void audio::SfxPlay(u8 /*index*/, u8 /*channel*/, u8 /*volume*/) {}
 void audio::SfxSamplePlay(u8 /*index*/) {}
 void audio::SfxStop(u8 /*channel*/) {}
 void audio::SfxPause(u8 /*channel*/, u8 /*pause*/) {}

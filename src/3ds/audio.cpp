@@ -28,7 +28,7 @@ void audio::TrackStop() {}
 // implements this alongside the playback it adds.
 void audio::TrackVolume(u8 /*percent*/) {}
 
-void audio::SfxPlay(u8 /*index*/, u8 /*channel*/) {}
+void audio::SfxPlay(u8 /*index*/, u8 /*channel*/, u8 /*volume*/) {}
 void audio::SfxSamplePlay(u8 /*index*/) {}
 void audio::SfxStop(u8 /*channel*/) {}
 void audio::SfxPause(u8 /*channel*/, u8 /*pause*/) {}

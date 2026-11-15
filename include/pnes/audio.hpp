@@ -290,10 +290,45 @@ void TrackVolume(u8 percent);
  * is still playing cuts the old one off, matching FamiStudio's own SFX
  * engine on the NES. Channels are otherwise independent and mix together.
  *
+ * @p volume HAS NO MEANING AT THIS LAYER, DELIBERATELY. It is a byte this API
+ * carries and does not interpret: what it scales, over what range, and whether
+ * it does anything at all are each the BACKEND's to define and to document in
+ * its own file. Nothing here converts it, clamps it or compares it, and there
+ * is no default -- a default would be this header picking a unity value, which
+ * is exactly the meaning it is refusing to pick.
+ *
+ * THE ALTERNATIVE WAS A MASTER ::SfxVolume SETTER, and this is the better
+ * primitive for the same reason a per-note volume beats a per-channel one: a
+ * caller that wants one level for everything passes the same byte every time,
+ * while a caller that wants a quieter footstep than a gunshot cannot get that
+ * out of a setter without calling it twice around every play. It also keeps the
+ * level out of backend state, so nothing has to survive ::Init, a device
+ * reopen, or a platform with no persistent mixer to hold it.
+ *
+ * WHAT EACH BACKEND DOES WITH IT TODAY:
+ *   - SDL3, Switch, Wii U: 0 is silence and 255 is unity, applied per voice as
+ *     a linear amplitude coefficient (so it is the fraction a slider reads out,
+ *     scaled to a whole byte -- see ::TrackVolume on why linear and not
+ *     perceptual).
+ *   - NES: DISCARDED. FamiStudio's engine has no per-effect level -- volume
+ *     lives per note inside the effect data -- so the parameter is read by
+ *     nothing and the value is irrelevant. Pass whatever is cheapest to
+ *     materialise; a literal costs one immediate at the call site.
+ *   - The silent stubs (GC/Wii, PSP, PS2, PS3, 3DS, DS, GBA): ignored along
+ *     with the rest of the call.
+ *
+ * NO WARNING ATTRIBUTE ON THE NES CASE, unlike ::SfxStop and ::SfxPause. Those
+ * cannot do the thing they are named for at all, so a call site there is asking
+ * for something it will not get. This one plays the effect correctly and only
+ * declines to scale it, which is a documented property of the parameter rather
+ * than a failed call -- and ::PNES_SFX_UNSUPPORTED would fire on every NES
+ * effect ever played.
+ *
  * @param index   SFX bank index.
  * @param channel Target audio channel.
+ * @param volume  Backend-defined level. See above; discarded on NES.
  */
-void SfxPlay(u8 index, u8 channel) ;
+void SfxPlay(u8 index, u8 channel, u8 volume) ;
 
 /**
  * @brief Stops the effect on a channel, discarding its position.

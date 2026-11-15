@@ -9,6 +9,7 @@
 #include "../../ui/impl/sliders.hpp"
 #include "../../ui/impl/singleChoice.hpp"
 #include "../../ui/impl/canvas.hpp"
+#include "../../ui/impl/sounds.hpp"
 #include "../main.hpp"
 #include "pnes/logger.hpp"
 #include "../banks.hpp"
@@ -581,6 +582,37 @@ namespace title {
     }
 #endif
 
+    // EVERY Button's enabled bit, which uitk packs into one array in the
+    // generated header -- one bit per button, in scene order (::button_state).
+    // So "a button was toggled" is "that array changed", whichever button did
+    // it and whichever section it was in.
+    //
+    // Observed across the call rather than hooked, because there is nothing to
+    // hook: a button's only hand-written entry point is its Draw(), and that
+    // runs on an ordinary repaint of the panel as well as on a flip (see
+    // ui/impl/buttons.hpp), so a sound there would fire once per button every
+    // time the page was painted. The generated Pass()/Click() flip the bit and
+    // call Draw(), and that is all either can do -- the same reason
+    // ::WidescreenBit exists, generalised to every button rather than the one
+    // whose flip also has an engine-side consequence.
+    //
+    // Sized from the array itself, so a ninth button (which would give it a
+    // second byte) needs no change here.
+    static constexpr u8 kButtonStateBytes =
+        static_cast<u8>(sizeof(gen::options::button_state) /
+                        sizeof(gen::options::button_state[0]));
+
+    static void ReadButtonState(u8 (&out)[kButtonStateBytes]) {
+        for (u8 i = 0; i < kButtonStateBytes; i++) out[i] = gen::options::button_state[i];
+    }
+
+    static bool ButtonStateChanged(const u8 (&before)[kButtonStateBytes]) {
+        for (u8 i = 0; i < kButtonStateBytes; i++) {
+            if (before[i] != gen::options::button_state[i]) return true;
+        }
+        return false;
+    }
+
     static void SpendCanvasInput() {
         const u8 payload = canvasInput;
         if (!payload) return;
@@ -588,7 +620,19 @@ namespace title {
 #if TARGET_GC
         const bool wideBefore = WidescreenBit();
 #endif
+        u8 buttonsBefore[kButtonStateBytes];
+        ReadButtonState(buttonsBefore);
+
         pOptionsPass(payload);
+
+        // The flip, whichever button made it. After the call and not inside
+        // the Canvas's own hooks for the reason ::kButtonStateBytes spells
+        // out. A slider adjustment posts its own effect from DrawChange and a
+        // focus move from DrawUpdate, so a payload that moved the ring or
+        // walked a handle has already posted by now -- and this cannot
+        // double-post over it, because a press is one of those three things
+        // and never two.
+        if (ButtonStateChanged(buttonsBefore)) ui::impl::PostSfx(sfx::toggle);
 #if TARGET_GC
         if (const bool wideNow = WidescreenBit(); wideNow != wideBefore) {
             ApplyWidescreenChange(wideNow);
@@ -674,11 +718,22 @@ namespace title {
 #if TARGET_GC
         const bool wideBefore = WidescreenBit();
 #endif
+        u8 buttonsBefore[kButtonStateBytes];
+        ReadButtonState(buttonsBefore);
+
         if (gen::options::videoCanvas::PassClick(at)) {
             EnterCanvasFromClick(gen::options::videoCanvas::Pass);
         } else if (gen::options::audioCanvas::PassClick(at)) {
             EnterCanvasFromClick(gen::options::audioCanvas::Pass);
         }
+
+        // A click on a button is the same flip a press is, so it is noticed
+        // the same way -- see ::SpendCanvasInput. Posted after
+        // ::EnterCanvasFromClick, which is what makes the LATER post win:
+        // clicking a button in a section the d-pad had not entered both
+        // selects the section and flips the button, and the flip is the thing
+        // the player actually did.
+        if (ButtonStateChanged(buttonsBefore)) ui::impl::PostSfx(sfx::toggle);
 #if TARGET_GC
         if (const bool wideNow = WidescreenBit(); wideNow != wideBefore) {
             ApplyWidescreenChange(wideNow);
@@ -728,6 +783,65 @@ namespace title {
 
     static void BankMenuTiles() {
         mmc3::SwitchCHRBank<mmc3::BankOf<blob::ui::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
+    }
+
+
+    // One frame of the audio engine, and the UI effect waiting on it, under a
+    // single bank pair.
+    //
+    // THE ENGINE HAS TO BE DRIVEN HERE AT ALL, which it was not before: on NES
+    // famistudio_sfx_play only writes a stream, and nothing SOUNDS until
+    // famistudio_update walks it -- and off NES audio::Update is what refills
+    // the effect mix (src/SDL3/audio.cpp's UpdateSfx). This mode never ticked
+    // it, because it never played anything; a menu that makes noise is what
+    // changes that. It costs a stopped song nothing on either backend
+    // (famistudio_update's `song_speed == 0` early path, and an SDL3 stream
+    // with no active voice), which is why it is unconditional, exactly as it
+    // is in level.cpp's own loop.
+    //
+    // AND THE EFFECT IS PLAYED HERE because this is where the engine is
+    // already mapped -- see ::ui::impl::pendingSfx for why the hooks that want
+    // a sound cannot play one themselves. The two sit in ONE
+    // CallPairedBlock rather than two: the pair is most of the cost, and
+    // whatever the mailbox holds is wanted on this frame, not the next.
+    //
+    // Nothing in the block may touch ordinary banked code -- with both windows
+    // switched, $8000-$BFFF is audio and nothing else (mmc3.hpp's
+    // ::CallPairedBlock). Two calls into those banks and one volatile byte of
+    // RAM is the whole of it.
+    // The level every UI effect is played at, as audio::SfxPlay's per-call
+    // volume byte wants it.
+    //
+    // THE SFX SLIDER'S OWN POSITION, read at the moment of playing rather than
+    // pushed when the handle moved -- which is what makes the handle the only
+    // copy of this setting (see sliders.hpp's SFXSlider note). An effect
+    // already sounding keeps the level it started with, because the backends
+    // latch it per voice; the next one picks up wherever the slider is now.
+    //
+    // A CONSTANT ON NES, and the value is irrelevant: that driver discards the
+    // byte (FamiStudio has no per-effect level, see src/nes/audio/famistudio.cpp)
+    // and the scene has no SFX slider there to read -- options.uis hides it,
+    // so the namespace does not exist to name. The NES offers a disableSFX
+    // on/off button in its place, which nothing reads yet.
+    static u8 SfxLevel() {
+#ifdef TARGET_NES
+        return 0;
+#else
+        namespace ac = gen::options::audioCanvas;
+        const Rect r = ac::SFXSlider::rect;
+        return ui::impl::SliderCoefficient(r.size.x, ac::SFXSlider::amount);
+#endif
+    }
+
+    static void DriveAudio() {
+        mmc3::CallPairedBlock<audio_tag, audio_data_tag>([] {
+            audio::Update();
+            if (const u8 queued = ui::impl::pendingSfx) {
+                ui::impl::pendingSfx = 0;
+                audio::SfxPlay(static_cast<u8>(queued - 1), ui::impl::kSfxChannel,
+                               SfxLevel());
+            }
+        });
     }
 
 
@@ -904,12 +1018,29 @@ namespace title {
                 else                gen::title::TitleOptions::Pass(pressed);
 
                 if (pressed & input::A) {
+                    // The SingleChoice confirm, for both menus that share
+                    // these rows: A is what picks the option the arrow is on,
+                    // whichever of the two is live. Posted before the branch
+                    // rather than per case, because it is the GESTURE that
+                    // makes the sound and every case below is the same one --
+                    // uitk has no Confirm() hook to carry it, since what a
+                    // choice MEANS is entirely the scene's (see
+                    // ui/impl/singleChoice.hpp).
+                    ui::impl::PostSfx(sfx::select);
+
                     if (playModeActive) {
 #ifdef PLAYER2_SUPPORTED
                         level::multiplayer = gen::gameOptions::gameOptions::option != 0;
 #endif
                         ppu::PPUMASK = 0;
                         gameMode = eGameModes::Level;
+                        // Drained before leaving, because nothing in level
+                        // mode spends this mailbox: the effect above would
+                        // otherwise sit in it and sound on the next visit to
+                        // the title screen. Started here and heard there --
+                        // level::main ticks the same engine every frame, so a
+                        // stream written now plays out over the handover.
+                        DriveAudio();
                         return;
                     }
 
@@ -937,7 +1068,14 @@ namespace title {
                     }
                 }
 
+                // B backs out of the play-mode menu, and sounds like it. The
+                // guard is the whole condition, not just the sound's: B on the
+                // title menu itself has nothing to back out TO, and a
+                // deselection effect on a press that changed nothing would be
+                // the one place in this page where the sound and the screen
+                // disagree.
                 if (pressed & input::B && playModeActive) {
+                    ui::impl::PostSfx(sfx::deselect);
                     playModeActive = false;
                     pNMI = nmi_handler_drawMenu;
                 }
@@ -1006,11 +1144,24 @@ namespace title {
                         canvasEntered = true;
                         SelectFocusedComponent();
                     } else if (pressed & input::B) {
+                        // Leaving the page -- the outermost of the three
+                        // things B undoes here, and the same effect for all
+                        // three: B is one gesture, and which level of the page
+                        // it backed out of is not something a player needs
+                        // told in a different sound.
+                        ui::impl::PostSfx(sfx::deselect);
                         pNMI = nmi_handler_lockAnimReverse;
                     }
                 } else if (pressed & input::B) {
                     // Back to the column, corners with it. The Canvas keeps its
                     // focus index, so A lands on the same component again.
+                    //
+                    // The corners are re-placed through ::PlaceOptionsCorners,
+                    // which is deliberately the SILENT path onto these sprites
+                    // -- so this frame makes one sound, the deselection, and
+                    // not a selection of the column on top of it (see
+                    // ui/impl/canvas.hpp's ConfirmComponent).
+                    ui::impl::PostSfx(sfx::deselect);
                     canvasEntered = false;
                     PlaceOptionsCorners();
                 } else {
@@ -1034,6 +1185,13 @@ namespace title {
                 }
             }
             if (quit) return;
+
+            // After ::WaitForPresent, so the effects the NMI handler's own
+            // spenders posted on this frame (::SpendCanvasInput /
+            // ::SpendCanvasClick, which are vblank work) are played on it
+            // rather than a frame late -- and so are the ones posted by the
+            // mainline above, which ran earlier in the same iteration.
+            DriveAudio();
         }
     }
 

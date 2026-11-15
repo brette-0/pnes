@@ -5,6 +5,7 @@
 #include STRCAT(../../gen/options/GEN_TARGET_DIR/options.hpp)
 #include "../../chr/chr.h"
 #include "../../src/graphics/windows.hpp"
+#include "sounds.hpp"
 
 namespace ui::impl {
     // @p width is the track's WHOLE footprint in cells, caps included, so it
@@ -84,6 +85,21 @@ namespace ui::impl {
         const u8 last = static_cast<u8>(travel - 1);
         if (amt >= last) return 100;
         return static_cast<u8>(static_cast<u16>(amt) * 100 / last);
+    }
+
+    // The same proportion ::SliderPercent reports, scaled to the whole byte the
+    // mixing backends read as a level (0 silent, 255 unity -- see
+    // include/pnes/audio.hpp's ::SfxPlay, and note the API itself assigns the
+    // byte no meaning; that range is the backends' own).
+    //
+    // Derived from ::SliderPercent rather than from `amt` directly, so there is
+    // one definition of what a handle position is worth and this cannot drift
+    // from what the music slider pushes into ::TrackVolume. The rounding is the
+    // same +50/100 trick ::SliderAmountFor uses, scaled: `* 255 + 50) / 100`
+    // lands 100 on exactly 255 and 0 on exactly 0, which are the two values
+    // that have to be exact.
+    constexpr u8 SliderCoefficient(const u8 width, const u8 amt) {
+        return static_cast<u8>((static_cast<u16>(SliderPercent(width, amt)) * 255 + 50) / 100);
     }
 
     // The inverse, rounded to the nearest cell -- for restoring a proportion
@@ -199,6 +215,23 @@ namespace gen::options::audioCanvas {
             // `amount` is atomic (volatile on NES), so it is loaded once into
             // `last` rather than read again for the second write.
             const u8 last = amount;
+
+            // Which WAY the handle went, which is the one place in this
+            // project an effect is chosen by direction. A slider is a value,
+            // not a cursor, so the two directions are not the same gesture --
+            // where a Canvas's focus move uses one effect for both
+            // (ui/impl/canvas.hpp's UpdateCanvas).
+            //
+            // After the range guard above, so walking off either end of the
+            // track is silent -- the same frame that draws nothing should
+            // sound nothing. And `!=` rather than `<`/`>` alone: a click that
+            // resolves to the cell the handle is already in
+            // (::SliderAmountForCell, including either cap once the handle has
+            // reached it) is not a move and gets no effect.
+            if (amt != last) {
+                ui::impl::PostSfx(amt > last ? sfx::selectnext : sfx::selectprev);
+            }
+
             ui::impl::ClearSliderHandle<!vertical>(pos, last);
             amount = amt;
             ui::impl::DrawSliderHandle<!vertical>(pos, amt);
@@ -232,11 +265,17 @@ namespace gen::options::audioCanvas {
         // See musicSlider above -- same prohibition, checked per slider,
         // because the axis is per slider.
         //
-        // NOTE: unlike musicSlider this pushes nothing into the audio API. The
-        // API has no SFX level yet (audio.hpp), and this project registers no
-        // non-NES SFX for one to apply to (demo/src/tracks.cpp) -- so the
-        // handle moves and nothing else happens, deliberately, rather than
-        // being wired to the music level it is not.
+        // STILL PUSHES NOTHING FROM HERE, and now for a better reason than
+        // before. musicSlider calls ::TrackVolume because music has a master
+        // level to set; effects do not -- audio::SfxPlay takes its level PER
+        // CALL instead (see include/pnes/audio.hpp on why that is the better
+        // primitive). So there is nothing for this hook to push: the value is
+        // read where an effect is actually played, by title.cpp's ::DriveAudio,
+        // through ::SliderCoefficient above.
+        //
+        // Which means `amount` IS the setting, not a copy of it -- the handle
+        // is the single source of truth and no backend holds a second one that
+        // could disagree with where this slider is sitting.
         static_assert(!vertical, "vertical sliders are not implemented in this project -- "
                                   "untick Vertical on this slider in uitk, or implement the "
                                   "column-walking path in ui::impl");
@@ -264,6 +303,13 @@ namespace gen::options::audioCanvas {
             if (amt >= ui::impl::SliderTravel(r.size.x)) return;
 
             const u8 last = amount;
+
+            // See musicSlider::DrawChange -- same direction test, duplicated
+            // for the same reason every other hook in this file is.
+            if (amt != last) {
+                ui::impl::PostSfx(amt > last ? sfx::selectnext : sfx::selectprev);
+            }
+
             ui::impl::ClearSliderHandle<!vertical>(pos, last);
             amount = amt;
             ui::impl::DrawSliderHandle<!vertical>(pos, amt);
