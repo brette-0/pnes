@@ -65,6 +65,10 @@ namespace blob {
         constexpr unsigned short box_ul         = 0x01b1;
         constexpr unsigned short box_ur         = 0x01b2;
         constexpr unsigned short box_vertical   = 0x01b3;
+        constexpr unsigned short select_bl      = 0x01b4;
+        constexpr unsigned short select_br      = 0x01b5;
+        constexpr unsigned short select_ul      = 0x01b6;
+        constexpr unsigned short select_ur      = 0x01b7;
         constexpr unsigned long  __lma          = 0x1800; // byte offset, used for BankOf()
         constexpr unsigned long  __size         = 0x0400; // bytes the entry occupies
     }

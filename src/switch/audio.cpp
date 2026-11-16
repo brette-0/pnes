@@ -35,9 +35,37 @@ static constexpr u32 SAMPLE_RATE     = 48000;
 static constexpr u32 BYTES_PER_FRAME = 2 /*ch*/ * sizeof(s16);
 static constexpr u32 BYTES_PER_SEC   = SAMPLE_RATE * BYTES_PER_FRAME;  // 192000
 
-// Triple-buffered ~85ms chunks. Each must be 0x1000-aligned with a 0x1000-
-// multiple size (audout requirement); 0x4000 satisfies both.
-static constexpr u32 CHUNK   = 0x4000;
+// Triple-buffered ~21ms chunks. Each must be 0x1000-aligned with a 0x1000-
+// multiple size (audout.h's AudioOutBuffer), so 0x1000 -- 1024 frames at
+// 48kHz -- is the SMALLEST legal chunk, and that floor is the only reason this
+// is not lower.
+//
+// SIZED FOR SFX LATENCY, NOT FOR THE MUSIC, and the difference is large.
+// Effects are mixed into this same stream (::fill_chunk), so an effect cannot
+// start until the chunk it was first mixed into reaches the DAC -- and that
+// chunk is one just released, sitting behind every chunk still queued. The
+// delay is therefore the PIPELINE DEPTH, (N_BUF-1) chunks at worst:
+//
+//   0x4000 x 3 (what this was):  85ms chunks, 256ms queued -> 171-256ms
+//   0x1000 x 3 (this):           21ms chunks,  64ms queued ->  43-64ms
+//
+// A quarter-second-late menu blip reads as a bug; ~3 frames reads as the
+// press. The music does not care either way -- it is a continuous stream and
+// hears no difference between the two.
+//
+// WHAT IT COSTS is starvation tolerance: the mixer thread must now refill
+// within 21ms of a release, with 43ms of audio queued behind it, where before
+// it had 171ms of slack. It is a priority-0x20 thread (above main's 0x2C)
+// doing a 4KB memcpy and a mix, so the deadline is not tight -- but a stall
+// over ~43ms would now be an audible dropout where it used to be absorbed.
+// N_BUF 4 is the hedge if that ever shows up; N_BUF 2 would halve the latency
+// again, at 21ms of tolerance, which is where this stops being worth it.
+//
+// THE REAL FIX FOR SUB-20ms is audren rather than audout: per-voice
+// submission on ~5ms ticks, which would make effects their own voices the way
+// ASND already does on GameCube (src/ogc/audio.cpp) instead of mixing them
+// into the song. That is a backend rewrite, not a constant.
+static constexpr u32 CHUNK   = 0x1000;
 static constexpr int N_BUF   = 3;
 
 // audio.hpp declares these for the desktop mixer; the Switch streams via audout

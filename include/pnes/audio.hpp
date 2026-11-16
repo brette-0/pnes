@@ -310,12 +310,15 @@ void TrackVolume(u8 percent);
  *     a linear amplitude coefficient (so it is the fraction a slider reads out,
  *     scaled to a whole byte -- see ::TrackVolume on why linear and not
  *     perceptual).
+ *   - GC/Wii: the same reading, and the same range, but applied by ASND rather
+ *     than in software -- its own per-voice scale is 0-MAX_VOLUME (255), so the
+ *     byte is passed through untouched.
  *   - NES: DISCARDED. FamiStudio's engine has no per-effect level -- volume
  *     lives per note inside the effect data -- so the parameter is read by
  *     nothing and the value is irrelevant. Pass whatever is cheapest to
  *     materialise; a literal costs one immediate at the call site.
- *   - The silent stubs (GC/Wii, PSP, PS2, PS3, 3DS, DS, GBA): ignored along
- *     with the rest of the call.
+ *   - The silent stubs (PSP, PS2, PS3, 3DS, DS, GBA): ignored along with the
+ *     rest of the call.
  *
  * NO WARNING ATTRIBUTE ON THE NES CASE, unlike ::SfxStop and ::SfxPause. Those
  * cannot do the thing they are named for at all, so a call site there is asking

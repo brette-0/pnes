@@ -1802,7 +1802,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     # The OGC backend presents the shared software PPU (src/emu) through GX: the
     # emulator and all the nametable/OAM/palette write functions are
     # platform-agnostic and compiled here alongside the GX-specific
-    # video/present, the PAD/WPAD input, and the (stub) audio.
+    # video/present, the PAD/WPAD input, and the ASND audio.
     file(GLOB OGC_SOURCES CONFIGURE_DEPENDS src/ogc/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
     file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
     add_library(pnes STATIC ${OGC_SOURCES} ${ALL_SOURCES})
@@ -1824,6 +1824,14 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     target_compile_definitions(pnes PRIVATE $<$<CONFIG:Debug>:OGC_PROFILER>)
     # asnd: libogc's ASND audio library (src/ogc/audio.cpp), not pulled in by
     # OGC_STANDARD_LIBRARIES (-logc -lm) on its own.
+    #
+    # NO libfat: the only thing that ever wanted it was the SD-card route for
+    # sound effects, which is disabled (see the sfx block below and
+    # .ignore/ogc-sfx-sd-gecko/NOTES.md). Re-add `fat` to this line when
+    # re-enabling that code -- it is what brings the SD/USB drivers libogc
+    # exposes as __io_wiisd/__io_usbstorage (Wii) and
+    # __io_gcsda/__io_gcsdb/__io_gcsd2 (SD Gecko, SD2SP2), and it costs ~155KB
+    # of .dol that an embedded build has no reason to carry.
     target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh asnd)
 
     # The music is EMBEDDED in the .dol, not loaded from disk: a Homebrew
@@ -1862,9 +1870,15 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     # audio.cpp resolves `#embed <pc_audio.ogg>` via --embed-dir (the canonical
     # GCC mechanism; -I is not reliably searched for #embed). Scope both the
     # search dir and the rebuild-on-change dependency to that one source.
+    # OBJECT_DEPENDS lists the SFX raw files and the generated include too: all
+    # of them are #embedded into this one TU, so changing any of them has to
+    # retrigger its compile. The include path is the same directory the music's
+    # --embed-dir already points at, which is why the raw files are written
+    # under it rather than into an assets/ folder of their own.
     set_source_files_properties(${CMAKE_SOURCE_DIR}/src/ogc/audio.cpp
             PROPERTIES
-                OBJECT_DEPENDS  ${OGC_OGG}
+                OBJECT_DEPENDS  "${OGC_OGG};${OGC_SFX_OUTPUTS};${OGC_SFX_INC}"
+                INCLUDE_DIRECTORIES "${OGC_ASSET_DIR}"
                 COMPILE_OPTIONS "--embed-dir=${OGC_ASSET_DIR}")
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
@@ -1883,6 +1897,102 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
     add_executable(demo ${DEMO_SOURCES})
     set_target_properties(demo PROPERTIES SUFFIX ".elf")
     target_link_libraries(demo PRIVATE pnes)
+
+    # ------------------------------------------------------------------
+    # Sound effects -> EMBEDDED in the .dol, like the music above.
+    #
+    # THE FOLDER ROUTE IS DISABLED, NOT DELETED: the backend can also load
+    # these from an assets/ folder on an SD Gecko / SD2SP2 card, and that code
+    # is still in src/ogc/audio.cpp behind an `#if 0`. It is off because
+    # DOLPHIN CANNOT EMULATE EITHER DEVICE -- its GameCube EXI slots offer no
+    # SD card of any kind (the "Gecko" in its slot list is the USB Gecko, a
+    # serial debug cable), so a GameCube build could never make a sound in the
+    # emulator, which is where this gets tested. The full write-up, including
+    # what to do when returning to it, is in
+    # .ignore/ogc-sfx-sd-gecko/NOTES.md.
+    #
+    # WHICH IS WHY THE APP-DEFINED-TABLE PROBLEM IS SOLVED IN CMAKE: #embed
+    # needs a literal path at the backend's compile time and the effect table
+    # belongs to the application (audio::SetSfx), so the list cannot be written
+    # into the backend by hand. It is GENERATED here instead, from this
+    # project's own effect directory, as one #embed per file plus a name table;
+    # audio.cpp matches an entry to ::sfxs by filename. The names are the join,
+    # not the order, so a glob reordering cannot silently mismatch effects.
+    #
+    # RAW PCM, NOT OGG, because ASND voice formats ARE raw PCM: 48kHz stereo
+    # s16 is played straight out of .rodata, with no decoder, no decode time
+    # and no second copy in RAM -- the embedded bytes ARE the voice buffer. The
+    # music is an OGG only because 47MB of PCM fits neither in a .dol nor in
+    # 24MB of GameCube RAM; a 0.4s effect has no such problem.
+    #
+    # s16BE, NOT s16LE. VOICE_STEREO_16BIT is big-endian (asndlib.h #defines it
+    # to the same value as VOICE_STEREO_16BIT_BE), so this is the console's own
+    # byte order and the format the music voice is already fed. The Switch
+    # branch's equivalent step writes s16le because ARM is little-endian; the
+    # pair of (encode order, voice format) has to agree per platform, and
+    # disagreeing is audible static rather than silence.
+    #
+    # THE SILENCE TRIM IS A SIZE FIX, not a creative one: every effect in
+    # demo/audio/sfx is ~0.35s of sound followed by ~2.3s of digital silence
+    # (measured with ffmpeg silencedetect: Toggle.ogg's sound ends at 0.349s and
+    # reads -91dB -- the dither floor -- from 1.0s on). Padding costs 48000*4
+    # bytes a second, and it is now .dol SIZE rather than card space: trimmed,
+    # all five effects are ~318KB instead of ~2.5MB. ASND stops a voice at the
+    # end of its buffer, so a trimmed effect and a padded one sound identical.
+    # areverse ... areverse is what makes silenceremove, which only trims
+    # leading silence, trim the TRAILING silence; 50ms is kept so nothing clips
+    # the tail of the sound itself. The SOURCE OGGs ARE NOT TOUCHED -- this
+    # writes only into the build tree.
+    set(OGC_SFX_DIR ${CMAKE_SOURCE_DIR}/demo/audio/sfx CACHE PATH
+            "Directory of the project's one-shot sound effects (*.ogg). Each is \
+transcoded to raw PCM and #embedded into the GC/Wii .dol.")
+    # Beside the music's own embed input, so ONE --embed-dir serves both.
+    set(OGC_SFX_OUT_DIR ${OGC_ASSET_DIR}/sfx)
+    set(OGC_SFX_INC ${OGC_ASSET_DIR}/sfx_embed.inc)
+    set(OGC_SFX_TRIM "areverse,silenceremove=start_periods=1:start_threshold=-60dB:start_silence=0.05:detection=peak,areverse")
+    file(GLOB OGC_SFX_SOURCES CONFIGURE_DEPENDS ${OGC_SFX_DIR}/*.ogg)
+    set(OGC_SFX_OUTPUTS)
+    set(OGC_SFX_INC_BODY "// GENERATED by the gc/wii branch of CMakeLists.txt -- do not edit.\n")
+    string(APPEND OGC_SFX_INC_BODY "// One #embed per effect, plus the name table audio.cpp matches ::sfxs against.\n\n")
+    set(OGC_SFX_INC_TABLE "")
+    set(OGC_SFX_INDEX 0)
+    foreach(OGC_SFX_SRC ${OGC_SFX_SOURCES})
+        get_filename_component(OGC_SFX_NAME ${OGC_SFX_SRC} NAME_WE)
+        set(OGC_SFX_RAW ${OGC_SFX_OUT_DIR}/${OGC_SFX_NAME}.raw)
+        add_custom_command(
+                OUTPUT ${OGC_SFX_RAW}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${OGC_SFX_OUT_DIR}
+                COMMAND ${FFMPEG} -y -loglevel error -i ${OGC_SFX_SRC}
+                        -af ${OGC_SFX_TRIM}
+                        -ar 48000 -ac 2 -f s16be ${OGC_SFX_RAW}
+                DEPENDS ${OGC_SFX_SRC}
+                COMMENT "Encoding GC/Wii SFX: ${OGC_SFX_NAME}.ogg -> embedded sfx/${OGC_SFX_NAME}.raw (48k s16be)"
+                VERBATIM)
+        list(APPEND OGC_SFX_OUTPUTS ${OGC_SFX_RAW})
+        # alignas(32): ASND_SetVoice's buffer must be 32-byte aligned
+        # (asndlib.h), and these arrays ARE the buffers -- nothing copies them
+        # into an aligned allocation first, which is the whole point of
+        # embedding raw PCM rather than an encoded form.
+        string(APPEND OGC_SFX_INC_BODY
+                "alignas(32) static const unsigned char sfx_blob_${OGC_SFX_INDEX}[] = {\n"
+                "#embed <sfx/${OGC_SFX_NAME}.raw>\n"
+                "};\n")
+        string(APPEND OGC_SFX_INC_TABLE
+                "    { \"${OGC_SFX_NAME}\", sfx_blob_${OGC_SFX_INDEX}, sizeof(sfx_blob_${OGC_SFX_INDEX}) },\n")
+        math(EXPR OGC_SFX_INDEX "${OGC_SFX_INDEX} + 1")
+    endforeach()
+    string(APPEND OGC_SFX_INC_BODY "\nstatic const sfx_embed_t sfx_embeds[] = {\n${OGC_SFX_INC_TABLE}};\n")
+    # file(CONFIGURE) and not file(WRITE): it leaves the file alone when the
+    # content is unchanged, so a reconfigure does not retrigger the compile of
+    # audio.cpp for nothing.
+    file(CONFIGURE OUTPUT ${OGC_SFX_INC} CONTENT "${OGC_SFX_INC_BODY}" @ONLY)
+
+    # On `pnes`, not on `demo`: the LIBRARY's own compile #embeds these now, so
+    # they have to exist before audio.cpp is compiled -- the same relationship
+    # the music OGG already has, and the opposite of the folder route's, where
+    # they were the application's loose assets.
+    add_custom_target(ogc-sfx-assets DEPENDS ${OGC_SFX_OUTPUTS})
+    add_dependencies(pnes ogc-sfx-assets)
 
     # See the TARGET_NES branch's own comment on this same call for
     # GEN_TARGET_DIR. Quoted: DEMO_TITLE_DIR is "wii u" (a space) on the Wii
@@ -2138,7 +2248,48 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 DEPENDS ${NX_WAV}
                 COMMENT "Encoding Switch audio: pc_audio.wav -> RomFS pc_audio.raw (48k s16le)"
                 VERBATIM)
-        add_custom_target(switch-assets DEPENDS ${NX_RAW})
+        # The EFFECTS, through the same pipeline and into the same RomFS. This
+        # step was missing, which is the whole of why the Switch has been
+        # silent: src/switch/audio.cpp has a complete SFX mixer and resolves
+        # each registered entry to romfs:/<fp with .raw> (its ::romfs_raw_path),
+        # but only tracks/pc_audio.raw was ever put in the image -- so every
+        # fopen failed, every length stayed 0, and SfxPlay returned without
+        # sounding. The names and the subdirectory therefore come from the
+        # application's own table (demo/ui/impl/sounds.hpp lists sfx/Name.ogg),
+        # not from a convention this branch invents.
+        #
+        # s16LE here and s16BE in the gc/wii branch, because the formats are
+        # read by different hardware: audout takes native-endian PCM on a
+        # little-endian ARM, while ASND's VOICE_STEREO_16BIT is big-endian.
+        #
+        # Same trailing-silence trim as the gc/wii branch, for the same reason
+        # and with the same (non-)effect on how an effect sounds -- see the long
+        # note there. It matters a little less here (the Switch has RAM to
+        # waste) and is kept identical so the two pipelines cannot drift into
+        # producing audibly different assets from one source.
+        set(NX_SFX_DIR ${CMAKE_SOURCE_DIR}/demo/audio/sfx CACHE PATH
+                "Directory of the project's one-shot sound effects (*.ogg), \
+transcoded into the .nro's RomFS as sfx/<name>.raw.")
+        set(NX_SFX_TRIM "areverse,silenceremove=start_periods=1:start_threshold=-60dB:start_silence=0.05:detection=peak,areverse")
+        file(MAKE_DIRECTORY ${NX_ROMFS}/sfx)
+        file(GLOB NX_SFX_SOURCES CONFIGURE_DEPENDS ${NX_SFX_DIR}/*.ogg)
+        set(NX_SFX_OUTPUTS)
+        foreach(NX_SFX_SRC ${NX_SFX_SOURCES})
+            get_filename_component(NX_SFX_NAME ${NX_SFX_SRC} NAME_WE)
+            set(NX_SFX_RAW ${NX_ROMFS}/sfx/${NX_SFX_NAME}.raw)
+            add_custom_command(
+                    OUTPUT ${NX_SFX_RAW}
+                    COMMAND ${CMAKE_COMMAND} -E make_directory ${NX_ROMFS}/sfx
+                    COMMAND ${FFMPEG} -y -loglevel error -i ${NX_SFX_SRC}
+                            -af ${NX_SFX_TRIM}
+                            -ar 48000 -ac 2 -f s16le ${NX_SFX_RAW}
+                    DEPENDS ${NX_SFX_SRC}
+                    COMMENT "Encoding Switch SFX: ${NX_SFX_NAME}.ogg -> RomFS sfx/${NX_SFX_NAME}.raw (48k s16le)"
+                    VERBATIM)
+            list(APPEND NX_SFX_OUTPUTS ${NX_SFX_RAW})
+        endforeach()
+
+        add_custom_target(switch-assets DEPENDS ${NX_RAW} ${NX_SFX_OUTPUTS})
         add_dependencies(demo_elf switch-assets)
 
         # Wrap the linked ELF as a homebrew .nro with a NACP metadata banner and
@@ -2302,14 +2453,67 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
             message(STATUS "IPO/LTO not supported by this toolchain: ${_ipo_err}")
         endif()
 
+        # The SOUND EFFECTS, as the bundle's content tree.
+        #
+        # THE MUSIC IS STILL EMBEDDED in the .rpx (above), so it plays however
+        # the title is launched; the effects cannot be, because the table is the
+        # application's and #embed needs a literal path at the backend's compile
+        # time (src/wiiu/audio.cpp's header). That backend has always read them
+        # from /vol/content -- which is exactly what a .wuhb's content tree
+        # mounts as -- but nothing ever PUT them there: this bundle was built
+        # with no CONTENT at all, so every fopen failed and the finished SFX
+        # mixer in that file never had anything to mix. That is the whole bug.
+        #
+        # OGG, NOT RAW, unlike the Switch and gc/wii branches: this backend
+        # decodes with stb_vorbis and converts through SDL, so it wants the
+        # source files as they are. Copied rather than transcoded for that
+        # reason -- there is nothing to transcode.
+        #
+        # A bare .rpx dropped into Cemu still has no /vol/content mount and so
+        # still plays no effects. That is the documented behaviour of the
+        # backend's own path, and the music keeps playing either way.
+        set(WIIU_CONTENT_DIR ${CMAKE_BINARY_DIR}/wuhb-content)
+        set(WIIU_SFX_DIR ${CMAKE_SOURCE_DIR}/demo/audio/sfx CACHE PATH
+                "Directory of the project's one-shot sound effects (*.ogg), \
+copied into the .wuhb content tree (mounted at /vol/content).")
+        # wut_create_wuhb() checks IS_DIRECTORY on its CONTENT argument at
+        # CONFIGURE time, so the directory has to exist before the call below
+        # even though the copy that fills it runs at build time -- the same
+        # ordering the Switch branch's romfs dir needs.
+        file(MAKE_DIRECTORY ${WIIU_CONTENT_DIR}/sfx)
+        # The OGGs by name, not copy_directory: demo/audio/sfx also holds
+        # nes_sfx_bank.s (the NES build's assembly wrapper around the FamiStudio
+        # export), and a whole-directory copy puts that inside the Wii U bundle.
+        # The gc/wii and Switch branches glob *.ogg for the same reason.
+        file(GLOB WIIU_SFX_SOURCES CONFIGURE_DEPENDS ${WIIU_SFX_DIR}/*.ogg)
+        set(WIIU_SFX_COPY "")
+        if(WIIU_SFX_SOURCES)
+            # Guarded because `cmake -E copy_if_different` with no source files
+            # is an error, and a project that registers no effects is allowed:
+            # it then stages nothing and the content tree stays empty.
+            set(WIIU_SFX_COPY COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${WIIU_SFX_SOURCES} ${WIIU_CONTENT_DIR}/sfx)
+        endif()
+        add_custom_target(wiiu-sfx-assets
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${WIIU_CONTENT_DIR}/sfx
+                ${WIIU_SFX_COPY}
+                COMMENT "Staging Wii U SFX: demo/audio/sfx/*.ogg -> /vol/content/sfx"
+                VERBATIM)
+        # On demo_elf, which is what the .wuhb command DEPENDS on (CafeOS.cmake
+        # passes CONTENT as a plain path, so the tree's own files are not
+        # dependencies of the bundle) -- so the copy is ordered before the
+        # packaging that reads it.
+        add_dependencies(demo_elf wiiu-sfx-assets)
+
         # Convert the linked ELF into an .rpx (the Cafe OS executable format) and
         # package it as a .wuhb bundle (the Aroma/Homebrew-Launcher format). The
-        # music is embedded in the .rpx (above), so the bundle needs no content
-        # tree -- both artifacts are fully self-contained and play audio however
-        # they are launched. Both helpers come from wut's CafeOS.cmake.
+        # music is embedded in the .rpx (above); the content tree carries the
+        # sound effects (see the note on it, just above). Both helpers come from
+        # wut's CafeOS.cmake.
         wut_create_rpx(demo_elf)
         wut_create_wuhb(demo
                 TARGET    demo_elf
+                CONTENT   ${WIIU_CONTENT_DIR}
                 NAME      "pnes demo"
                 SHORTNAME "pnes"
                 AUTHOR    "brette"
@@ -2400,10 +2604,22 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
                 # name cos.xml's argstr references.
                 COMMAND ${CMAKE_COMMAND} -E copy
                         ${CMAKE_CURRENT_BINARY_DIR}/${WIIU_RPX_NAME} ${WUP_CODE}/${WIIU_RPX_NAME}
-                # NUSPacker requires a non-empty content/; the title has no data
-                # files (audio is embedded in the rpx), so seed a placeholder.
+                # content/ is where an INSTALLED title's /vol/content comes
+                # from, so the sound effects go in it for the same reason they
+                # go in the .wuhb's content tree above -- an installed title
+                # with an empty content/ would be the one build of this game
+                # that still had no effects. The music stays embedded in the
+                # rpx, so nothing here is load-bearing for audio to exist at
+                # all. The .keep stays: NUSPacker requires a NON-EMPTY
+                # content/, and that must hold even for a project that
+                # registers no effects and so copies nothing.
                 COMMAND ${CMAKE_COMMAND} -E make_directory ${WUP_CONTENT}
                 COMMAND ${CMAKE_COMMAND} -E touch ${WUP_CONTENT}/.keep
+                # The staged tree the .wuhb is built from, so the two artifacts
+                # carry exactly the same content and only one place decides what
+                # belongs in it (notably: the OGGs, not nes_sfx_bank.s).
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        ${WIIU_CONTENT_DIR} ${WUP_CONTENT}
                 COMMAND ${CMAKE_COMMAND}
                         -DWUP_DIR=${WUP_DIR}
                         -DWUP_OUT=${WUP_OUT}

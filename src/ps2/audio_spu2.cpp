@@ -41,8 +41,10 @@
  * at runtime with SifExecModuleBuffer instead of SifLoadModule's rom0: path.
  * LIBSD (the SPU2 driver audsrv itself depends on) IS BIOS-resident.
  *
- * No SFX path: like GameCube/PSP, this project currently registers no SFX
- * table for any non-NES target (see demo/src/tracks.cpp). Note that this
+ * No SFX path on this backend yet, and the reason is no longer "no effects
+ * exist": a project DOES register a table off NES (demo/ui/impl/sounds.hpp)
+ * and the menus play from it, so what is missing here is this backend's own
+ * path -- silent effects, not an empty table. Note that this
  * backend is the one that would make SFX nearly free if that changes -- 23
  * more hardware voices are sitting unused, and audsrv_ch_play_adpcm() on a
  * second loaded sample is the whole implementation.

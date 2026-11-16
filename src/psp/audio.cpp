@@ -18,11 +18,15 @@
  * off the 60Hz render loop entirely, so Update() is a no-op, matching the
  * Switch/Wii U backends' shape rather than GameCube's.
  *
- * No SFX path: like the GameCube backend, this project currently registers no
- * SFX table for any non-NES target (see demo/src/tracks.cpp), and PSP's
- * situation is the same one that keeps GameCube's SfxPlay a no-op --
- * building a whole second decode/mix path for a currently-empty table isn't
- * worth it. Revisit alongside GameCube if/when a non-NES SFX table exists.
+ * No SFX path on this backend yet, and the reason is no longer "no effects
+ * exist": a project DOES register a table off NES (demo/ui/impl/sounds.hpp) and
+ * the menus play from it, so what is missing here is this backend's own decode
+ * and mix path -- it is silent effects, not an empty table. src/ogc/audio.cpp
+ * is the smallest worked example to copy from (one voice per channel, assets
+ * loaded beside the executable rather than embedded, because the table belongs
+ * to the application); src/switch/audio.cpp is the one to copy if the effects
+ * have to be mixed into an existing output buffer, which is this backend's
+ * shape.
  */
 #include "internal.hpp"
 #include <pnes/audio.hpp>

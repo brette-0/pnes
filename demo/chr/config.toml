@@ -56,4 +56,10 @@ includes        = [
     "./assets/tiles/static/ui/button/box_ul.chr",
     "./assets/tiles/static/ui/button/box_ur.chr",
     "./assets/tiles/static/ui/button/box_vertical.chr",
+
+    # ui sprites (may move into bank housing player sprites?)
+    "./assets/sprites/ui/select_bl.chr",
+    "./assets/sprites/ui/select_br.chr",
+    "./assets/sprites/ui/select_ul.chr",
+    "./assets/sprites/ui/select_ur.chr",
 ]

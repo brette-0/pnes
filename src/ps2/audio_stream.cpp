@@ -48,8 +48,10 @@
  * at runtime with SifExecModuleBuffer instead of SifLoadModule's rom0: path.
  * LIBSD (the SPU2 driver audsrv itself depends on) IS BIOS-resident.
  *
- * No SFX path: like GameCube/PSP, this project currently registers no SFX
- * table for any non-NES target (see demo/src/tracks.cpp). Note that
+ * No SFX path on this backend yet, and the reason is no longer "no effects
+ * exist": a project DOES register a table off NES (demo/ui/impl/sounds.hpp)
+ * and the menus play from it, so what is missing here is this backend's own
+ * path -- silent effects, not an empty table. Note that
  * src/ps2/audio_spu2.cpp is the better starting point if that changes -- SFX
  * are short, so they fit SPU2 RAM comfortably and cost nothing to play.
  */

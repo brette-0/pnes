@@ -50,10 +50,15 @@
  * for the frame-rate cost; everything in this file is a way of paying a bill
  * that does not have to be paid.
  *
- * No SFX path: like GameCube/PSP, this project currently registers no SFX
- * table for any non-NES target (see demo/src/tracks.cpp) -- building a whole
- * second decode/mix path for a currently-empty table isn't worth it. Revisit
- * alongside those backends if/when a non-NES SFX table exists.
+ * No SFX path on this backend yet, and the reason is no longer "no effects
+ * exist": a project DOES register a table off NES (demo/ui/impl/sounds.hpp) and
+ * the menus play from it, so what is missing here is this backend's own decode
+ * and mix path -- it is silent effects, not an empty table. src/ogc/audio.cpp
+ * is the smallest worked example to copy from (one voice per channel, assets
+ * loaded beside the executable rather than embedded, because the table belongs
+ * to the application); src/switch/audio.cpp is the one to copy if the effects
+ * have to be mixed into an existing output buffer, which is this backend's
+ * shape.
  */
 #include "internal.hpp"
 #include <pnes/audio.hpp>
