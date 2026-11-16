@@ -2055,7 +2055,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     # The 3DS backend presents the shared software PPU (src/emu) through citro2d:
     # the emulator and all the nametable/OAM/palette write functions are
     # platform-agnostic and compiled here alongside the citro2d video/present,
-    # the hid input, and the (stub) audio.
+    # the hid input, and the ndsp audio.
     file(GLOB CTR_SOURCES CONFIGURE_DEPENDS src/3ds/*.cpp src/emu/*.cpp src/emu/mappers/*.cpp)
     file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/all/*.cpp)
     add_library(pnes STATIC ${CTR_SOURCES} ${ALL_SOURCES})
@@ -2073,6 +2073,94 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
         target_compile_definitions(pnes PUBLIC "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
     endif()
     target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
+
+    # AUDIO ASSETS, BOTH KINDS, INTO THE .3dsx's RomFS -- which is why this
+    # branch has a RomFS at all now: everything else the 3DS build needs is
+    # #embedded (CHR art) or generated, so src/3ds/audio.cpp is its first and
+    # only filesystem consumer.
+    #
+    # ndsp's own rate is NDSP_SAMPLE_RATE (SYSCLOCK_SOC / 512 = 32728.5Hz), so
+    # both kinds are encoded to 32728 and the DSP's resampler has nothing to do
+    # for either. That is the one number this and src/3ds/audio.cpp have to
+    # agree on; the backend reads the MUSIC's rate back out of the OGG header
+    # (so a re-encode retunes the voice rather than detuning the song) and takes
+    # the EFFECTS' rate from its own ::SFX_RATE constant, there being no header
+    # on raw PCM to ask.
+    find_program(FFMPEG ffmpeg REQUIRED)
+    set(CTR_AUDIO_RATE 32728)
+    set(CTR_ROMFS ${CMAKE_BINARY_DIR}/romfs)
+
+    # THE MUSIC STREAMS AS VORBIS, not as the raw PCM the Switch ships: the
+    # desktop WAV is 47MB and raw stereo at this rate is still ~32MB, which is
+    # more than an o3DS gives a .3dsx for everything put together. ~4MB of OGG
+    # stays on the SD card and src/3ds/audio.cpp decodes it with stb_vorbis's
+    # FILE api (stb_vorbis_open_filename, hence a RomFS path rather than an
+    # #embed like the PSP/GameCube do) on its own thread -- the same
+    # transcode-and-stream shape as those two, for the same reason.
+    FetchContent_Declare(
+            stb
+            GIT_REPOSITORY https://github.com/nothings/stb.git
+            GIT_TAG        master
+            GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(stb)
+    target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
+
+    # ctr_create_3dsx() validates the RomFS dir exists at CONFIGURE time, but
+    # everything inside it is produced at BUILD time (below). Create the tree
+    # now so configure passes; the build steps then fill it. Same arrangement as
+    # the Switch branch's nx_create_nro().
+    file(MAKE_DIRECTORY ${CTR_ROMFS}/tracks)
+    file(MAKE_DIRECTORY ${CTR_ROMFS}/sfx)
+
+    set(CTR_OGG ${CTR_ROMFS}/tracks/pc_audio.ogg)
+    set(CTR_WAV ${CMAKE_SOURCE_DIR}/demo/audio/tracks/pc_audio.wav)
+    add_custom_command(
+            OUTPUT ${CTR_OGG}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CTR_ROMFS}/tracks
+            COMMAND ${FFMPEG} -y -loglevel error -i ${CTR_WAV}
+                    -ar ${CTR_AUDIO_RATE} -ac 2 -c:a libvorbis -q:a 4 ${CTR_OGG}
+            DEPENDS ${CTR_WAV}
+            COMMENT "Encoding 3DS audio: pc_audio.wav -> RomFS pc_audio.ogg (Vorbis ${CTR_AUDIO_RATE}Hz)"
+            VERBATIM)
+
+    # THE EFFECTS AS RAW PCM, through the same pipeline and into the same image.
+    # Not Vorbis, for the reason the GameCube branch embeds raw too: a few
+    # hundred milliseconds each (~215KB for this project's five at this rate) is
+    # not worth a decode at startup. NDSP_FORMAT_STEREO_PCM16 is native-endian
+    # on a little-endian ARM11, so s16le -- the gc/wii branch writes s16be for
+    # ASND and that pair is not interchangeable.
+    #
+    # The names and the subdirectory come from the APPLICATION's own effect
+    # table (demo/ui/impl/sounds.hpp lists sfx/<Name>.ogg, and the backend swaps
+    # the extension), not from a convention this branch invents.
+    #
+    # Same trailing-silence trim as the Switch/gc/wii branches, for the same
+    # reason and with the same (non-)effect on how an effect sounds -- see the
+    # long note on the gc/wii one. Kept identical so the pipelines cannot drift
+    # into producing audibly different assets from one source.
+    set(CTR_SFX_DIR ${CMAKE_SOURCE_DIR}/demo/audio/sfx CACHE PATH
+            "Directory of the project's one-shot sound effects (*.ogg), \
+transcoded into the .3dsx's RomFS as sfx/<name>.raw.")
+    set(CTR_SFX_TRIM "areverse,silenceremove=start_periods=1:start_threshold=-60dB:start_silence=0.05:detection=peak,areverse")
+    file(GLOB CTR_SFX_SOURCES CONFIGURE_DEPENDS ${CTR_SFX_DIR}/*.ogg)
+    set(CTR_SFX_OUTPUTS)
+    foreach(CTR_SFX_SRC ${CTR_SFX_SOURCES})
+        get_filename_component(CTR_SFX_NAME ${CTR_SFX_SRC} NAME_WE)
+        set(CTR_SFX_RAW ${CTR_ROMFS}/sfx/${CTR_SFX_NAME}.raw)
+        add_custom_command(
+                OUTPUT ${CTR_SFX_RAW}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${CTR_ROMFS}/sfx
+                COMMAND ${FFMPEG} -y -loglevel error -i ${CTR_SFX_SRC}
+                        -af ${CTR_SFX_TRIM}
+                        -ar ${CTR_AUDIO_RATE} -ac 2 -f s16le ${CTR_SFX_RAW}
+                DEPENDS ${CTR_SFX_SRC}
+                COMMENT "Encoding 3DS SFX: ${CTR_SFX_NAME}.ogg -> RomFS sfx/${CTR_SFX_NAME}.raw (${CTR_AUDIO_RATE} s16le)"
+                VERBATIM)
+        list(APPEND CTR_SFX_OUTPUTS ${CTR_SFX_RAW})
+    endforeach()
+
+    add_custom_target(ctr-assets DEPENDS ${CTR_OGG} ${CTR_SFX_OUTPUTS})
 
     file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
     list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
@@ -2102,6 +2190,11 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     add_executable(demo_elf ${DEMO_SOURCES})
     set_target_properties(demo_elf PROPERTIES OUTPUT_NAME demo SUFFIX ".elf")
     target_link_libraries(demo_elf PRIVATE pnes citro2d citro3d ctru m)
+
+    # The RomFS is consumed by the PACKAGING step below, not by any compile
+    # (nothing #embeds these), so this edge is pure ordering: hung off the ELF
+    # like the Switch branch's, since ctr_create_3dsx already depends on that.
+    add_dependencies(demo_elf ctr-assets)
 
     # See the TARGET_NES branch's own comment on this same call for GEN_TARGET_DIR.
     target_compile_definitions(demo_elf PRIVATE "GEN_TARGET_DIR=${DEMO_TITLE_DIR}")
@@ -2140,6 +2233,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     ctr_create_3dsx(demo
             TARGET demo_elf
             SMDH ${CMAKE_BINARY_DIR}/demo.smdh
+            ROMFS ${CTR_ROMFS}
     )
 
     # ----------------------------------------------------------------------

@@ -27,6 +27,31 @@ Which will demonstrate how you can easily begin using this project.
 > **3ds/dsi/ds/wiiu/3ds/switch**
 >   1. devKitPro 
 
+### 3DS audio: the player needs their console's DSP firmware
+
+A `.3dsx` built here plays music and sound effects through `ndsp`, and **libctru loads the DSP firmware
+from the SD card, not from the build**: it reads `sdmc:/3ds/dspfirm.cdc` (or takes it from the Homebrew
+Launcher's `hb:ndsp` handle) before it talks to the DSP at all. Nintendo's firmware cannot be
+redistributed, so it is not something this repo can ship — which is why every 3DS homebrew with sound
+asks for the same file.
+
+Dumping it is a one-time job per console, and the dump then serves every homebrew game, not just this one:
+
+- **Luma3DS** — Rosalina menu → *Miscellaneous options* → *Dump DSP firmware*
+- or the **DSP1** homebrew app, which writes the same file to the same path
+
+Without it the game boots and runs normally but is **completely silent**, so the backend writes
+`sdmc:/pnes_no_audio.txt` explaining this when it happens — in release builds as well as debug.
+
+**Under an emulator** (Azahar, Citra, Lime3DS) a **zero-byte placeholder** at that path is sufficient:
+those emulate the DSP at a high level and never execute the firmware. Create
+`<emulator user dir>/sdmc/3ds/dspfirm.cdc` and audio works.
+
+If you would rather ship something that asks nothing of the player, [OpenDSP](https://github.com/Cellenseres/OpenDSP/)
+(BSD-2) is an open reimplementation you link in — `opendspInit()` in place of `ndspInit()` in
+`src/3ds/audio.cpp`. It is young and hardware-tested only at the time of writing, and it folds surround
+output to stereo, so it is noted here as an option rather than taken.
+
 
 ## Current Targets:
 - NES/Famicom

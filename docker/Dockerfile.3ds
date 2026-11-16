@@ -21,7 +21,10 @@ RUN dkp-pacman -S --needed --noconfirm 3ds-dev
 
 # The base image is Ubuntu-based; add the host-side build tools the project
 # needs that aren't part of the devkit toolchain itself. (Ninja is the preset
-# generator; git/wget/ca-certificates support FetchContent of intsh/tuple.)
+# generator; git/wget/ca-certificates support FetchContent of intsh/tuple/stb.)
+# ffmpeg transcodes the audio into the .3dsx's RomFS at build time -- the music
+# to a Vorbis OGG the ndsp backend streams, the effects to raw 32728Hz s16le
+# PCM it hands straight to a DSP voice (see the ctr branch of CMakeLists.txt).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ninja-build \
         git \
@@ -29,6 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         xz-utils \
         file \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # The intsh/tuple dependencies declare a CMake 4.2 floor (and CMakePresets.json

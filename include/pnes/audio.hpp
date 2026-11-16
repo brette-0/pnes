@@ -274,7 +274,7 @@ void TrackStop();
  * before ::Init (each backend applies it when it opens its device). The
  * default is 100, so a game that never calls this hears what it always did.
  *
- * A no-op where there is nothing to scale -- the silent 3DS/GBA/DS stubs -- and
+ * A no-op where there is nothing to scale -- the silent GBA/DS stubs -- and
  * on the NES, whose engine has no master level at all (FamiStudio's volume
  * lives per note in the song data, and the NES options page offers an on/off
  * button instead of a slider for exactly that reason).
@@ -313,12 +313,15 @@ void TrackVolume(u8 percent);
  *   - GC/Wii: the same reading, and the same range, but applied by ASND rather
  *     than in software -- its own per-voice scale is 0-MAX_VOLUME (255), so the
  *     byte is passed through untouched.
+ *   - 3DS: the same reading again, applied by ndsp as the effect's own voice
+ *     mix (0.0-1.0, so the byte is divided by 255) and latched by the DSP for
+ *     the life of that effect.
  *   - NES: DISCARDED. FamiStudio's engine has no per-effect level -- volume
  *     lives per note inside the effect data -- so the parameter is read by
  *     nothing and the value is irrelevant. Pass whatever is cheapest to
  *     materialise; a literal costs one immediate at the call site.
- *   - The silent stubs (PSP, PS2, PS3, 3DS, DS, GBA): ignored along with the
- *     rest of the call.
+ *   - The backends with no SFX path (PSP, PS2, PS3) and the silent stubs (DS,
+ *     GBA): ignored along with the rest of the call.
  *
  * NO WARNING ATTRIBUTE ON THE NES CASE, unlike ::SfxStop and ::SfxPause. Those
  * cannot do the thing they are named for at all, so a call site there is asking
@@ -421,6 +424,27 @@ void SetSfx(const sfx_t* table, u8 count);
 
 /**
  * @brief Initializes the audio backend; must be called before any other audio function.
+ *
+ * MAY FAIL, AND NEVER SAYS SO. There is no return value and no query, on any
+ * backend: a device that will not open leaves the whole API inert -- every call
+ * below returns having done nothing -- and the game plays on silently. That is
+ * the deliberate shape, because the alternative is every call site handling an
+ * error it cannot do anything about; a game does not stop for want of sound.
+ * What a backend owes instead is a DIAGNOSTIC, in whatever channel its platform
+ * has, so the silence is explicable to whoever hits it.
+ *
+ * ONE PLATFORM ASKS SOMETHING OF THE PLAYER, which is worth knowing before
+ * shipping to one: on the 3DS the DSP firmware is not part of the build.
+ * libctru loads sdmc:/3ds/dspfirm.cdc (or hbmenu's `hb:ndsp` handle) before
+ * reaching the DSP at all, and Nintendo's firmware cannot be redistributed, so
+ * a player without a dump of their own console's copy gets a mute game. This is
+ * the standing convention for 3DS homebrew rather than anything this library
+ * chose, it costs the player one dump ever (Luma3DS: Rosalina -> Miscellaneous
+ * options -> Dump DSP firmware), and src/3ds/audio.cpp leaves a plain-text note
+ * on the SD card -- in release builds too -- when it is what went wrong. See
+ * that file's header for the full picture, including OpenDSP as the way to drop
+ * the requirement.
+ *
  * @param region Playback region: 0 for NTSC (default), 1 for PAL.
  */
 void Init(u8 region = 0);

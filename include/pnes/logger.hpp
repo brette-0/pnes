@@ -326,6 +326,60 @@ inline void TtyPuts(const char *msg) {
 #define pause()                                                       \
     ::log_detail::TtyPuts("log: pause() hit -- no stdin on PS3, continuing\n")
 
+#elif defined(TARGET_CTR) && !defined(NDEBUG)
+
+// The 3DS has nowhere for stdout to go, which is the same problem the PS2 and
+// PS3 branches above exist to solve -- and, like them, the answer is whichever
+// channel this console actually has. consoleInit() is not an option: it claims
+// a whole screen's framebuffer, and both screens belong to citro2d here
+// (src/3ds/video.cpp), so the generic <iostream> branch below would compile
+// fine and write every message into the void.
+//
+// The SD card is what is left, and it is the better channel anyway for being
+// the ONLY one that reads the same on hardware and under an emulator -- Azahar,
+// Citra and Lime3DS all back the virtual SD with a real host directory, so
+// `sdmc:/pnes.log` is a file on the developer's disk either way. (On hardware
+// it is a file on the card, read after the fact rather than live; there is no
+// terminal to tail on this platform, with or without this.)
+//
+// OPENED ONCE AND FLUSHED PER LINE, not reopened per message: these fire from
+// the mode loops, and an open/close pair around each one is an FS round trip
+// through a service call -- enough to change the timing of what is being
+// diagnosed. Truncating ("w") rather than appending, so the file describes THIS
+// run; a log that accumulates every run since the SD card was formatted is one
+// nobody reads the top of.
+//
+// Formatting is snprintf-style, like the PS2/PS3 branches and unlike the
+// generic one below: a caller passes ordinary printf specifiers matching its
+// own argument types. Every log() call site in this project already does.
+#include <cstdio>
+
+namespace log_detail {
+/// Lazy, so a run that never logs never creates the file. nullptr on failure
+/// (no SD, or a read-only card), which every call site below tolerates.
+inline FILE* CtrLogFile() {
+    static FILE* f = std::fopen("sdmc:/pnes.log", "w");
+    return f;
+}
+} // namespace log_detail
+
+#define log(msg, ...)                                                 \
+    do {                                                              \
+        FILE* _pnes_ctr_log = ::log_detail::CtrLogFile();             \
+        if (_pnes_ctr_log) {                                          \
+            std::fprintf(_pnes_ctr_log,                               \
+                         "log: " msg "\n" __VA_OPT__(,) __VA_ARGS__); \
+            std::fflush(_pnes_ctr_log);                               \
+        }                                                             \
+    } while (0)
+
+/// No interactive stdin on the 3DS to block on (same as the PS2/PS3 branches)
+/// -- logs that this was hit and carries straight on, rather than hanging
+/// forever. A real "press a button" wait would need hidScanInput on the render
+/// thread, which is the thing a pause() is usually called to inspect.
+#define pause()                                                       \
+    log("pause() hit at %s:%d -- no stdin on 3DS, continuing", __FILE__, __LINE__)
+
 #elif !defined(NDEBUG)
 
 #include <iostream>
