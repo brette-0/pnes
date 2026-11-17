@@ -1,5 +1,6 @@
 #include <pnes/mappers/mmc3.hpp>
 #include <pnes/video.hpp>
+#include <pnes/save.hpp>
 
 // Every Register<Index>::poke_only writes this; mmc3::select_latch_scope is
 // the only reader. See its declaration in mmc3.hpp for what it is for.
@@ -168,3 +169,27 @@ static void SyncBankShadows() {
     mmc3::SwitchBank(mmc3::window1Control, BootBank(__mmc3_boot_bank_window1));
     mmc3::SwitchBank(mmc3::window2Control, BootBank(__mmc3_boot_bank_window2));
 }
+
+#ifdef SAVE_FILE
+// if save support is enabled, MMC3 has a battery sometimes it can use
+// we don't want to touch write protection because the SRAM area also houses WRAM
+// this actually doesn't need to do anything, because the save data is always present in CPU if WRAM is mapped
+namespace save {
+    // `done` IS TRUE ON EVERY ONE OF THESE, and that is not decoration: a
+    // caller's `while (!response.done)` tick loop has nothing to wait for here
+    // and must terminate on its first turn. `{ }` would zero-initialise `done`
+    // to false and hang the loop forever on real hardware.
+    //
+    // `err` is save::ok because the save genuinely is present and writable --
+    // whether it holds anything MEANINGFUL is the game's own business and no
+    // mapper can answer it: a fresh battery reads as garbage, which is what a
+    // checksum in the data is for.
+    AI Response Save(const u8* const, const std::size_t) { return { .done = true, .err = found }; }
+    AI Response CreateSave(const u8* const, const std::size_t, const Response* const) { return { .done = true, .err = found }; }
+    AI Response Load(u8* const, const std::size_t) { return { .done = true, .err = found }; }
+    AI Response Load(u8* const, const std::size_t, const Response* const) { return { .done = true, .err = found }; }
+    AI Response GetSaveLocation() { return { .done = true, .err = found }; }
+                                                                                                // but not to be used
+}
+
+#endif

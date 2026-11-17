@@ -61,6 +61,28 @@ enum class Timing : u8 {
 
 namespace nes2 {
     /**
+     * @brief Whether this build carries battery-backed save memory.
+     *
+     * Driven by the ::SAVE_FILE compiler define (CMakeLists.txt, from
+     * SAVE_FILE in local.cmake), which EXISTS ONLY WHEN SAVING IS ON -- CMake
+     * gates it on truthiness, not on being set, so `set(SAVE_FILE 0)` means
+     * off. That is why this tests definedness and why no `#ifndef SAVE_FILE /
+     * #define SAVE_FILE 0` fallback appears anywhere in this header: such a
+     * fallback would make the define exist unconditionally for every TU that
+     * includes this file, and src/nes/mappers/mmc3.cpp's own `#ifdef
+     * SAVE_FILE` would then always take the saving arm.
+     *
+     * Exposed as a `constexpr bool` rather than used as a bare macro inside
+     * ::HEADER because a macro body cannot ask `defined()` of its own
+     * operands.
+     */
+#ifdef SAVE_FILE
+    constexpr bool save_file = true;
+#else
+    constexpr bool save_file = false;
+#endif
+
+    /**
      * @brief Splits @p bytes into a power-of-two exponent and odd remainder.
      * @param bytes Value to factor.
      * @param e     Set to the number of trailing zero bits of @p bytes.
@@ -179,14 +201,20 @@ namespace nes2 {
  * Device are always zero -- none of these are supported yet, so none are
  * parameters here.
  *
- * Mapper, submapper and four-screen wiring (flags 6, bit 3) come from the
- * ::MAPPER / ::SUBMAPPER / ::ALTERNATIVE_NAMETABLE compiler defines rather than
+ * Mapper, submapper, four-screen wiring (flags 6, bit 3) and the battery bit
+ * (flags 6, bit 1) come from the ::MAPPER / ::SUBMAPPER /
+ * ::ALTERNATIVE_NAMETABLE / ::SAVE_FILE compiler defines rather than
  * arguments: each is a compile-time fact about the board being built, not
  * something a call site should restate. Only ALTERNATIVE_NAMETABLE's
- * non-zero-ness is used.
+ * non-zero-ness is used, and only SAVE_FILE's existence (see ::nes2::save_file).
+ *
+ * THE BATTERY BIT AND @p prg_nvram_bytes MUST AGREE, and a static_assert below
+ * enforces it in both directions: a cart with a battery and no non-volatile
+ * chip to back, or a non-volatile chip with the battery bit clear, are both
+ * configurations no emulator can act on sensibly -- the second is the one that
+ * silently produces no save file at all.
  *
  * @param mirroring       Hard-wired nametable mirroring (::Mirroring).
- * @param battery         Battery-backed PRG-RAM/NVRAM present.
  * @param prg_rom_bytes   PRG-ROM size, in bytes.
  * @param chr_rom_bytes   CHR-ROM size, in bytes (0 for CHR-RAM-only carts).
  * @param prg_ram_bytes   Volatile PRG-RAM size, in bytes (0 = absent).
@@ -195,7 +223,7 @@ namespace nes2 {
  * @param chr_nvram_bytes Non-volatile CHR-RAM size, in bytes (0 = absent).
  * @param timing          CPU/PPU timing region (::Timing).
  */
-#define HEADER(mirroring, battery,                                                               \
+#define HEADER(mirroring,                                                                        \
                prg_rom_bytes, chr_rom_bytes,                                                     \
                prg_ram_bytes, prg_nvram_bytes,                                                   \
                chr_ram_bytes, chr_nvram_bytes,                                                   \
@@ -214,13 +242,18 @@ namespace nes2 {
         "CHR-RAM size must be 0 (absent) or 64 << n bytes, n in 1..15");                          \
     static_assert(::nes2::ram_size_representable(chr_nvram_bytes),                               \
         "CHR-NVRAM size must be 0 (absent) or 64 << n bytes, n in 1..15");                        \
+    static_assert(::nes2::save_file == ((prg_nvram_bytes) != 0),                                 \
+        "SAVE_FILE and this HEADER()'s prg_nvram_bytes disagree: a battery-backed cart must "     \
+        "declare the non-volatile chip the battery backs, and a cart that declares one must set " \
+        "SAVE_FILE in local.cmake -- otherwise the ROM header's battery bit stays clear and no "  \
+        "emulator ever creates a save file for it");                                              \
     static_assert(MAPPER <= 0xFFF, "MAPPER exceeds NES2.0's 12-bit mapper number field");         \
     static_assert(SUBMAPPER <= 0xF, "SUBMAPPER exceeds NES2.0's 4-bit submapper field");          \
     NES2_HEADER(                                                                                 \
         'N', 'E', 'S', 0x1a,                                                                     \
         ::nes2::rom_size_byte(prg_rom_bytes, 16384),                                              \
         ::nes2::rom_size_byte(chr_rom_bytes, 8192),                                                \
-        (static_cast<u8>(mirroring) | (static_cast<u8>(battery) << 1) |                          \
+        (static_cast<u8>(mirroring) | (static_cast<u8>(::nes2::save_file) << 1) |                \
             (static_cast<u8>((ALTERNATIVE_NAMETABLE) != 0) << 3) | ((MAPPER & 0xF) << 4)),       \
         (0b1000 | (((MAPPER >> 4) & 0xF) << 4)),                                                 \
         (((MAPPER >> 8) & 0xF) | (SUBMAPPER << 4)),                                               \

@@ -11,10 +11,19 @@
 #endif
 
 
+// The $6000-$7FFF window is declared as PRG-NVRAM, not volatile PRG-RAM, and
+// the battery bit is set for it -- the latter from the SAVE_FILE define rather
+// than from an argument here (nes2.hpp's HEADER() comment). MMC3 makes this
+// all-or-nothing: the board carries ONE 8 KiB chip at that window, so it is
+// either battery-backed in its entirety or not at all, and there is no
+// volatile sub-range to declare alongside it. demo/link.ld's own
+// __program_ram_size/__program_nvram_size pair carries the same split into
+// the layout, and HEADER() static_asserts that SAVE_FILE and the
+// prg_nvram_bytes below cannot drift apart.
 HEADER(
-    Mirroring::Horizontal, false,
+    Mirroring::Horizontal,
     262144, 16384,
-    8192, 0,
+    0, 8192,
     0, 0,
     REGION ? Timing::PAL : Timing::NTSC
 );

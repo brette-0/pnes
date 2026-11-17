@@ -64,8 +64,9 @@ PROVIDE(__mmc3_resident_windows = 1);
  * resident catch-all as before. */
 
 /* The $6000-$7FFF window is this cart's SAVE memory, not volatile work RAM:
- * demo/src/header.hpp declares all 8 KiB of it as PRG-NVRAM with the battery
- * bit set (see its own comment for why MMC3 makes that all-or-nothing). These
+ * demo/src/header.hpp declares all 8 KiB of it as PRG-NVRAM, and the battery
+ * bit comes from the SAVE_FILE define in local.cmake (see header.hpp's own
+ * comment for why MMC3 makes that all-or-nothing). These
  * two lines carry the same fact into the layout, so mmc3-helper.ld's defaults
  * -- 8 KiB volatile, no NVRAM -- don't describe the window as something the
  * header contradicts.

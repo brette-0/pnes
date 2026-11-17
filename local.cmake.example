@@ -35,6 +35,25 @@ set(CC65_DIR "C:/cc65" CACHE PATH "" FORCE)
 # quantity. Optional -- CMakeLists.txt leaves the bit clear if left unset.
 # set(ALTERNATIVE_NAMETABLE 1)
 
+# Save-file support: whether this board carries BATTERY-BACKED save memory
+# (PRG-NVRAM at $6000-$7FFF on MMC3). Set it and three things follow from this
+# one value: nes2.hpp's HEADER() sets the NES2.0 battery bit (flags 6, bit 1),
+# every backend's save module compiles in, and src/nes/mappers/mmc3.cpp's
+# `#ifdef SAVE_FILE` takes its saving arm.
+#
+# Only its EXISTENCE reaches the code, not its value -- but unlike
+# ALTERNATIVE_NAMETABLE above, CMakeLists.txt gates this on truthiness rather
+# than on being set, so `set(SAVE_FILE 0)` turns saving OFF exactly as leaving
+# the line out does. That is deliberate: the consumers test it with #ifdef, so
+# a define that existed with the value 0 would read as "saving is on".
+#
+# Your NES linker script must also declare the window as non-volatile for the
+# two to agree -- demo/link.ld's PROVIDE(__program_ram_size = 0) /
+# PROVIDE(__program_nvram_size = 8) pair is this repo's own example -- and
+# HEADER() static_asserts that this setting and its own prg_nvram_bytes
+# argument cannot drift apart.
+set(SAVE_FILE 1)
+
 # Path to your project's own top-level linker script for the NES/MMC3 build.
 # Only required if you build the NES target. The library never supplies this
 # itself -- only a helper (src/nes/mappers/mmc3-helper.ld) with the

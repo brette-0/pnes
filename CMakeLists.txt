@@ -1039,6 +1039,22 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
         list(APPEND PLATFORM_DEFINE "ALTERNATIVE_NAMETABLE=${ALTERNATIVE_NAMETABLE}")
     endif()
 
+    # Save-file support (battery-backed PRG-NVRAM at $6000-$7FFF): SAVE_FILE in
+    # local.cmake. Appended to PLATFORM_DEFINE here, and NOT only to the
+    # project-wide target_compile_definitions near the end of this file,
+    # because the pass-1 ELF command below compiles demo/src/header.hpp by hand
+    # through PLATFORM_DEFINE_FLAGS -- and nes2.hpp's HEADER() derives the
+    # battery bit (NES2.0 flags 6, bit 1) from this define. Leave it out of
+    # pass 1 and the two passes emit different ROM headers.
+    #
+    # GATED ON TRUTHINESS, not DEFINED-ness, unlike ALTERNATIVE_NAMETABLE just
+    # above: src/nes/mappers/mmc3.cpp tests this one with #ifdef, so emitting
+    # SAVE_FILE=0 would read there as "saving is on". `set(SAVE_FILE 0)` in
+    # local.cmake therefore means off, exactly as leaving it unset does.
+    if(SAVE_FILE)
+        list(APPEND PLATFORM_DEFINE "SAVE_FILE=${SAVE_FILE}")
+    endif()
+
     # -D-prefixed form for the pass-1 custom command below, which invokes the
     # compiler directly and so doesn't pick up target_compile_definitions.
     list(TRANSFORM PLATFORM_DEFINE PREPEND "-D" OUTPUT_VARIABLE PLATFORM_DEFINE_FLAGS)
@@ -4076,6 +4092,20 @@ endif()
 # has created the pnes target by this point): 0 for NTSC (every
 # target's default) or 1 for the nes_pal target set above.
 target_compile_definitions(pnes PUBLIC REGION=${REGION})
+
+# One SAVE_FILE define for every target, for the same reason REGION gets one:
+# the save backends are per-platform, but "does this game use save technology
+# at all" is not, and every backend needs to compile itself away when it
+# doesn't. The NES branch above has already put this in its own
+# PLATFORM_DEFINE (it needs it in the hand-rolled pass-1 flags as well);
+# repeating it here is harmless exactly as it is for REGION, since CMake
+# de-duplicates identical compile definitions on a target.
+#
+# Truthiness-gated, so the define exists only when saving is on -- see the NES
+# branch's own comment for why #ifdef consumers make that the right test.
+if(SAVE_FILE)
+    target_compile_definitions(pnes PUBLIC "SAVE_FILE=${SAVE_FILE}")
+endif()
 
 # uitk-generated title.cpp (every target dir under demo/gen/title/) uses
 # charmap_generic but never includes demo/src/graphics/charmaps.hpp itself --
