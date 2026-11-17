@@ -1,6 +1,6 @@
 #include "types.hpp"
 
-// Regional's constructor, ScaleUp() and ScaleDown() are constexpr, so their
+// Framerated's constructor, ScaleUp() and ScaleDown() are constexpr, so their
 // definitions live in types.hpp -- a constexpr template has to be visible
 // at every call site
 // across translation units, not just this one. What belongs here is
@@ -9,8 +9,8 @@
 // use-before-declaration mistakes early.
 namespace demo {
 
-template class Regional<u8, 60>;
-template class Regional<u16, 256>;
-template class Regional<i16, -100>;
+template class Framerated<u8, 60>;
+template class Framerated<u16, 256>;
+template class Framerated<i16, -100>;
 
 }

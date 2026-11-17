@@ -12,11 +12,11 @@
 ; and both for the same reason: they are not free choices of this file's,
 ; they must equal something decided elsewhere. The code segment must equal
 ; the bank pnes's audio module is compiled into (see below), and
-; NTSC/PAL must equal the target being built. CMake's REGION variable (set from
+; NTSC/PAL must equal the target being built. CMake's FRAMERATE variable (set from
 ; TARGET_PLATFORM, see CMakeLists.txt) is fed in below via -D, and this file
 ; derives FAMISTUDIO_CFG_NTSC_SUPPORT/PAL_SUPPORT from it rather than
 ; carrying its own separate literal -- CMakeLists.txt computes the identical
-; values from that same REGION for its own compile definitions, so the two
+; values from that same FRAMERATE for its own compile definitions, so the two
 ; can't drift apart.
 
 .define FAMISTUDIO_CA65_ZP_SEGMENT   ZEROPAGE
@@ -42,7 +42,7 @@
 ; _pprg_rom_audio_fx (that spelling is rejected -- '_r' is not an escape).
 ; Nobody hand-writes that any more; the encoder in CMakeLists.txt does.
 ;
-; The .ifdef is the same standalone-assemblability guard REGION uses below:
+; The .ifdef is the same standalone-assemblability guard FRAMERATE uses below:
 ; PNES_AUDIO_SEGMENT_INC comes in via -D from CMake (ca65's -D takes numeric
 ; symbols only, so it can select this branch but could never carry the
 ; segment NAME itself). Assembled by hand with no CMake in the loop, this
@@ -61,20 +61,20 @@
 .endif
 .define FAMISTUDIO_CA65_CODE_SEGMENT PNES_AUDIO_SEGMENT
 
-; REGION comes in from CMake (-D REGION=<0|1>, CMakeLists.txt's own REGION
+; FRAMERATE comes in from CMake (-D FRAMERATE=<0|1>, CMakeLists.txt's own FRAMERATE
 ; variable -- 0 for NTSC, 1 for PAL, set per TARGET_PLATFORM). The .ifndef
 ; fallback keeps this file directly assemblable standalone (ca65 on this
 ; file alone, no CMake in the loop) at its NTSC default, matching this
 ; file's own "real, project-owned config, not CMake-generated" charter above
-; -- REGION only ever narrows which of these two FamiStudio itself still
+; -- FRAMERATE only ever narrows which of these two FamiStudio itself still
 ; reads is 1, it never becomes the sole source of truth in place of this file.
-.ifndef REGION
-    REGION = 0
+.ifndef FRAMERATE
+    FRAMERATE = 0
 .endif
 
 FAMISTUDIO_CFG_EXTERNAL     = 1
-FAMISTUDIO_CFG_NTSC_SUPPORT = 1 - REGION
-FAMISTUDIO_CFG_PAL_SUPPORT  = REGION
+FAMISTUDIO_CFG_NTSC_SUPPORT = 1 - FRAMERATE
+FAMISTUDIO_CFG_PAL_SUPPORT  = FRAMERATE
 FAMISTUDIO_CFG_DPCM_SUPPORT = 1
 FAMISTUDIO_CFG_SFX_SUPPORT  = 1
 ; PNES_SFX_STREAMS comes in from CMake (-D PNES_SFX_STREAMS=<n>), the SAME
@@ -83,7 +83,7 @@ FAMISTUDIO_CFG_SFX_SUPPORT  = 1
 ; it is not a free choice of this file's, because both sides have to agree on
 ; how many streams exist. Pick 3 here while the library still believes 2 and
 ; a project's third channel addresses a stream the engine never allocated,
-; with nothing to say so. Same .ifndef standalone fallback as REGION above,
+; with nothing to say so. Same .ifndef standalone fallback as FRAMERATE above,
 ; at the value this project actually uses.
 .ifndef PNES_SFX_STREAMS
     PNES_SFX_STREAMS = 2

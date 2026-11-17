@@ -741,13 +741,13 @@ void irq::init() {
     // matches the game's intended ~60Hz. Dolphin renders any mode regardless of
     // region; a real PAL TV would instead need an EURGB60/component-cable guard.
     //
-    // REGION (CMakeLists.txt: TARGET_PLATFORM=gc_pal -> REGION=1) opts back
+    // FRAMERATE (CMakeLists.txt: TARGET_PLATFORM=gc_pal -> FRAMERATE=1) opts back
     // into the console's own preferred mode instead -- a genuine PAL release,
     // same ~17% slower tick rate real PAL NES games shipped with, running on
     // an unmodified PAL TV/composite cable rather than requiring the
     // EURGB60/component guard this override exists to sidestep.
     const u32 vfmt = rmode->viTVMode >> 2;   // (fmt << 2) | mode
-    if (!REGION && (vfmt == VI_PAL || vfmt == VI_DEBUG_PAL)) {
+    if (!FRAMERATE && (vfmt == VI_PAL || vfmt == VI_DEBUG_PAL)) {
         rmode = &TVNtsc480IntDf;             // 60Hz, 480i de-flicker
     }
 

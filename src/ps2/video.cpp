@@ -36,7 +36,7 @@
  * -- so this applies the identical R/B channel swap those backends use.
  *
  * Display mode is fixed at NTSC 640x448 for now; there is no PAL branch yet
- * (unlike the NES target's own nes/nes_pal split) -- REGION only ever
+ * (unlike the NES target's own nes/nes_pal split) -- FRAMERATE only ever
  * affects playback timing/tables on this backend, never the screen mode.
  *
  * Only NTSC/no-region-switch is implemented. The present is vsync-paced by

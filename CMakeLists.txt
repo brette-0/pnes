@@ -5,14 +5,15 @@
 # local.cmake is gitignored.
 include("${CMAKE_SOURCE_DIR}/local.cmake" OPTIONAL)
 
-# REGION is a separate axis from TARGET_PLATFORM: it distinguishes NTSC (0,
-# the default for every target) from PAL (1) console timing/note tables, not
-# which platform's backend gets built. TARGET_PLATFORM=nes_pal is the only
-# value that sets REGION=1 -- it otherwise builds exactly the "nes" branch
-# below (PLATFORM_DEFINE stays TARGET_NES; there is no separate TARGET_NES_PAL
-# define) since a PAL NES is still an NES as far as every non-audio-timing
-# backend concern goes.
-set(REGION 0)
+# FRAMERATE is a separate axis from TARGET_PLATFORM: it names the refresh the
+# build is timed for -- 0 for the 60Hz systems (the default for every target),
+# 1 for the 50Hz ones -- not which platform's backend gets built.
+# TARGET_PLATFORM=nes_pal and gc_pal are the only values that set it to 1, and
+# each otherwise builds exactly the "nes"/"gc" branch below (PLATFORM_DEFINE
+# stays TARGET_NES/TARGET_GC; there is no separate TARGET_NES_PAL or
+# TARGET_GC_PAL define) since a 50Hz console is still the same console as far
+# as every non-timing backend concern goes.
+set(FRAMERATE 0)
 
 # The NES target cross-compiles with llvm-mos. Everything it needs -- clang,
 # ld.lld, llvm-readelf -- lives inside the SDK, so the build resolves those from
@@ -870,7 +871,7 @@ endif()
 # ----------------------------------------------------------------------
 if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     if(TARGET_PLATFORM STREQUAL "nes_pal")
-        set(REGION 1)
+        set(FRAMERATE 1)
     endif()
 
     # CMAKE_CXX_FLAGS (-T/-L/TOPLEVEL_LD's own FATAL_ERROR guard) is set much
@@ -1007,7 +1008,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # happens before this point).
     find_package(llvm-mos-sdk REQUIRED)
     project(pnes CXX)
-    set(PLATFORM_DEFINE TARGET_NES "REGION=${REGION}")
+    set(PLATFORM_DEFINE TARGET_NES "FRAMERATE=${FRAMERATE}")
 
     # NROM has no bankswitching, so RESET has nowhere to "escape to" and
     # stays plain int main(). Every other mapper needs its RESET/main pinned
@@ -1174,7 +1175,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # fed BOTH ways: to ca65 as -D PNES_SFX_STREAMS (numeric, which is all
     # ca65's -D carries) and to the compiler as FAMISTUDIO_CFG_SFX_STREAMS.
     # Same treatment, and the same justification, as the audio segment and
-    # REGION -- see famistudio_config.s's header on why those two are the
+    # FRAMERATE -- see famistudio_config.s's header on why those two are the
     # exceptions to that file owning its own values.
     set(PNES_SFX_STREAMS 2 CACHE STRING
             "FamiStudio SFX streams: how many effects the NES can play at once \
@@ -1189,13 +1190,13 @@ FAMISTUDIO_CFG_SFX_STREAMS, so the two cannot disagree.")
     set(FAMISTUDIO_CFG_SFX_STREAMS ${PNES_SFX_STREAMS})
 
     # NTSC/PAL support are no longer literal digits in famistudio_config.s --
-    # that file now computes them itself from the same REGION passed into
-    # ca65 below (-D REGION=${REGION}), so they're computed identically here
+    # that file now computes them itself from the same FRAMERATE passed into
+    # ca65 below (-D FRAMERATE=${FRAMERATE}), so they're computed identically here
     # rather than regex-extracted (there's no literal "= 0"/"= 1" left in the
     # file to match).
     set(FAMISTUDIO_CFG_NTSC_SUPPORT 1)
     set(FAMISTUDIO_CFG_PAL_SUPPORT 0)
-    if(REGION)
+    if(FRAMERATE)
         set(FAMISTUDIO_CFG_NTSC_SUPPORT 0)
         set(FAMISTUDIO_CFG_PAL_SUPPORT 1)
     endif()
@@ -1259,7 +1260,7 @@ FAMISTUDIO_CFG_SFX_STREAMS, so the two cannot disagree.")
     add_custom_command(
             OUTPUT ${FAMISTUDIO_OBJ}
             COMMAND ${CA65}
-            -D REGION=${REGION}
+            -D FRAMERATE=${FRAMERATE}
             -D PNES_SFX_STREAMS=${PNES_SFX_STREAMS}
             # Switches famistudio_config.s from its standalone literal
             # fallback to the generated pnes_audio_segment.inc. ca65's -D
@@ -1308,13 +1309,13 @@ FAMISTUDIO_CFG_SFX_STREAMS, so the two cannot disagree.")
     )
 
     # Same seam for the effects, with one difference that drives where the
-    # output lands: SFX data is REGION-BAKED and song data is not. The exported
+    # output lands: SFX data is FRAMERATE-BAKED and song data is not. The exported
     # `sounds` table opens with a two-word header -- NTSC table, then PAL table
     # -- and -famistudio-asm-sfx-mode: decides which of the two actually holds
     # data. The engine picks a slot by region at init, so a single-mode export
     # built for the other region still links and still plays, just at the wrong
     # rate, with no diagnostic anywhere. Hence the mode below is derived from
-    # REGION, exactly as famistudio_config.s derives its own NTSC/PAL flags
+    # FRAMERATE, exactly as famistudio_config.s derives its own NTSC/PAL flags
     # from it: the two cannot be allowed to disagree. DUAL is deliberately not
     # an option here -- it needs the runtime region detection this project
     # rejects outright above (FAMISTUDIO_CFG_NTSC_SUPPORT's FATAL_ERROR).
@@ -1333,7 +1334,7 @@ FAMISTUDIO_CFG_SFX_STREAMS, so the two cannot disagree.")
     set(NES_SFX_FMS ${CMAKE_SOURCE_DIR}/demo/audio/sfx.fms)
     set(NES_SFX_ASM ${CMAKE_BINARY_DIR}/sfx.s)
     set(NES_SFX_MODE ntsc)
-    if(REGION)
+    if(FRAMERATE)
         set(NES_SFX_MODE pal)
     endif()
     # SECOND OUTPUT, not a byproduct: -famistudio-asm-sfx-generate-list makes
@@ -1790,12 +1791,12 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TAR
 
     # gc_pal builds exactly the "gc" branch below (same PLATFORM_DEFINE/
     # DEMO_TITLE_DIR -- there is no separate TARGET_GC_PAL define, same as
-    # nes_pal above has no TARGET_NES_PAL) -- it only flips REGION to 1, which
+    # nes_pal above has no TARGET_NES_PAL) -- it only flips FRAMERATE to 1, which
     # src/ogc/video.cpp's irq::init() reads to decide whether to keep the
     # console's native 50Hz PAL video mode instead of forcing NTSC 60Hz (see
     # that function's own comment).
     if(TARGET_PLATFORM STREQUAL "gc_pal")
-        set(REGION 1)
+        set(FRAMERATE 1)
     endif()
 
     if(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal")
@@ -4087,18 +4088,18 @@ exec ./demo \"\$@\"
     endif()
 endif()
 
-# One REGION define for every target, regardless of which TARGET_PLATFORM
+# One FRAMERATE define for every target, regardless of which TARGET_PLATFORM
 # branch above actually ran (exactly one does, and it's the only one that
-# has created the pnes target by this point): 0 for NTSC (every
-# target's default) or 1 for the nes_pal target set above.
-target_compile_definitions(pnes PUBLIC REGION=${REGION})
+# has created the pnes target by this point): 0 for the 60Hz systems (every
+# target's default) or 1 for the nes_pal/gc_pal targets set above.
+target_compile_definitions(pnes PUBLIC FRAMERATE=${FRAMERATE})
 
-# One SAVE_FILE define for every target, for the same reason REGION gets one:
+# One SAVE_FILE define for every target, for the same reason FRAMERATE gets one:
 # the save backends are per-platform, but "does this game use save technology
 # at all" is not, and every backend needs to compile itself away when it
 # doesn't. The NES branch above has already put this in its own
 # PLATFORM_DEFINE (it needs it in the hand-rolled pass-1 flags as well);
-# repeating it here is harmless exactly as it is for REGION, since CMake
+# repeating it here is harmless exactly as it is for FRAMERATE, since CMake
 # de-duplicates identical compile definitions on a target.
 #
 # Truthiness-gated, so the define exists only when saving is on -- see the NES

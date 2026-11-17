@@ -1,7 +1,7 @@
 #include "animator.hpp"
 
 #include "../banks.hpp"   // ACTORS
-#include "../types.hpp"   // demo::Regional
+#include "../types.hpp"   // demo::Framerated
 
 #include "../../animations/gen/mary_standing.hpp"
 #include "../../animations/gen/mary_walking.hpp"
@@ -19,7 +19,7 @@ namespace demo::actor {
 // longer, so fewer of them cover the same span. Note that the speed it is spent
 // at is itself ScaleUp'd (see kMaxWalk/kMaxRun in level/player.hpp), so the two
 // scalings compound -- see the comment on the decrement in ::NextFrame.
-static constexpr u8 kWalkCycleBudget = demo::Regional<u8, 80>{}.ScaleDown();
+static constexpr u8 kWalkCycleBudget = demo::Framerated<u8, 80>{}.ScaleDown();
 
 // Picks the player's frame from how fast it is going. Called from
 // Player::Update once the movement has been committed, so moveForce holds this

@@ -84,7 +84,7 @@ RESET {
     log("RESET: audio::Init starting");
     mmc3::CallInBlock<audio_tag>([] {
         mmc3::CallInBlock<audio_data_tag>([] {
-            audio::Init(REGION);
+            audio::Init(FRAMERATE);
         });
     });
     log("RESET: audio::Init returned");

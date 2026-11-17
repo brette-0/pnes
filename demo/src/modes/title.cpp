@@ -396,10 +396,10 @@ namespace title {
         return {static_cast<u16>(kUiOnOwnPanel ? 0 : (kMenuNT << 3)), PreviewScrollY()};
     }
 
-    constexpr u8 kSplitDelay = REGION ? 60 : 100;
+    constexpr u8 kSplitDelay = FRAMERATE ? 60 : 100;
     static void ApplySplit();
 
-    constexpr u8 kSplitLatency = REGION ? 5 : 4;
+    constexpr u8 kSplitLatency = FRAMERATE ? 5 : 4;
 
     // Same reload-from-row math ::ArmSplitIRQ uses, parametrized so
     // ::nmi_handler_lockAnim can re-arm against its own shrinking split row

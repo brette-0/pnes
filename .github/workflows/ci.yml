@@ -284,7 +284,7 @@ jobs:
           restore-keys: nes-pal-
 
       # Same image/service as the `nes` job, just pointed at the nes-pal-release
-      # preset (TARGET_PLATFORM=nes_pal -> REGION=1, PAL FamiStudio note tables).
+      # preset (TARGET_PLATFORM=nes_pal -> FRAMERATE=1, PAL FamiStudio note tables).
       - name: Build demo.nes (PAL)
         run: docker compose run --rm --build -e PRESET=nes-pal-release build-nes
 
@@ -350,7 +350,7 @@ jobs:
           restore-keys: gc-pal-
 
       # Same image/service as the `gc` job, just pointed at the gc-pal-release
-      # preset (TARGET_PLATFORM=gc_pal -> REGION=1, native 50Hz PAL video mode).
+      # preset (TARGET_PLATFORM=gc_pal -> FRAMERATE=1, native 50Hz PAL video mode).
       - name: Build demo.dol (PAL)
         run: docker compose run --rm --build -e PRESET=gc-pal-release build-gc
 

@@ -50,9 +50,9 @@ namespace level {
     // TODO rewrite to use pre calced addr and then remove vec2 based scrolling from lib
     constexpr u8 kHudSplitRow   = 16;
     constexpr u8 kHudSplitMMC3  = 16 - (
-            REGION ? 5 : 4
+            FRAMERATE ? 5 : 4
     );
-    constexpr u8 kHUDSplitDelay = REGION ? 90 : 85;
+    constexpr u8 kHUDSplitDelay = FRAMERATE ? 90 : 85;
 
 #ifdef TARGET_NDS
     // --- lower-panel blanking -----------------------------------------------
