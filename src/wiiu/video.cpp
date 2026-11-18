@@ -52,6 +52,7 @@
 
 #include <SDL2/SDL.h>
 #include <avm/tv.h>
+#include <coreinit/time.h>   // OSGetSystemTime / OSTicksToMicroseconds, for video::DetectRefresh
 
 // ---------------------------------------------------------------------------
 // Wii-U-specific state. Everything the core needs (VideoRAM, paletteRAM,
@@ -187,4 +188,58 @@ void irq::post() {
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window)   SDL_DestroyWindow(window);
     SDL_Quit();
+}
+
+/**
+ * @brief Strong override of the weak src/all/video.cpp default: TIMES the
+ *        present cadence to find out whether this TV mode is 50Hz.
+ *
+ * WII U PACES THE GAME OFF THE TV MODE. irq::init above creates the renderer
+ * with SDL_RENDERER_PRESENTVSYNC, so every SDL_RenderPresent blocks until
+ * vertical refresh, and ::video::WaitForPresent runs exactly one game frame per
+ * present -- the tick rate IS the mode. A European console set to 576i (or any
+ * of the 50Hz HD modes) therefore ticks at 50Hz, and everything
+ * ::demo::Framerated scales has to know, or the game runs ~17% slow.
+ *
+ * WHY MEASURE WHEN avm/tv.h CAN BE ASKED. AVMGetTVScanMode looks like the right
+ * call -- this file already uses its sibling AVMGetTVAspectRatio for the 4:3
+ * world offset -- but its own documentation says that for
+ * AVM_TV_RESOLUTION_720P_50HZ, _1080I_50HZ and _1080P_50HZ it writes NOTHING to
+ * the out-parameter. Those are three of the five 50Hz modes, so the one query
+ * available is blind in exactly the cases this function exists to catch.
+ * Reading it would mean treating "the variable I pre-seeded was left untouched"
+ * as the 50Hz signal, which is a guess about an undocumented path. The clock is
+ * not ambiguous.
+ *
+ * AND THE MODE IS LEFT ALONE. Forcing 60Hz is possible here -- avm/tv.h has
+ * AVMSetTVScanMode and AVMSetTVScanResolution -- and is deliberately not done:
+ * those change a SYSTEM-WIDE display setting rather than this app's own output,
+ * one of AVMSetTVScanMode's parameters is named `unknown` in the header, and
+ * nothing would restore the player's choice afterwards. Scaling already handles
+ * 50Hz correctly, which is a far smaller imposition.
+ *
+ * Eight intervals rather than one: the first present returns on a retrace that
+ * may be most of a frame away, so that interval is short by an arbitrary
+ * amount. Averaging over eight dilutes it to an eighth, against a 16.7ms vs
+ * 20.0ms gap it has to resolve. Costs ~0.15s of boot once.
+ *
+ * PRESENTS BLACK, NOT GAME CONTENT: this runs from ::RESET before the user's
+ * body (interrupts.hpp), so there is no frame to show yet -- ::present_blank is
+ * what every pre-game present in this backend already uses.
+ */
+bool video::DetectRefresh() {
+    constexpr u32 kIntervals = 8;
+
+    if (!renderer) return false;   // init failed; nothing is being paced.
+
+    present_blank();                               // Align to a retrace.
+    const u64 start = OSGetSystemTime();
+    for (u32 i = 0; i < kIntervals; i++) present_blank();
+    const u64 end = OSGetSystemTime();
+
+    const u32 perFrameUs =
+        static_cast<u32>(OSTicksToMicroseconds(end - start) / kIntervals);
+
+    // 18300us: between 60Hz's 16667us and 50Hz's 20000us.
+    return perFrameUs > 18300;
 }

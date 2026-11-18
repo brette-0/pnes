@@ -396,10 +396,10 @@ namespace title {
         return {static_cast<u16>(kUiOnOwnPanel ? 0 : (kMenuNT << 3)), PreviewScrollY()};
     }
 
-    constexpr u8 kSplitDelay = FRAMERATE ? 60 : 100;
+    AI inline u8 SplitDelay()   { return ::video::Is50Hz() ? 58 : 88; }
     static void ApplySplit();
 
-    constexpr u8 kSplitLatency = FRAMERATE ? 5 : 4;
+    AI inline u8 SplitLatency() { return ::video::Is50Hz() ? 5 : 4; }
 
     // Same reload-from-row math ::ArmSplitIRQ uses, parametrized so
     // ::nmi_handler_lockAnim can re-arm against its own shrinking split row
@@ -417,8 +417,8 @@ namespace title {
         }
         const u16 row = kUiBankSplit ? static_cast<u16>(video::panel_rect(0).h)
                                      : splitPixelRow;
-        const u8 splitReload = row > kSplitLatency
-            ? static_cast<u8>(row - kSplitLatency) : 0;
+        const u8 splitReload = row > SplitLatency()
+            ? static_cast<u8>(row - SplitLatency()) : 0;
         mmc3::ScheduleScanlineIRQ(splitReload, {0, row});
     }
 
@@ -1644,7 +1644,7 @@ namespace title {
 
     void irq_handler() {
         mmc3::AcknowledgeScanlineIRQ();
-        tech::SpinWait(kSplitDelay);
+        tech::SpinWait(SplitDelay());
         ApplySplit();
     }
 

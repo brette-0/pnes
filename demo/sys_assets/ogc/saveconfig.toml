@@ -5,11 +5,11 @@ fileName            = "super_mary_sisters\x00"  # 32 ASCII chars max, inc NUL
 
 [banner]
 present             = false
-format              = "CARD_BANNER_CI"
+format              = "CARD_BANNER_RGBA"
 source              = "banner.png"
 
 [icon]
-formats             = [ "CARD_ICON_CI" ]
+formats             = [ "CARD_ICON_RGBA" ]
 speeds              = [ 0 ]
 animation           = "loop"
 sources             = [ "icon.png" ]

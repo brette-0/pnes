@@ -50,6 +50,53 @@ using namespace br0::intsh;
 namespace video {
 /** @brief Base PPU address of the pattern tables (\$0000 / \$1000). */
 extern const u16 PatternTables;
+
+/**
+ * @brief True when the display this run is ticking at refreshes at ~50Hz.
+ *
+ * MEASURED, NOT BUILT IN. Every backend determines this from the hardware it
+ * actually came up on, during ::DetectRefresh below -- it is deliberately not
+ * derived from the FRAMERATE compile definition, because the build cannot know
+ * the answer. PAL60/EURGB60 is the case that forces this: a European GameCube
+ * configured for 60Hz hands src/ogc/video.cpp's irq::init() a 60Hz video mode,
+ * so a PAL BUILD TICKS AT 60Hz, and anything scaled for 50Hz at compile time
+ * then runs ~20% fast. A PAL NES in a 60Hz-region flash cart, or an emulator
+ * defaulting to the wrong region, is the same mistake from the other side.
+ *
+ * FRAMERATE still exists and still means something -- which market the build is
+ * for, and the NES2.0 timing byte that has to be a literal in a ROM header --
+ * but it is no longer what gameplay tuning keys off.
+ *
+ * Plain bool, not ::atomic: written exactly once, before any gameplay reads it
+ * (see ::DetectRefresh), and never from an interrupt. Making it volatile would
+ * cost a reload on every ::Framerated access for nothing.
+ */
+extern bool is50Hz;
+
+/// @brief @copybrief is50Hz
+AI inline bool Is50Hz() { return is50Hz; }
+
+/**
+ * @brief Measures the display's refresh and sets ::is50Hz.
+ *
+ * WHEN IT RUNS DIFFERS BY TARGET, and both arrangements get it set before any
+ * gameplay code can read it:
+ *  - Off NES, ::irq::init() calls it, which the ::RESET macro runs ahead of the
+ *    user's body (interrupts.hpp).
+ *  - On NES, ::RESET is a bare `int main()` with no init hook, so src/nes/
+ *    video.cpp runs it from a global constructor instead. It polls PPUSTATUS's
+ *    VBlank flag rather than waiting on NMIs, so it does not require rendering
+ *    or NMI to have been enabled -- neither has been that early.
+ *
+ * Costs a few frames of boot on the targets that genuinely have to measure.
+ * The fixed-60Hz handhelds answer without measuring.
+ *
+ * RETURNS the answer rather than assigning ::is50Hz itself -- the caller owns
+ * where it lands, and the two callers above are the only ones.
+ *
+ * @return true when this display refreshes at ~50Hz.
+ */
+bool DetectRefresh();
 } // namespace video
 
 /**

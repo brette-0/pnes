@@ -428,3 +428,53 @@ void irq::post() {
     // it. Freeing them here would mean racing the in-flight flip the exit path
     // has no reason to wait on.
 }
+
+/**
+ * @brief Strong override of the weak src/all/video.cpp default: READS the
+ *        refresh out of the video state rather than timing anything.
+ *
+ * PS3 PACES THE GAME OFF THE REFRESH. ::wait_flip blocks on the flip the RSX
+ * retires at vertical refresh (see its own comment and ::queue_flip), and
+ * ::video::WaitForPresent runs exactly one game frame per flip, so the tick
+ * rate IS the display's refresh. On a console configured for a 50Hz mode --
+ * 576i on a European SDTV being the usual way to get there -- everything
+ * ::demo::Framerated scales has to know, or the game runs ~17% slow.
+ *
+ * NO MEASUREMENT NEEDED, unlike the libogc backend, because lv2 publishes the
+ * answer directly: videoState::displayMode carries a `refreshRates` bitmask
+ * (sysutil/video.h: VIDEO_REFRESH_50HZ 0x02, VIDEO_REFRESH_59_94HZ 0x01,
+ * VIDEO_REFRESH_60HZ 0x04). One videoGetState call, no spinning, no boot
+ * frames spent. irq::init above already makes this exact call for the
+ * resolution; this one is separate only because that `state` is its own local
+ * and detection runs after init rather than inside it.
+ *
+ * AND THE MODE IS LEFT ALONE. Forcing 60Hz was considered and is not possible
+ * here without side effects: videoConfiguration (sysutil/video.h) has fields
+ * for resolution, format, aspect and pitch and NONE for refresh, so the only
+ * way to reach 60Hz through videoConfigure is to change the resolution out
+ * from under the player -- 576 to 480 -- degrading the picture and overriding
+ * a deliberate system setting to buy what scaling already handles correctly.
+ *
+ * FAILURE FALLS BACK TO 60Hz, the common case: if videoGetState fails, or the
+ * output is disabled (VIDEO_STATE_ENABLED is what a live display reports), or
+ * the mask has no 50Hz bit, there is nothing to act on. A game running 17%
+ * slow is a worse outcome than one running at its design rate, so an unknown
+ * answer should not be the slow one.
+ */
+bool video::DetectRefresh() {
+    videoState state;
+    if (videoGetState(0, 0, &state) != 0) {
+        ps3_trace("DetectRefresh: videoGetState FAILED -- assuming 60Hz");
+        return false;
+    }
+    if (state.state != VIDEO_STATE_ENABLED) {
+        ps3_trace("DetectRefresh: video output not enabled -- assuming 60Hz");
+        return false;
+    }
+
+    // A bitmask, not an enum: a mode can advertise more than one rate, and
+    // only the 50Hz bit changes what the game has to do.
+    const bool is50 = (state.displayMode.refreshRates & VIDEO_REFRESH_50HZ) != 0;
+    ps3_trace(is50 ? "DetectRefresh: 50Hz" : "DetectRefresh: 60Hz");
+    return is50;
+}

@@ -239,7 +239,7 @@ ACTORS void Player::Update() {
     // actually asked for. Nothing here cares how long the input was held or
     // whether it was tapped: one frame of it is enough to turn.
     //
-    // Grounded only: air control still steers (see kAirAccel below), but it
+    // Grounded only: air control still steers (see AirAccel() below), but it
     // cannot turn the sprite round. You leave the ground facing the way you
     // last faced on it and land that way. Note this reads the footing from
     // before the jump launch zeroes it further down, so the frame you press A
@@ -251,27 +251,27 @@ ACTORS void Player::Update() {
     i8       vx  = vx0;
 
     if ((port & input::B) && grounded && dir != 0 && (vx == 0 || (vx > 0) == (dir > 0)))
-        runTimer = kRunRetain;
+        runTimer = RunRetain();
     else if (runTimer)
         runTimer--;
-    const i8 maxSpeed = runTimer ? kMaxRun : kMaxWalk;
+    const i8 maxSpeed = runTimer ? MaxRun() : MaxWalk();
 
     if (dir != 0) {
         // dir in {-1,1}; negate-by-sign avoids __mulhi3 (i8*i16 = ~100 cycles).
         const auto dirForce = [dir](i16 k) -> i16 { return dir > 0 ? k : static_cast<i16>(-k); };
         const bool sameDir = vx == 0 || (vx > 0) == (dir > 0);
         if (!sameDir)
-            xForce += dirForce(grounded ? kSkid : kAirAccel);
+            xForce += dirForce(grounded ? Skid() : AirAccel());
         else if (Abs(vx) < maxSpeed)
-            xForce += dirForce(grounded ? (runTimer ? kRunAccel : kWalkAccel) : kAirAccel);
+            xForce += dirForce(grounded ? (runTimer ? RunAccel() : WalkAccel()) : AirAccel());
         else if (Abs(vx) > maxSpeed && grounded)
-            xForce += dir > 0 ? -kFriction : kFriction;
+            xForce += dir > 0 ? -Friction() : Friction();
     } else if (grounded && vx != 0) {
-        xForce += vx > 0 ? -kFriction : kFriction;
+        xForce += vx > 0 ? -Friction() : Friction();
     }
 
-    while (xForce >= 256)  { xForce -= 256; if (vx < kMaxRun)  vx++; }
-    while (xForce <= -256) { xForce += 256; if (vx > -kMaxRun) vx--; }
+    while (xForce >= 256)  { xForce -= 256; if (vx < MaxRun())  vx++; }
+    while (xForce <= -256) { xForce += 256; if (vx > -MaxRun()) vx--; }
 
     // Friction must settle to rest, not creep into the opposite direction.
     if (dir == 0 && grounded && vx0 != 0 && (vx0 > 0) != (vx > 0)) {
@@ -282,7 +282,7 @@ ACTORS void Player::Update() {
 
     // -- vertical: launch on A, then variable gravity until something stops us --
     if (grounded && (port & ~lastPort & input::A)) {
-        self->moveForce.y = static_cast<i8>(-(Abs(vx) >= kMaxWalk ? kRunJumpInit : kJumpInit));
+        self->moveForce.y = static_cast<i8>(-(Abs(vx) >= MaxWalk() ? RunJumpInit() : JumpInit()));
         yForce = 0;
         grounded = false;
     }
@@ -292,15 +292,15 @@ ACTORS void Player::Update() {
     }
 
     const bool rising = self->moveForce.y < 0;
-    yForce += (rising && (port & input::A)) ? kRiseGravity : kFallGravity;
+    yForce += (rising && (port & input::A)) ? RiseGravity() : FallGravity();
     i8 vy = self->moveForce.y;
     // yForce is always non-negative; extracting whole-256 ticks is a high-byte
-    // load + mask, not a loop.  kFallGravity=896 previously cost 3-4 iterations.
+    // load + mask, not a loop.  FallGravity() at 896 previously cost 3-4 iterations.
     {
         const i8 ticks = static_cast<i8>(static_cast<u16>(yForce) >> 8);
         yForce &= 0xFF;
         const i8 newVy = static_cast<i8>(static_cast<i16>(vy) + ticks);
-        vy = newVy > kMaxFall ? kMaxFall : newVy;
+        vy = newVy > MaxFall() ? MaxFall() : newVy;
     }
     self->moveForce.y = vy;
 

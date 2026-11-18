@@ -84,7 +84,13 @@ RESET {
     log("RESET: audio::Init starting");
     mmc3::CallInBlock<audio_tag>([] {
         mmc3::CallInBlock<audio_data_tag>([] {
-            audio::Init(FRAMERATE);
+            // video::Is50Hz(), not FRAMERATE: the engine is built with BOTH
+            // note tables now (demo/famistudio_config.s), and the region it
+            // indexes with has to be the refresh this console actually runs
+            // at -- measured at boot, not assumed by the build. Detection has
+            // already happened by here: on NES from a global constructor, off
+            // NES from irq::init via the RESET macro.
+            audio::Init(video::Is50Hz());
         });
     });
     log("RESET: audio::Init returned");

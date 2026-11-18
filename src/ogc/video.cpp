@@ -43,6 +43,7 @@
 #include <ogc/gu.h>
 #include <ogc/pad.h>
 #include <ogc/system.h>
+#include <ogc/lwp_watchdog.h>   // gettime / ticks_to_microsecs, for video::DetectRefresh
 #include <malloc.h>
 #include <string.h>
 #ifdef TARGET_WII
@@ -951,4 +952,43 @@ void irq::post() {
     // and let the ordinary return-from-main path jump into it, which puts the
     // user back in the launcher they started from.
 #endif
+}
+
+/**
+ * @brief Strong override of the weak src/all/video.cpp default: TIMES the
+ *        vsync cadence instead of reading the video mode's region field.
+ *
+ * THIS IS THE BACKEND PAL60 EXISTS ON. A European console configured for
+ * EURGB60 hands irq::init() above a 60Hz mode, so a gc_pal build (FRAMERATE=1)
+ * ticks at 60Hz -- every WaitForPresent is one 60Hz vsync -- while anything
+ * scaled for 50Hz at compile time runs ~20% fast. Measuring the cadence gets
+ * that right without having to enumerate which VI formats are 60Hz: VI_NTSC,
+ * VI_MPAL, VI_EURGB60 and VI_DEBUG all are, VI_PAL and VI_DEBUG_PAL are not,
+ * and a table of that is one more thing to keep correct. The clock is not.
+ *
+ * MUST RUN AFTER irq::init(), which is where VIDEO_Configure is called -- the
+ * ::RESET macro (interrupts.hpp) sequences it that way.
+ *
+ * Eight intervals rather than one: VIDEO_WaitVSync returns on a retrace that
+ * may be most of a frame away, so the first interval is short by an arbitrary
+ * amount. Averaging over eight dilutes that to an eighth, and the gap being
+ * measured -- 16.7ms vs 20.0ms, a 20% difference -- is far wider than what is
+ * left. Costs ~0.15s of boot once.
+ *
+ * The threshold is 18.3ms, between the two, expressed in microseconds off the
+ * PowerPC timebase (gettime/ticks_to_microsecs, lwp_watchdog.h).
+ */
+bool video::DetectRefresh() {
+    constexpr u32 kIntervals = 8;
+
+    VIDEO_WaitVSync();                     // Align to a retrace before timing.
+    const u64 start = gettime();
+    for (u32 i = 0; i < kIntervals; i++) VIDEO_WaitVSync();
+    const u64 end = gettime();
+
+    const u32 perFrameUs =
+        static_cast<u32>(ticks_to_microsecs(end - start) / kIntervals);
+
+    // 18300us: between 60Hz's 16667us and 50Hz's 20000us.
+    return perFrameUs > 18300;
 }

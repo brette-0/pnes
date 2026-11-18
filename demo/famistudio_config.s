@@ -8,16 +8,16 @@
 ; whatever's actually configured here -- it never generates or owns this
 ; file's content. See BANKED_CALL_THEORY.txt's "RESOLVED: famistudio_config.s
 ; moves to the demo root as a real, directly-edited file" for the reasoning.
-; TWO values are exceptions, both fed IN from CMake rather than owned here,
-; and both for the same reason: they are not free choices of this file's,
-; they must equal something decided elsewhere. The code segment must equal
-; the bank pnes's audio module is compiled into (see below), and
-; NTSC/PAL must equal the target being built. CMake's FRAMERATE variable (set from
-; TARGET_PLATFORM, see CMakeLists.txt) is fed in below via -D, and this file
-; derives FAMISTUDIO_CFG_NTSC_SUPPORT/PAL_SUPPORT from it rather than
-; carrying its own separate literal -- CMakeLists.txt computes the identical
-; values from that same FRAMERATE for its own compile definitions, so the two
-; can't drift apart.
+; ONE value is an exception, fed IN from CMake rather than owned here, and for
+; a reason: it is not a free choice of this file's, it must equal something
+; decided elsewhere -- the code segment must equal the bank pnes's audio module
+; is compiled into (see below).
+;
+; NTSC/PAL USED TO BE A SECOND SUCH VALUE, derived from CMake's FRAMERATE. It no
+; longer is: both note tables are enabled unconditionally and the engine selects
+; between them at runtime from the measured refresh. See the block that sets
+; them below. CMakeLists.txt still states the same pair for its own compile
+; definitions, so the two cannot drift apart.
 
 .define FAMISTUDIO_CA65_ZP_SEGMENT   ZEROPAGE
 .define FAMISTUDIO_CA65_RAM_SEGMENT  BSS
@@ -42,7 +42,8 @@
 ; _pprg_rom_audio_fx (that spelling is rejected -- '_r' is not an escape).
 ; Nobody hand-writes that any more; the encoder in CMakeLists.txt does.
 ;
-; The .ifdef is the same standalone-assemblability guard FRAMERATE uses below:
+; The .ifdef is a standalone-assemblability guard, the same shape as
+; PNES_SFX_STREAMS's .ifndef further down:
 ; PNES_AUDIO_SEGMENT_INC comes in via -D from CMake (ca65's -D takes numeric
 ; symbols only, so it can select this branch but could never carry the
 ; segment NAME itself). Assembled by hand with no CMake in the loop, this
@@ -61,20 +62,24 @@
 .endif
 .define FAMISTUDIO_CA65_CODE_SEGMENT PNES_AUDIO_SEGMENT
 
-; FRAMERATE comes in from CMake (-D FRAMERATE=<0|1>, CMakeLists.txt's own FRAMERATE
-; variable -- 0 for NTSC, 1 for PAL, set per TARGET_PLATFORM). The .ifndef
-; fallback keeps this file directly assemblable standalone (ca65 on this
-; file alone, no CMake in the loop) at its NTSC default, matching this
-; file's own "real, project-owned config, not CMake-generated" charter above
-; -- FRAMERATE only ever narrows which of these two FamiStudio itself still
-; reads is 1, it never becomes the sole source of truth in place of this file.
-.ifndef FRAMERATE
-    FRAMERATE = 0
-.endif
-
+; BOTH NOTE TABLES, ALWAYS, AND THE ENGINE PICKS AT RUNTIME. These used to be
+; 1-FRAMERATE / FRAMERATE -- mutually exclusive, so the build decided. It
+; cannot: the console a ROM ends up in is not a build property (a PAL console
+; running an NTSC image, a flash cart, an emulator defaulting to the wrong
+; region), and the frame length is what the note tables have to match.
+; src/nes/video.cpp measures it at boot into video::is50Hz, and
+; src/nes/audio/famistudio.cpp hands that to famistudio_init through
+; audio::Init's region argument -- which this engine has always taken.
+;
+; FRAMERATE is NOT consulted here any more. It still exists and still means
+; "which market is this build for", which is what the NES2.0 timing byte in
+; demo/src/header.hpp needs, but it no longer decides anything at runtime.
+;
+; COST IS THE SECOND NOTE TABLE IN ROM, and that is the whole price of the
+; change on this target.
 FAMISTUDIO_CFG_EXTERNAL     = 1
-FAMISTUDIO_CFG_NTSC_SUPPORT = 1 - FRAMERATE
-FAMISTUDIO_CFG_PAL_SUPPORT  = FRAMERATE
+FAMISTUDIO_CFG_NTSC_SUPPORT = 1
+FAMISTUDIO_CFG_PAL_SUPPORT  = 1
 FAMISTUDIO_CFG_DPCM_SUPPORT = 1
 FAMISTUDIO_CFG_SFX_SUPPORT  = 1
 ; PNES_SFX_STREAMS comes in from CMake (-D PNES_SFX_STREAMS=<n>), the SAME
@@ -83,8 +88,8 @@ FAMISTUDIO_CFG_SFX_SUPPORT  = 1
 ; it is not a free choice of this file's, because both sides have to agree on
 ; how many streams exist. Pick 3 here while the library still believes 2 and
 ; a project's third channel addresses a stream the engine never allocated,
-; with nothing to say so. Same .ifndef standalone fallback as FRAMERATE above,
-; at the value this project actually uses.
+; with nothing to say so. Standalone .ifndef fallback at the value this project
+; actually uses, so this file still assembles with no CMake in the loop.
 .ifndef PNES_SFX_STREAMS
     PNES_SFX_STREAMS = 2
 .endif

@@ -530,3 +530,126 @@ VIDEO_BANK void video::WaitThenReactToSpriteZero(const vec2<u16> pos, void (*fn)
         *latch = true;
     }
 }
+
+/**
+ * @brief Identifies the console's video system by timing a vblank interval,
+ *        and reports whether it refreshes at 50Hz.
+ *
+ * WHY MEASURE RATHER THAN READ FRAMERATE: see ::video::Is50Hz (video.hpp). The
+ * build cannot know which console the ROM ends up in -- a flash cart, an
+ * emulator defaulting to the wrong region, a PAL console running an NTSC image
+ * -- and the frame length is the ground truth for everything
+ * ::demo::Framerated scales.
+ *
+ * THIS IS THE STANDARD NESDEV ROUTINE, not something invented here, and the
+ * reason to prefer it is the MISSED-FLAG CASE. Reading $2002 clears bit 7, so a
+ * read can land exactly on the PPU setting it and lose that vblank -- a known
+ * hardware oversight -- and the interval measured is then TWO frames, not one.
+ * A plain "count one interval and compare against a threshold" misreads that as
+ * the slower console: double an NTSC count and it sails past any PAL threshold,
+ * reporting 50Hz on a 60Hz machine with nothing to say so. The counts separate
+ * the two cases instead of being confused by them:
+ *
+ *   system          cycles/frame   1 vblank (Y:X)   2 vblanks (Y:X)
+ *   NTSC  RP2C02      29780.67        $09B0            $1361
+ *   PAL   RP2C07      33247.50        $0AD1            $15A2
+ *   Dendy             35464.00        $0B8A            $1714
+ *
+ * All six values are distinct in Y alone -- $09/$0A/$0B against $13/$15/$17 --
+ * so `cmp #16` tells the two cases apart and `lsr` folds the double onto the
+ * single before classifying. Then subtracting 9 maps Y to 0/1/2 for
+ * NTSC/PAL/Dendy, clipped to 3 for anything else.
+ *
+ * The loop is 12.005 cycles per iteration: inx 2, bne-taken 3, bit 4,
+ * bpl-taken 3, plus the 13-cycle pass every 256 where X wraps and iny runs.
+ *
+ * DENDY AND "BAD" BOTH MATTER TO THE ANSWER. Dendy refreshes at 50Hz despite
+ * its NTSC-like CPU clock, so it reports true. Anything unclassified (3) falls
+ * back to 60Hz, which is the common case and the safer wrong answer -- a game
+ * running 17% slow is more playable than one running 20% fast.
+ *
+ * POLLS PPUSTATUS, NOT NMI, because of WHEN this runs: from a global
+ * constructor, ahead of ::RESET's body, so neither rendering nor the NMI enable
+ * has been touched by game code. The VBlank flag is set once per frame by the
+ * PPU regardless of both. Rendering being off also REMOVES jitter rather than
+ * adding it -- the odd-frame short scanline only happens with rendering on.
+ *
+ * $2000 IS ZEROED FIRST, which the published routine does not do because it
+ * assumes it runs at the top of reset. This one does not: PPUCTRL powers up
+ * indeterminate and nothing before this point clears it (mmc3.cpp's ::_reset
+ * writes $E000/$A001/$8000 and nothing else), so a set NMI-enable bit would
+ * fire an NMI into the middle of the count and add its cycles. If this is ever
+ * moved into ::_reset, note that PPU register writes in the first ~29658 cycles
+ * after power-on are ignored, and the write becomes a no-op.
+ *
+ * RETURNS rather than assigning anything: the caller owns where the answer
+ * lives. ::DetectRefreshOnBoot below is this target's one caller.
+ *
+ * NOT PLACED IN THE VIDEO SECTION, unlike everything above: PNES_VIDEO_SECTION
+ * may be a switchable bank, and a global constructor runs from crt0 before any
+ * game code has established a window. Same reasoning as mmc3.cpp's
+ * SyncBankShadows, which is likewise unplaced for being boot-time-only.
+ */
+bool video::DetectRefresh() {
+    u8 system, countLo, countHi;
+    __asm__ volatile(
+        "lda #0\n\t"
+        "sta $2000\n\t"        // NMI off, so nothing interrupts the count.
+        "ldx #0\n\t"
+        "ldy #0\n\t"
+        "1:\n\t"               // Sync to a flag edge.
+        "bit $2002\n\t"
+        "bpl 1b\n\t"
+        "2:\n\t"               // Count 12.005 cycles per iteration until the next.
+        "inx\n\t"
+        "bne 3f\n\t"
+        "iny\n\t"
+        "3:\n\t"
+        "bit $2002\n\t"
+        "bpl 2b\n\t"
+        "tya\n\t"              // Classify on the high byte alone (see above).
+        "cmp #16\n\t"
+        "bcc 4f\n\t"
+        "lsr a\n\t"            // Two vblanks were measured; fold onto one.
+        "4:\n\t"
+        "clc\n\t"
+        "adc #$f7\n\t"         // -9: $09/$0A/$0B -> 0/1/2.
+        "cmp #3\n\t"
+        "bcc 5f\n\t"
+        "lda #3\n\t"           // Unclassified.
+        "5:"
+        // REGISTER OUTPUTS, NOT "=m", AND THAT IS LOAD-BEARING. llvm-mos
+        // expands an "=m" operand into a zero-page POINTER PAIR and addresses
+        // the variable indirectly -- for statics as much as for stack locals.
+        // `sta %0` therefore overwrites the pointer's low byte instead of the
+        // variable, and the compiler's own `lda (%0),y` then reads from
+        // wherever that mangled pointer lands. It compiles clean, it
+        // disassembles plausibly, and the value never arrives: this function
+        // returned false unconditionally, on every console, until these became
+        // register constraints.
+        //
+        // The classification above leaves exactly what is wanted in place --
+        // A holds the system, and X/Y still hold the count, untouched since the
+        // loop -- so there is nothing to store and no operand to get wrong.
+        : "=a"(system), "=x"(countLo), "=y"(countHi));
+
+    // Kept so the raw count is available to a caller that wants to log it --
+    // the only thing that separates "measured the wrong interval" from
+    // "classified it wrongly" if this is ever suspect again.
+    (void)countLo;
+    (void)countHi;
+
+    // 1 = PAL, 2 = Dendy. 0 = NTSC and 3 = unclassified both mean 60Hz.
+    return system == 1 || system == 2;
+}
+
+/**
+ * @brief Runs ::video::DetectRefresh at boot and publishes the answer, since
+ *        NES's ::RESET has no ::irq::init hook to carry it (interrupts.hpp).
+ *
+ * Priority 102, after mmc3.cpp's SyncBankShadows at 101: that one re-syncs the
+ * bank shadows ::_reset already poked, and this spins for up to two frames, so
+ * there is no reason to do it with the shadows still unsynced.
+ */
+__attribute__((constructor(102)))
+static void DetectRefreshOnBoot() { video::is50Hz = video::DetectRefresh(); }

@@ -10,16 +10,20 @@ namespace demo::actor {
 
 // How much of a walk frame's hold is spent per tick of speed. The designer
 // authored the walk at timer 8, but that is a hold in NES frames and this is a
-// hold in |vx| ticks: at kMaxRun (20 subpx/frame) it works out to 4 frames of
-// hold on NTSC, at kMaxWalk (12) to about 7, and at a crawl to a slideshow.
+// hold in |vx| ticks: at MaxRun() (20 subpx/frame) it works out to 4 frames of
+// hold at 60Hz, at MaxWalk() (12) to about 7, and at a crawl to a slideshow.
 // Weakly, which is all that is wanted -- the legs keep up with the ground
 // without anyone measuring stride length.
 //
-// ScaleDown, as a hold spanning a span of real time: PAL's 50 frames each last
+// ScaleDown, as a hold spanning a span of real time: 50Hz's frames each last
 // longer, so fewer of them cover the same span. Note that the speed it is spent
-// at is itself ScaleUp'd (see kMaxWalk/kMaxRun in level/player.hpp), so the two
-// scalings compound -- see the comment on the decrement in ::NextFrame.
-static constexpr u8 kWalkCycleBudget = demo::Framerated<u8, 80>{}.ScaleDown();
+// at is itself ScaleUp'd (see MaxWalk()/MaxRun() in level/player.hpp), so the
+// two scalings compound -- see the comment on the decrement in ::NextFrame.
+//
+// A function rather than a constant for the same reason those are -- the
+// refresh is measured at runtime, so a namespace-scope constant would latch
+// the pre-detection default (level/player.hpp's own comment has the detail).
+AI static inline u8 WalkCycleBudget() { return demo::Framerated<u8, 80>::ScaleDown(); }
 
 // Picks the player's frame from how fast it is going. Called from
 // Player::Update once the movement has been committed, so moveForce holds this
@@ -33,7 +37,7 @@ ACTORS void NextFrame(Actor* self, const bool grounded) {
         // means nothing with no ground under it. Checked before speed, so a
         // run off a ledge freezes rather than carrying on striding.
         self->animationFrame = walk::kTiles_frame_1;
-        self->animationTimer = kWalkCycleBudget;
+        self->animationTimer = WalkCycleBudget();
         return;
     }
 
@@ -66,7 +70,7 @@ ACTORS void NextFrame(Actor* self, const bool grounded) {
     // Budget exhausted: step the cycle and reload. Overshoot is dropped rather
     // than carried, which costs a fraction of a frame of phase and saves
     // holding a remainder.
-    self->animationTimer = kWalkCycleBudget;
+    self->animationTimer = WalkCycleBudget();
 
     // The walk's frames are public, so the cycle is written out of their own
     // names -- no indexing into the private table and no arithmetic on a

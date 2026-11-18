@@ -234,6 +234,22 @@ extern void init();
 extern void post();
 } // namespace irq
 
+namespace video {
+/**
+ * @brief Forward declaration so ::RESET below can run refresh detection without
+ *        this header having to include video.hpp (which would be a cycle).
+ *
+ * See video.hpp for what it does and why it is measured rather than built in.
+ * ::RESET calls it immediately AFTER ::irq::init(), which is load-bearing on
+ * the OGC backend: detection there times the vsync cadence, so the video mode
+ * has to have been configured first (src/ogc/video.cpp's irq::init() is what
+ * calls VIDEO_Configure). NES does not come through here -- its ::RESET is a
+ * bare `int main()` -- and runs detection from a global constructor instead.
+ */
+bool DetectRefresh();
+extern bool is50Hz;
+} // namespace video
+
 /**
  * @brief Declares the program's reset handler on desktop builds.
  *
@@ -259,6 +275,7 @@ static void usr_main();         \
 int main(){                     \
 ::tech::EnsureConsoleOnce();    \
 irq::init();         \
+::video::is50Hz = ::video::DetectRefresh(); \
 usr_main();                 \
 irq::post();         \
 }                               \

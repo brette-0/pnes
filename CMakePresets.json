@@ -31,7 +31,7 @@
       "name": "nes-pal-release",
       "inherits": "_base",
       "displayName": "NES PAL (Release)",
-      "description": "Same NES ROM build as nes-release, but TARGET_PLATFORM=nes_pal sets FRAMERATE=1 -- FamiStudio assembles with PAL note tables/timing instead of NTSC. See local.cmake.example for LLVM_MOS_SDK setup.",
+      "description": "Same NES ROM build as nes-release, but TARGET_PLATFORM=nes_pal sets FRAMERATE=1 and REGION=\"EU\" -- FamiStudio assembles with PAL note tables/timing instead of NTSC. See local.cmake.example for LLVM_MOS_SDK setup.",
       "cacheVariables": {
         "TARGET_PLATFORM": "nes_pal",
         "CMAKE_BUILD_TYPE": "Release"
@@ -277,13 +277,26 @@
       "name": "gc-pal-release",
       "inherits": "gc-release",
       "displayName": "GameCube PAL (Release)",
-      "description": "Same GameCube .dol build as gc-release, but TARGET_PLATFORM=gc_pal sets FRAMERATE=1 -- src/ogc/video.cpp's irq::init() then keeps the console's native 50Hz PAL video mode instead of forcing NTSC 60Hz (see that function's own comment).",
+      "description": "Same GameCube .dol build as gc-release, but TARGET_PLATFORM=gc_pal sets FRAMERATE=1 and REGION=\"EU\" -- src/ogc/video.cpp's irq::init() then keeps the console's native 50Hz PAL video mode instead of forcing NTSC 60Hz (see that function's own comment).",
       "cacheVariables": { "TARGET_PLATFORM": "gc_pal" }
     },
     {
       "name": "gc-pal-debug",
       "inherits": "gc-pal-release",
       "displayName": "GameCube PAL (Debug)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "gc-ntscj-release",
+      "inherits": "gc-release",
+      "displayName": "GameCube NTSC-J (Release)",
+      "description": "Same GameCube .dol build as gc-release, for the Japanese market: TARGET_PLATFORM=gc_ntscj sets REGION=\"JP\" and leaves FRAMERATE at 0, since NTSC-J runs at the same 60Hz as NTSC-U. REGION is the only difference from gc-release; the video path is identical.",
+      "cacheVariables": { "TARGET_PLATFORM": "gc_ntscj" }
+    },
+    {
+      "name": "gc-ntscj-debug",
+      "inherits": "gc-ntscj-release",
+      "displayName": "GameCube NTSC-J (Debug)",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {

@@ -49,10 +49,12 @@ namespace level {
 
     // TODO rewrite to use pre calced addr and then remove vec2 based scrolling from lib
     constexpr u8 kHudSplitRow   = 16;
-    constexpr u8 kHudSplitMMC3  = 16 - (
-            FRAMERATE ? 5 : 4
-    );
-    constexpr u8 kHUDSplitDelay = FRAMERATE ? 90 : 85;
+    // The latency term and the spin length both depend on the refresh, which is
+    // measured at runtime -- so these two are functions where kHudSplitRow
+    // above stays a constant. See level/player.hpp for why a namespace-scope
+    // constant cannot read video::Is50Hz().
+    AI inline u8 HudSplitMMC3()  { return 16 - (::video::Is50Hz() ? 5 : 4); }
+    AI inline u8 HUDSplitDelay() { return ::video::Is50Hz() ? 80 : 80; }
 
 #ifdef TARGET_NDS
     // --- lower-panel blanking -----------------------------------------------
@@ -499,7 +501,7 @@ namespace level {
         // the lower-panel branch instead of ApplyHudSplit.
         nextBlankRow = 0;
 #endif
-        mmc3::ScheduleScanlineIRQ(kHudSplitMMC3, {0, kHudSplitRow});
+        mmc3::ScheduleScanlineIRQ(HudSplitMMC3(), {0, kHudSplitRow});
     }
 
     // ::FIXED for the same reason as nmi_handler, and it calls ApplyHudSplit
@@ -515,7 +517,7 @@ namespace level {
         // one is DS-only and the DS renders in bands, so it has no dot to hit.
         // Only ::ApplyHudSplit needs the staged form.
         if (nextBlankRow) {
-            tech::SpinWait(kHUDSplitDelay);
+            tech::SpinWait(HUDSplitDelay());
             ApplyLowerPanelBlank();
             return;
         }
@@ -571,7 +573,7 @@ namespace level {
         // to happen before the wait. The latch is the one store that moves the
         // screen, so it is all that the delay has to position.
         ppu::StageScroll(hudScroll);
-        tech::SpinWait(kHUDSplitDelay);
+        tech::SpinWait(HUDSplitDelay());
         ppu::LatchScroll(hudScroll);
 
         mmc3::SwitchCHRBank<mmc3::BankOf<blob::staticLevelTiles::__lma>()>(mmc3::chr3Control);   // R3, PPU $0400
