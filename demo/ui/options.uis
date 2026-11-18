@@ -162,11 +162,40 @@
                             "name": "[CT] enableWidescreenText",
                             "posXExpr": "4",
                             "posYExpr": "14",
-                            "provideErasing": false,
+                            "provideErasing": true,
                             "sizeHExpr": "2",
                             "sizeWExpr": "10",
                             "splitter": " ",
                             "text": "ENABLE WIDESCREEN"
+                        },
+                        {
+                            "align": 1,
+                            "charmapOverride": "",
+                            "children": [
+                            ],
+                            "hideRegions": [
+                            ],
+                            "hideTargets": [
+                                "NES",
+                                "GBA",
+                                "DS",
+                                "DSI",
+                                "Wii",
+                                "Wii U",
+                                "3DS",
+                                "Switch",
+                                "PSP",
+                                "PC"
+                            ],
+                            "kind": "ctTextBox",
+                            "name": "[CT] disableWidescreenText",
+                            "posXExpr": "4",
+                            "posYExpr": "14",
+                            "provideErasing": false,
+                            "sizeHExpr": "2",
+                            "sizeWExpr": "10",
+                            "splitter": " ",
+                            "text": "DISABLE WIDESCREEN"
                         }
                     ],
                     "defaultEnabled": false,

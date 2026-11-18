@@ -160,7 +160,18 @@ namespace gen::options {
                 const Rect r = rect;
                 ui::impl::DrawTextBox(pos, r.size);
                 ui::impl::UpdateTextBox(Enabled() ? ui::impl::Enabled : ui::impl::Disabled, pos, r.size);
-                enableWidescreenText::Draw();
+                // Two labels at one cell, swapped on state, same arrangement as
+                // reduceFlashesButton above -- and the Erase() is required, not
+                // tidiness: "DISABLE WIDESCREEN" is a character longer than
+                // "ENABLE WIDESCREEN", so without it the longer label leaves a
+                // tail behind when the shorter one replaces it.
+                //
+                // The label names what a CLICK WOULD DO, which is why Enabled()
+                // -- widescreen currently on, the bit title.cpp hands to
+                // video::ogc::SetWidescreen -- draws the "DISABLE" one.
+                enableWidescreenText::Erase();
+                if (Enabled()) disableWidescreenText::Draw();
+                else           enableWidescreenText::Draw();
             }
         }
 #endif
