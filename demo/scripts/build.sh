@@ -5,11 +5,11 @@
 # Usage:
 #   demo/scripts/build.sh <target> [release|debug] [options]
 #
-#   <target>        nes | nes-pal |
+#   <target>        nes |
 #                   linux | linux-x86 | linux-arm64 | linux-docker |
 #                   win | win-x86 | win-arm64 |
 #                   mac | mac-x64 |
-#                   ctr | gc | gc-pal | wii | switch | wiiu | nds | dsi | ps2
+#                   ctr | gc | wii | switch | wiiu | nds | dsi | ps2
 #   [release|debug] build type (default: release)
 #
 #   'win' is an alias for win-x64, 'mac' for mac-arm64, 'linux' is x64.
@@ -29,9 +29,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() { sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
-TARGETS="nes nes-pal linux linux-x86 linux-arm64 linux-docker \
+TARGETS="nes linux linux-x86 linux-arm64 linux-docker \
 win-x64 win-x86 win-arm64 mac-arm64 mac-x64 \
-ctr gc gc-pal wii switch wiiu nds dsi ps2"
+ctr gc wii switch wiiu nds dsi ps2"
 
 PLATFORM=""
 BUILD_TYPE="release"

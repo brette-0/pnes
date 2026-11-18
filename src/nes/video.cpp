@@ -535,7 +535,7 @@ VIDEO_BANK void video::WaitThenReactToSpriteZero(const vec2<u16> pos, void (*fn)
  * @brief Identifies the console's video system by timing a vblank interval,
  *        and reports whether it refreshes at 50Hz.
  *
- * WHY MEASURE RATHER THAN READ FRAMERATE: see ::video::Is50Hz (video.hpp). The
+ * WHY MEASURE AT ALL: see ::video::Is50Hz (video.hpp). The
  * build cannot know which console the ROM ends up in -- a flash cart, an
  * emulator defaulting to the wrong region, a PAL console running an NTSC image
  * -- and the frame length is the ground truth for everything

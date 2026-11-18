@@ -84,7 +84,7 @@ RESET {
     log("RESET: audio::Init starting");
     mmc3::CallInBlock<audio_tag>([] {
         mmc3::CallInBlock<audio_data_tag>([] {
-            // video::Is50Hz(), not FRAMERATE: the engine is built with BOTH
+            // The MEASURED refresh, not a build flag: the engine is built with BOTH
             // note tables now (demo/famistudio_config.s), and the region it
             // indexes with has to be the refresh this console actually runs
             // at -- measured at boot, not assumed by the build. Detection has

@@ -734,23 +734,26 @@ void irq::init() {
     VIDEO_Init();
     rmode = VIDEO_GetPreferredMode(nullptr);
 
-    // The NES core ticks exactly one game frame per VBlank (see WaitForPresent:
-    // VIDEO_WaitVSync() then nmi()), so the game's logic rate IS the display's
-    // refresh rate. On a 50Hz PAL preferred mode the ~60Hz NES game therefore
-    // runs ~17% slow -- which reads as input/scroll "lag" even though the
-    // console is nowhere near CPU-bound. Force a 60Hz mode so the tick rate
-    // matches the game's intended ~60Hz. Dolphin renders any mode regardless of
-    // region; a real PAL TV would instead need an EURGB60/component-cable guard.
+    // THE CONSOLE'S OWN PREFERRED MODE, WHATEVER IT IS. This used to override a
+    // 50Hz preferred mode onto TVNtsc480IntDf, because the NES core ticks
+    // exactly one game frame per VBlank (see WaitForPresent: VIDEO_WaitVSync()
+    // then nmi()), so the game's logic rate IS the refresh rate -- and at 50Hz a
+    // ~60Hz game ran ~17% slow, reading as input/scroll lag on a console nowhere
+    // near CPU-bound.
     //
-    // FRAMERATE (CMakeLists.txt: TARGET_PLATFORM=gc_pal -> FRAMERATE=1) opts back
-    // into the console's own preferred mode instead -- a genuine PAL release,
-    // same ~17% slower tick rate real PAL NES games shipped with, running on
-    // an unmodified PAL TV/composite cable rather than requiring the
-    // EURGB60/component guard this override exists to sidestep.
-    const u32 vfmt = rmode->viTVMode >> 2;   // (fmt << 2) | mode
-    if (!FRAMERATE && (vfmt == VI_PAL || vfmt == VI_DEBUG_PAL)) {
-        rmode = &TVNtsc480IntDf;             // 60Hz, 480i de-flicker
-    }
+    // THAT IS WHAT demo::Framerated NOW FIXES, which removes the override's
+    // whole justification: ::video::DetectRefresh below measures the refresh
+    // that was actually configured and every framerate-dependent value selects
+    // its 50Hz or 60Hz half from it, so a 50Hz display is correct rather than
+    // slow. Honouring the console is right in both directions -- a native PAL
+    // TV shows 50Hz and the game is tuned for 50Hz, an EURGB60 console shows
+    // 60Hz and the game is tuned for 60Hz.
+    //
+    // AND THE OVERRIDE CARRIED A RISK THAT IS NOW UNPAID-FOR. Forcing an NTSC
+    // mode is fine under Dolphin, which renders any mode regardless of region,
+    // but on real hardware a PAL TV that cannot take 60Hz gets no picture or a
+    // rolling one -- the override needed an EURGB60/component-cable guard that
+    // was never written. Not forcing anything needs no guard.
 
     xfb[0] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
     xfb[1] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
@@ -958,13 +961,16 @@ void irq::post() {
  * @brief Strong override of the weak src/all/video.cpp default: TIMES the
  *        vsync cadence instead of reading the video mode's region field.
  *
- * THIS IS THE BACKEND PAL60 EXISTS ON. A European console configured for
- * EURGB60 hands irq::init() above a 60Hz mode, so a gc_pal build (FRAMERATE=1)
- * ticks at 60Hz -- every WaitForPresent is one 60Hz vsync -- while anything
- * scaled for 50Hz at compile time runs ~20% fast. Measuring the cadence gets
- * that right without having to enumerate which VI formats are 60Hz: VI_NTSC,
- * VI_MPAL, VI_EURGB60 and VI_DEBUG all are, VI_PAL and VI_DEBUG_PAL are not,
- * and a table of that is one more thing to keep correct. The clock is not.
+ * THIS IS THE BACKEND PAL60 EXISTS ON, and the reason the refresh cannot be a
+ * build-time fact here. irq::init() above takes whatever mode the console
+ * prefers, and a European console can prefer either: 576i at 50Hz, or EURGB60
+ * at 60Hz if the player has a component cable and asked for it. Both come out
+ * of one build, so one build has to be able to tell them apart.
+ *
+ * Measuring the cadence does that without enumerating which VI formats are
+ * 60Hz -- VI_NTSC, VI_MPAL, VI_EURGB60 and VI_DEBUG all are, VI_PAL and
+ * VI_DEBUG_PAL are not -- which is one more table to keep correct. The clock
+ * needs no maintenance.
  *
  * MUST RUN AFTER irq::init(), which is where VIDEO_Configure is called -- the
  * ::RESET macro (interrupts.hpp) sequences it that way.

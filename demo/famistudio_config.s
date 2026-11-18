@@ -13,7 +13,8 @@
 ; decided elsewhere -- the code segment must equal the bank pnes's audio module
 ; is compiled into (see below).
 ;
-; NTSC/PAL USED TO BE A SECOND SUCH VALUE, derived from CMake's FRAMERATE. It no
+; NTSC/PAL USED TO BE A SECOND SUCH VALUE, derived from CMake's then-FRAMERATE
+; variable (since removed). It no
 ; longer is: both note tables are enabled unconditionally and the engine selects
 ; between them at runtime from the measured refresh. See the block that sets
 ; them below. CMakeLists.txt still states the same pair for its own compile
@@ -71,9 +72,9 @@
 ; src/nes/audio/famistudio.cpp hands that to famistudio_init through
 ; audio::Init's region argument -- which this engine has always taken.
 ;
-; FRAMERATE is NOT consulted here any more. It still exists and still means
-; "which market is this build for", which is what the NES2.0 timing byte in
-; demo/src/header.hpp needs, but it no longer decides anything at runtime.
+; FRAMERATE is NOT consulted here any more, and no longer exists as a CMake
+; variable at all -- CMake's REGION carries "which market is this build for",
+; and the NES2.0 timing byte in demo/src/header.hpp says Timing::MULTI.
 ;
 ; COST IS THE SECOND NOTE TABLE IN ROM, and that is the whole price of the
 ; change on this target.

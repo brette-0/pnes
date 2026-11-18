@@ -12,7 +12,7 @@ rem CLion Docker toolchain). PS3, GBA and PSP are not supported by this demo.
 
 setlocal EnableDelayedExpansion
 
-set "TARGETS=nes nes-pal linux linux-x86 linux-arm64 win-x64 win-x86 win-arm64 mac-arm64 mac-x64 ctr gc gc-pal wii switch wiiu nds dsi ps2"
+set "TARGETS=nes linux linux-x86 linux-arm64 win-x64 win-x86 win-arm64 mac-arm64 mac-x64 ctr gc wii switch wiiu nds dsi ps2"
 
 set "OK="
 set "FAILED="

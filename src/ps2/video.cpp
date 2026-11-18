@@ -36,8 +36,11 @@
  * -- so this applies the identical R/B channel swap those backends use.
  *
  * Display mode is fixed at NTSC 640x448 for now; there is no PAL branch yet
- * (unlike the NES target's own nes/nes_pal split) -- FRAMERATE only ever
- * affects playback timing/tables on this backend, never the screen mode.
+ * (the NES target used to carry its own nes/nes_pal split for this and no
+ * longer does -- it detects the console at boot instead, as every backend now
+ * does; see video::DetectRefresh). Nothing on this backend varies with the
+ * refresh: the mode is fixed and the present is vsync-paced, so it is 60Hz by
+ * construction.
  *
  * Only NTSC/no-region-switch is implemented. The present is vsync-paced by
  * an INTC vblank handler and a kernel semaphore rather than gsKit_sync_flip

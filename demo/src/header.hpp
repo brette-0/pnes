@@ -1,16 +1,6 @@
 #pragma once
 #include <pnes/headers/nes2.hpp>
 
-// FRAMERATE (CMakeLists.txt: 0 for 60Hz, 1 for 50Hz, set per TARGET_PLATFORM) drives the
-// NES2.0 timing byte the same way famistudio_config.s derives its NTSC/PAL
-// support flags from it -- one source of truth for which region a given
-// TARGET_PLATFORM build targets, not a separate literal to remember to flip
-// alongside it.
-#ifndef FRAMERATE
-#define FRAMERATE 0
-#endif
-
-
 // The $6000-$7FFF window is declared as PRG-NVRAM, not volatile PRG-RAM, and
 // the battery bit is set for it -- the latter from the SAVE_FILE define rather
 // than from an argument here (nes2.hpp's HEADER() comment). MMC3 makes this
@@ -25,5 +15,13 @@ HEADER(
     262144, 16384,
     0, 8192,
     0, 0,
-    FRAMERATE ? Timing::PAL : Timing::NTSC
+    // Timing::MULTI (NES2.0 byte 12 = 2), not NTSC or PAL, and no longer tied
+    // to any build flag: this ROM genuinely runs on both. src/nes/video.cpp measures
+    // the console's frame length at boot into video::is50Hz, demo::Framerated
+    // selects its 60Hz or 50Hz value off that, both FamiStudio note tables and
+    // both SFX tables are linked in (demo/famistudio_config.s), and the engine
+    // picks by the same measured value. Declaring one region would be a claim
+    // the image no longer makes -- and declaring the WRONG one is what an
+    // auto-region emulator or flashcart would then act on.
+    Timing::MULTI
 );

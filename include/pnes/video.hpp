@@ -56,16 +56,18 @@ extern const u16 PatternTables;
  *
  * MEASURED, NOT BUILT IN. Every backend determines this from the hardware it
  * actually came up on, during ::DetectRefresh below -- it is deliberately not
- * derived from the FRAMERATE compile definition, because the build cannot know
+ * a build-time flag, because the build cannot know
  * the answer. PAL60/EURGB60 is the case that forces this: a European GameCube
  * configured for 60Hz hands src/ogc/video.cpp's irq::init() a 60Hz video mode,
  * so a PAL BUILD TICKS AT 60Hz, and anything scaled for 50Hz at compile time
  * then runs ~20% fast. A PAL NES in a 60Hz-region flash cart, or an emulator
  * defaulting to the wrong region, is the same mistake from the other side.
  *
- * FRAMERATE still exists and still means something -- which market the build is
- * for, and the NES2.0 timing byte that has to be a literal in a ROM header --
- * but it is no longer what gameplay tuning keys off.
+ * THERE USED TO BE A FRAMERATE BUILD AXIS saying which refresh an image was
+ * timed for, with nes_pal and gc_pal selecting the 50Hz answers. It is gone:
+ * one image per platform now covers both, and REGION (which market) is the only
+ * build axis left in this area. The NES2.0 timing byte, which has to be a
+ * literal in a ROM header, says Timing::MULTI.
  *
  * Plain bool, not ::atomic: written exactly once, before any gameplay reads it
  * (see ::DetectRefresh), and never from an interrupt. Making it volatile would

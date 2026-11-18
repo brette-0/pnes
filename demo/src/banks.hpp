@@ -92,7 +92,7 @@ template <> struct mmc3::bank_layout<actor_tag> {
 // literal name).
 //
 // Off NES, nothing generates those -D flags at all (CMakeLists.txt's
-// DEMO_PLACEMENT_DEFINES only exists in the nes/nes_pal branch) -- but
+// DEMO_PLACEMENT_DEFINES only exists in the nes branch) -- but
 // shared code (demo/src/graphics/{colours,strings}.hpp, uitk-generated
 // title.cpp, ...) still tags data with TITLE/TITLE_DATA unconditionally, the
 // same way it uses ::COLD or ::ACTORS. Those compile everywhere because

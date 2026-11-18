@@ -5,37 +5,30 @@
 # local.cmake is gitignored.
 include("${CMAKE_SOURCE_DIR}/local.cmake" OPTIONAL)
 
-# FRAMERATE is a separate axis from TARGET_PLATFORM: it names the refresh the
-# build is timed for -- 0 for the 60Hz systems (the default for every target),
-# 1 for the 50Hz ones -- not which platform's backend gets built.
-# TARGET_PLATFORM=nes_pal and gc_pal are the only values that set it to 1, and
-# each otherwise builds exactly the "nes"/"gc" branch below (PLATFORM_DEFINE
-# stays TARGET_NES/TARGET_GC; there is no separate TARGET_NES_PAL or
-# TARGET_GC_PAL define) since a 50Hz console is still the same console as far
-# as every non-timing backend concern goes. gc_ntscj is 60Hz and so leaves
-# this at 0 -- it moves REGION, not FRAMERATE.
-set(FRAMERATE 0)
-
-# REGION is the third axis, independent of both of the above: it names the
-# market a build is for -- "US", "EU" or "JP" -- as a STRING, not a number or
-# an enumerator, so it reaches C++ as a string literal usable wherever a
-# string literal is (PROJECT_NAME further down is defined the same way). It is
-# therefore NOT testable with #if: the preprocessor has no string comparison,
-# so code that must branch at preprocess time has to key off FRAMERATE or
-# TARGET_* instead, and code that wants the market compares it in C++.
+# REGION is a separate axis from TARGET_PLATFORM: it names the market a build is
+# for -- "US" or "JP" -- as a STRING, not a number or an enumerator, so it
+# reaches C++ as a string literal usable wherever a string literal is
+# (PROJECT_NAME further down is defined the same way). It is therefore NOT
+# testable with #if: the preprocessor has no string comparison, so code that
+# must branch at preprocess time keys off TARGET_* instead, and code that wants
+# the market compares this in C++. "EU" is still accepted by the validation
+# further down, but no target sets it -- see the OGC branch for why Japan is the
+# only market a GameCube build has to know about.
 #
-# Every target in the build list is "US" except the two 50Hz ones (nes_pal and
-# gc_pal, which set it to "EU" in their own branches alongside FRAMERATE) and
-# gc_ntscj, which sets it to "JP" at 60Hz. That last one is exactly why the two
-# axes are not derived from one another: EU and FRAMERATE==1 coincide, JP and
-# FRAMERATE==0 do not distinguish JP from US.
+# THERE IS NO LONGER A FRAMERATE AXIS beside this one. It carried 0 for the
+# 60Hz systems and 1 for the 50Hz ones, and existed solely so nes_pal and gc_pal
+# could pick the 50Hz answers at build time. Nothing picks a refresh at build
+# time any more: every backend MEASURES it (video::DetectRefresh, see
+# include/pnes/video.hpp) and every framerate-dependent value carries both
+# halves and selects at run time, so one NES ROM covers NTSC/PAL/Dendy and one
+# GameCube .dol covers 50Hz, 60Hz and PAL60. The refresh was never a property of
+# the build, and saying it was is what PAL60 made visibly wrong.
 #
-# NEITHER THIS NOR FRAMERATE IS A local.cmake KNOB. Both are derived from
-# TARGET_PLATFORM, and both set() unconditionally here, which is after the
-# local.cmake include above -- so a value set there is overwritten rather than
-# honoured. That is deliberate: which market and which refresh a build is for
-# is a property of the target being built, not of the machine building it. Do
-# not convert either to `if(NOT DEFINED ...)`.
+# THIS IS NOT A local.cmake KNOB. It is derived from TARGET_PLATFORM and set()
+# unconditionally here, which is after the local.cmake include above -- so a
+# value set there is overwritten rather than honoured. That is deliberate: which
+# market a build is for is a property of the target being built, not of the
+# machine building it. Do not convert it to `if(NOT DEFINED REGION)`.
 set(REGION "US")
 
 # The NES target cross-compiles with llvm-mos. Everything it needs -- clang,
@@ -47,7 +40,7 @@ set(REGION "US")
 # (-DCMAKE_TOOLCHAIN_FILE=... or an IDE preset) takes precedence and skips this.
 # Keeping the SDK off PATH lets a bare clang/clang++ resolve to the host system
 # compiler for the desktop builds instead of the 6502 cross-compiler.
-if((TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal") AND NOT CMAKE_TOOLCHAIN_FILE)
+if(TARGET_PLATFORM STREQUAL "nes" AND NOT CMAKE_TOOLCHAIN_FILE)
     if(NOT LLVM_MOS_SDK)
         message(FATAL_ERROR
             "NES build requires the llvm-mos-sdk location, but LLVM_MOS_SDK is "
@@ -90,7 +83,7 @@ endif()
 # invisible to that one probe even though it reaches every ordinary target's
 # link step. Compile-only steps harmlessly warn that -T is unused; silenced
 # below rather than left to spam every translation unit.
-if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
+if(TARGET_PLATFORM STREQUAL "nes")
     # BANKED CALL, Phase 5: TOPLEVEL_LD (originally VRC1_LD, renamed when the
     # demo converted from VRC1 to MMC3 -- the variable was never actually
     # mapper-specific, just named after whichever mapper existed first) is
@@ -306,14 +299,14 @@ endmacro()
 # uitk is a standalone Qt Widgets app (tools/uitk/CMakeLists.txt), built here
 # via its own nested `cmake` invocation rather than add_subdirectory -- most
 # importantly, that means it's never built through *this* project's own
-# toolchain. That matters concretely for TARGET_PLATFORM=nes/nes_pal, which
+# toolchain. That matters concretely for TARGET_PLATFORM=nes, which
 # points CMAKE_TOOLCHAIN_FILE at the llvm-mos cross-compiler above: a nested
 # `cmake -S tools/uitk -B ...` subprocess doesn't inherit that (it's never
 # passed along), so it always configures against the host's own compiler,
 # regardless of which platform this build itself targets. Placed here, ahead
 # of every project() call below, so find_package(Qt...) below also always
 # searches the host -- CMAKE_TOOLCHAIN_FILE's CMAKE_SYSTEM_NAME/sysroot
-# settings (set above, for nes/nes_pal) aren't actually applied by CMake
+# settings (set above, for nes) aren't actually applied by CMake
 # until the first project()/enable_language() call processes them.
 #
 # Qt (Widgets) is only actually required when demo/gen/ doesn't already have
@@ -340,14 +333,14 @@ endmacro()
 # calls project(pnes CXX) itself), but this block now runs before
 # all of them. Redundant, not conflicting, with each branch's own project()
 # call moments later (CMake tolerates re-enabling an already-enabled
-# language); for nes/nes_pal this does bind CXX to the llvm-mos cross
+# language); for nes this does bind CXX to the llvm-mos cross
 # compiler already selected above via CMAKE_TOOLCHAIN_FILE, same as that
 # later project() call would anyway -- find_package(Qt...) itself doesn't
 # care which compiler got enabled, only that FindThreads' own assertion is
 # satisfied (CMAKE_SYSTEM_NAME=Generic sets no CMAKE_FIND_ROOT_PATH, so
 # nothing here restricts the search to a cross sysroot either way).
 #
-# Saved BEFORE enable_language(CXX): for nes/nes_pal, CMake's own compiler
+# Saved BEFORE enable_language(CXX): for nes, CMake's own compiler
 # enablement exports CXX (and, on some setups, CC) as real process
 # environment variables pointing at the just-identified compiler --
 # confirmed directly against this llvm-mos toolchain, not documented
@@ -412,7 +405,7 @@ macro(clear_nested_build_dir_on_generator_change dir)
         unset(_NESTED_CACHED_GENERATOR)
     endif()
 endmacro()
-# On nes/nes_pal (and any other bare-metal preset whose toolchain file sets
+# On nes (and any other bare-metal preset whose toolchain file sets
 # CMAKE_SYSTEM_NAME to a non-host value, e.g. ps2/gc/wii/3ds), that value is
 # already latched in by enable_language(CXX) above by the time find_package
 # below runs in this same process. Qt5/6's own CMake config declares its
@@ -445,7 +438,7 @@ if(Qt6Widgets_FOUND OR Qt5Widgets_FOUND)
     # see that block's own comment. Every execute_process() below is a
     # nested `cmake` subprocess that must configure/build tools/uitk against
     # the HOST compiler, never whatever enable_language(CXX) just bound CXX
-    # to for TARGET_PLATFORM=nes/nes_pal.
+    # to for TARGET_PLATFORM=nes.
     if(_HOST_ENV_CXX)
         set(ENV{CXX} "${_HOST_ENV_CXX}")
     else()
@@ -591,7 +584,7 @@ endif()
 # Built via its own nested `cmake` invocation rather than add_subdirectory,
 # for all the reasons spelled out on the uitk block above -- chiefly that a
 # nested subprocess never inherits CMAKE_TOOLCHAIN_FILE, so blobman always
-# builds as the host tool it is even when this build targets nes/nes_pal. The
+# builds as the host tool it is even when this build targets nes. The
 # CXX/CC swap around it is that same block's swap, for that same reason: see
 # the comments on _HOST_ENV_CXX / _MOS_ENV_CXX above.
 file(GLOB_RECURSE BLOBMAN_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tools/blobman/*.cpp)
@@ -892,11 +885,14 @@ endif()
 # ----------------------------------------------------------------------
 # NES target
 # ----------------------------------------------------------------------
-if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
-    if(TARGET_PLATFORM STREQUAL "nes_pal")
-        set(FRAMERATE 1)
-        set(REGION "EU")
-    endif()
+if(TARGET_PLATFORM STREQUAL "nes")
+    # NO nes_pal HERE ANY MORE. It existed to flip the former FRAMERATE axis (and with it the
+    # NES2.0 timing byte, the FamiStudio note tables and the SFX export mode) to
+    # the 50Hz answer at build time. None of those are build decisions now: the
+    # ROM measures the console at boot (src/nes/video.cpp's DetectRefresh),
+    # carries both halves of every framerate-dependent value, and declares
+    # itself Timing::MULTI. One NES ROM covers NTSC, PAL and Dendy, so a second
+    # configuration would differ from this one in nothing at all.
 
     # CMAKE_CXX_FLAGS (-T/-L/TOPLEVEL_LD's own FATAL_ERROR guard) is set much
     # earlier now, right after CMAKE_TOOLCHAIN_FILE near the top of this file
@@ -1032,7 +1028,7 @@ if(TARGET_PLATFORM STREQUAL "nes" OR TARGET_PLATFORM STREQUAL "nes_pal")
     # happens before this point).
     find_package(llvm-mos-sdk REQUIRED)
     project(pnes CXX)
-    set(PLATFORM_DEFINE TARGET_NES "FRAMERATE=${FRAMERATE}" "REGION=\"${REGION}\"")
+    set(PLATFORM_DEFINE TARGET_NES "REGION=\"${REGION}\"")
 
     # NROM has no bankswitching, so RESET has nowhere to "escape to" and
     # stays plain int main(). Every other mapper needs its RESET/main pinned
@@ -1214,7 +1210,7 @@ FAMISTUDIO_CFG_SFX_STREAMS, so the two cannot disagree.")
     endif()
     set(FAMISTUDIO_CFG_SFX_STREAMS ${PNES_SFX_STREAMS})
 
-    # BOTH, ALWAYS -- no longer derived from FRAMERATE. These mirror what
+    # BOTH, ALWAYS -- no longer derived from the former FRAMERATE axis. These mirror what
     # demo/famistudio_config.s now sets unconditionally, and the two still have
     # to agree, which is why they are stated here as well.
     #
@@ -1281,7 +1277,8 @@ FAMISTUDIO_CFG_SFX_STREAMS, so the two cannot disagree.")
     add_custom_command(
             OUTPUT ${FAMISTUDIO_OBJ}
             COMMAND ${CA65}
-            # No -D FRAMERATE here any more: famistudio_config.s stopped
+            # No -D FRAMERATE here any more (and no such variable now at all):
+            # famistudio_config.s stopped
             # deriving its NTSC/PAL support flags from it (both are now
             # unconditionally 1, selected at runtime instead), and nothing else
             # in the assembly reads it. Leaving a dead -D in place would read
@@ -1347,17 +1344,19 @@ FAMISTUDIO_CFG_SFX_STREAMS, so the two cannot disagree.")
     # wrong-rate failure above on any console that is not the one it was built
     # for. Both tables hold data and the engine indexes the right one.
     #
-    # STILL IN THE BINARY DIR, though the reason has weakened. It was that
-    # region-dependent output cannot live at a region-independent path: the nes
-    # and nes_pal configurations have separate build dirs but share one source
-    # tree, so a generated demo/audio/sfx/nes_sfx.s would be written by
-    # whichever configuration built last and then found "newer than sfx.fms",
-    # hence up to date, by the other -- silently linking NTSC effects into a PAL
-    # ROM or the reverse. A dual export is identical for both configurations, so
-    # that collision no longer has teeth; it stays here because being outside
-    # demo/ also keeps it out of the source .s glob below with no exclusion
-    # needed, unlike nes_audio.s. Named sfx.s rather than nes_sfx.s because a
-    # build dir is always a NES build dir; the prefix distinguished nothing.
+    # STILL IN THE BINARY DIR, but no longer for the original reason. That was
+    # that region-dependent output cannot live at a region-independent path:
+    # with separate nes and nes_pal configurations sharing one source tree, a
+    # generated demo/audio/sfx/nes_sfx.s would be written by whichever built
+    # last and then found "newer than sfx.fms", hence up to date, by the other
+    # -- silently linking NTSC effects into a PAL ROM or the reverse. Both of
+    # that hazard's preconditions are gone: the export is DUAL (identical
+    # whatever the configuration), and there is only one NES configuration left
+    # to collide with anyway. What keeps it here is the remaining benefit --
+    # being outside demo/ keeps it out of the source .s glob below with no
+    # exclusion needed, unlike nes_audio.s. Named sfx.s rather than nes_sfx.s
+    # because a build dir is always a NES build dir; the prefix distinguished
+    # nothing.
     set(NES_SFX_FMS ${CMAKE_SOURCE_DIR}/demo/audio/sfx.fms)
     set(NES_SFX_ASM ${CMAKE_BINARY_DIR}/sfx.s)
     set(NES_SFX_MODE dual)
@@ -1806,39 +1805,45 @@ FAMISTUDIO_CFG_SFX_STREAMS, so the two cannot disagree.")
     # Platform/libogc.cmake, the arch flags, the -logc -lm link line (plus
     # -lwiiuse -lbte on Wii) and the ogc_create_dol() helper used below.
     # ----------------------------------------------------------------------
-elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_pal" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR TARGET_PLATFORM STREQUAL "wii")
+elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR TARGET_PLATFORM STREQUAL "wii")
     project(pnes CXX)
 
     FetchContent_MakeAvailable(intsh tuple)
     _make_consh_available()
     _fixup_fetched_cxx_std_targets()
 
-    # gc_pal and gc_ntscj both build exactly the "gc" branch below (same
-    # PLATFORM_DEFINE/DEMO_TITLE_DIR -- there is no separate TARGET_GC_PAL or
-    # TARGET_GC_NTSCJ define, same as nes_pal above has no TARGET_NES_PAL).
-    # They differ only in the two axes set here.
+    # gc_ntscj builds exactly the "gc" branch below (same PLATFORM_DEFINE/
+    # DEMO_TITLE_DIR -- there is no separate TARGET_GC_NTSCJ define), and REGION
+    # is the entire difference. That is why it is a TARGET_PLATFORM of its own
+    # rather than a flag: which market a build is for is a property of the
+    # target being built.
     #
-    # gc_pal flips FRAMERATE to 1, which src/ogc/video.cpp's irq::init() reads
-    # to decide whether to keep the console's native 50Hz PAL video mode
-    # instead of forcing NTSC 60Hz (see that function's own comment).
-    if(TARGET_PLATFORM STREQUAL "gc_pal")
-        set(FRAMERATE 1)
-        set(REGION "EU")
-    endif()
-
-    # gc_ntscj is the Japanese release. NTSC-J is a 60Hz format (VI_NTSC, the
-    # same refresh as NTSC-U), so FRAMERATE stays 0 and video.cpp's 60Hz
-    # override above never has anything to correct -- a JP console's preferred
-    # mode is already NTSC. REGION is the whole difference from plain "gc",
-    # which is why this is a TARGET_PLATFORM of its own rather than a flag on
-    # the existing one: it keeps "which market" a property of the target being
-    # built, the same way nes_pal/gc_pal already work.
+    # IT IS ALSO THE ONLY GAMECUBE MARKET VARIANT, because Japan is the only one
+    # a build has to know about. A Japanese console formats memory cards as
+    # Shift-JIS and renders them with the SJIS IPL font; US and European
+    # consoles are both ANSI with the same font, so a save file written on one
+    # is correct on the other. Everything else that differs between a US and a
+    # European GameCube is READABLE AT RUN TIME and so is not a build axis:
+    #   - the refresh, from src/ogc/video.cpp's DetectRefresh (a European
+    #     console prefers 50Hz 576i, or 60Hz if it is set to EURGB60);
+    #   - the player's language, from SYS_GetLanguage() -- which on a PAL
+    #     console is one of six (SYS_LANG_ENGLISH..SYS_LANG_DUTCH, libogc's
+    #     ogc/system.h) and so could not be carried by a single "EU" string
+    #     anyway.
+    # There is no clock difference at all: every GameCube runs the same 485MHz
+    # Gekko in every region, unlike the NES where PAL is a different part.
+    #
+    # gc_pal USED TO LIVE HERE, setting the former FRAMERATE axis to 1 so
+    # irq::init() would keep a
+    # 50Hz preferred mode instead of overriding it to NTSC 60Hz. That override
+    # is gone (see that function), so the two configurations would now be
+    # identical apart from REGION="EU", which buys nothing per the above.
     if(TARGET_PLATFORM STREQUAL "gc_ntscj")
         set(REGION "JP")
     endif()
 
     # Negated rather than listing the GameCube variants: this branch's elseif
-    # admits exactly gc, gc_pal, gc_ntscj and wii, so "not wii" is the complete
+    # admits exactly gc, gc_ntscj and wii, so "not wii" is the complete
     # GameCube set and stays complete when another market variant is added.
     if(NOT TARGET_PLATFORM STREQUAL "wii")
         set(PLATFORM_DEFINE TARGET_GC)
@@ -4129,30 +4134,26 @@ exec ./demo \"\$@\"
     endif()
 endif()
 
-# One FRAMERATE define for every target, regardless of which TARGET_PLATFORM
-# branch above actually ran (exactly one does, and it's the only one that
-# has created the pnes target by this point): 0 for the 60Hz systems (every
-# target's default) or 1 for the nes_pal/gc_pal targets set above.
-target_compile_definitions(pnes PUBLIC FRAMERATE=${FRAMERATE})
-
-# One REGION define for every target, on the same terms -- but as a quoted
-# string, so what lands in the compiler's command line is REGION="US" and what
-# C++ sees after substitution is the literal "US". Validated here rather than
-# at the set() near the top of this file because the nes_pal/gc_pal/gc_ntscj
-# branches above get to change it after that point; this is the first line
-# that sees the final value. Same shape as the ORIENTATION guard further up.
+# One REGION define for every target, regardless of which TARGET_PLATFORM branch
+# above actually ran (exactly one does, and it's the only one that has created
+# the pnes target by this point) -- as a quoted string, so what lands in the
+# compiler's command line is REGION="US" and what C++ sees after substitution is
+# the literal "US". Validated here rather than at the set() near the top of this
+# file because the gc_ntscj branch above gets to change it after that point;
+# this is the first line that sees the final value. Same shape as the
+# ORIENTATION guard further up.
 if(NOT REGION STREQUAL "US" AND NOT REGION STREQUAL "EU" AND NOT REGION STREQUAL "JP")
     message(FATAL_ERROR
         "REGION must be US, EU or JP, got: \"${REGION}\"")
 endif()
 target_compile_definitions(pnes PUBLIC "REGION=\"${REGION}\"")
 
-# One SAVE_FILE define for every target, for the same reason FRAMERATE gets one:
+# One SAVE_FILE define for every target, for the same reason REGION gets one:
 # the save backends are per-platform, but "does this game use save technology
 # at all" is not, and every backend needs to compile itself away when it
 # doesn't. The NES branch above has already put this in its own
 # PLATFORM_DEFINE (it needs it in the hand-rolled pass-1 flags as well);
-# repeating it here is harmless exactly as it is for FRAMERATE, since CMake
+# repeating it here is harmless exactly as it is for REGION, since CMake
 # de-duplicates identical compile definitions on a target.
 #
 # Truthiness-gated, so the define exists only when saving is on -- see the NES

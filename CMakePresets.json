@@ -28,22 +28,6 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
-      "name": "nes-pal-release",
-      "inherits": "_base",
-      "displayName": "NES PAL (Release)",
-      "description": "Same NES ROM build as nes-release, but TARGET_PLATFORM=nes_pal sets FRAMERATE=1 and REGION=\"EU\" -- FamiStudio assembles with PAL note tables/timing instead of NTSC. See local.cmake.example for LLVM_MOS_SDK setup.",
-      "cacheVariables": {
-        "TARGET_PLATFORM": "nes_pal",
-        "CMAKE_BUILD_TYPE": "Release"
-      }
-    },
-    {
-      "name": "nes-pal-debug",
-      "inherits": "nes-pal-release",
-      "displayName": "NES PAL (Debug)",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-    },
-    {
       "name": "linux-release",
       "inherits": "_base",
       "displayName": "Linux (x64) (Release)",
@@ -274,23 +258,10 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
-      "name": "gc-pal-release",
-      "inherits": "gc-release",
-      "displayName": "GameCube PAL (Release)",
-      "description": "Same GameCube .dol build as gc-release, but TARGET_PLATFORM=gc_pal sets FRAMERATE=1 and REGION=\"EU\" -- src/ogc/video.cpp's irq::init() then keeps the console's native 50Hz PAL video mode instead of forcing NTSC 60Hz (see that function's own comment).",
-      "cacheVariables": { "TARGET_PLATFORM": "gc_pal" }
-    },
-    {
-      "name": "gc-pal-debug",
-      "inherits": "gc-pal-release",
-      "displayName": "GameCube PAL (Debug)",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-    },
-    {
       "name": "gc-ntscj-release",
       "inherits": "gc-release",
       "displayName": "GameCube NTSC-J (Release)",
-      "description": "Same GameCube .dol build as gc-release, for the Japanese market: TARGET_PLATFORM=gc_ntscj sets REGION=\"JP\" and leaves FRAMERATE at 0, since NTSC-J runs at the same 60Hz as NTSC-U. REGION is the only difference from gc-release; the video path is identical.",
+      "description": "Same GameCube .dol build as gc-release, for the Japanese market: TARGET_PLATFORM=gc_ntscj sets REGION=\"JP\", which is the only difference from gc-release -- the video path is identical, and the refresh is measured at run time rather than chosen by the build.",
       "cacheVariables": { "TARGET_PLATFORM": "gc_ntscj" }
     },
     {

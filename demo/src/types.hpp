@@ -15,7 +15,7 @@ namespace demo {
 // Framerated<int_type, number>: a tuning constant that has one value at 60Hz
 // and another at 50Hz, with the choice made AT RUNTIME from the refresh the
 // console actually came up at (video::Is50Hz(), pnes/video.hpp) rather than
-// from the FRAMERATE compile definition.
+// a build-time flag.
 //
 // WHY RUNTIME: the build does not know the answer. PAL60/EURGB60 is the case
 // that settles it -- a European GameCube set to 60Hz hands src/ogc/video.cpp's

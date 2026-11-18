@@ -13,11 +13,11 @@ set -uo pipefail
 HERE="$(dirname "${BASH_SOURCE[0]}")"
 
 TARGETS=(
-    nes nes-pal
+    nes
     linux linux-x86 linux-arm64
     win-x64 win-x86 win-arm64
     mac-arm64 mac-x64
-    ctr gc gc-pal wii switch wiiu nds dsi
+    ctr gc wii switch wiiu nds dsi
     ps2
 )
 
