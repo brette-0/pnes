@@ -3,35 +3,27 @@
 #include <cstddef>
 #include <intsh>
 
+#ifdef TARGET_GC
+// card_stat, which is what ::save::GetMetaData / ::save::SetMetaData move. They
+// take `void*` rather than naming it, so that this header declares the same two
+// functions on every target without a non-GameCube build having to find
+// ogc/card.h -- but a GameCube application has to be able to DECLARE one, so
+// the type comes in here rather than leaving every call site to include it.
+#include <ogc/card.h>
+#endif
+
 #include "technology.hpp"
 
 using namespace br0::intsh;
 
 namespace save {
 
-    /**
-     * @brief Why a call did not do its job; 0 (::ok) means it did.
-     *
-     * UNSCOPED AND u8-BASED, DELIBERATELY: `if (!response.err)` reads as the
-     * one-line success test, exactly as a bare u8 would, while `case
-     * save::no_device:` still names itself in a switch. `enum class` would have
-     * cost the first for the sake of the second, and both spellings compile to
-     * the same byte -- a u8-based enum is one byte, and a Response carrying one
-     * is the same size as a Response carrying a plain u8.
-     *
-     * LIBRARY-OWNED, NOT A PLATFORM'S OWN CODES. Each backend translates into
-     * this: libogc's CARD_ERROR_NOCARD is -3, which would arrive in a u8 as
-     * 253, and a game switching on that is writing GameCube-specific magic
-     * numbers -- the opposite of being told what went wrong in terms it can
-     * act on. The platform's own code stays in its backend, for a debugger.
-     *
-     * NOTHING FOUND IS NOT AN ERROR. A search of a brand-new memory card
-     * legitimately finds nothing, and that is the Get-then-Create flow working,
-     * not failing -- so it reports ::ok with a null ::Response::path, and a
-     * game that treats `err != 0` as a fault never shows "save error" to a
-     * player whose card is merely blank. ::not_found means only "you named a
-     * file and it is not there".
-     */
+#ifdef TARGET_GC
+#define OGC_COMMENT(name) char name [32]
+#define OGC_ICON_CI(name) u8 name[1536]
+#define OGC_BANNER_CI(name) u8 name[3584]
+#endif
+
     enum eError : u8 {
         found,
         missing,
@@ -74,9 +66,42 @@ namespace save {
 #endif
     };
 
-    AI Response Save(const u8* src, std::size_t size);
-    AI Response Load(u8* tar, std::size_t size);
-    AI Response Load(u8* tar, std::size_t size, const Response* response);
-    AI Response CreateSave(const u8* src, std::size_t size, const Response* response);
-    AI Response GetSaveLocation();
+    /*
+     * NO ::AI ON THESE, AND THAT IS LOAD-BEARING.
+     *
+     * Every one of them is DEFINED OUT OF LINE, in whichever src/<platform>/
+     * save.cpp the build selected. `always_inline` on a declaration whose body
+     * the compiler cannot see is not a hint -- GCC REJECTS IT OUTRIGHT:
+     *
+     *   error: inlining failed in call to 'always_inline'
+     *          'save::Save(const u8*, std::size_t)': function body not available
+     *
+     * ...which breaks every call site in a build without LTO to make the body
+     * visible. That is every Debug config (CMakeLists.txt enables IPO for
+     * Release/MinSizeRel/RelWithDebInfo only) and the whole PS3 target, which
+     * disables it deliberately. Clang merely ignores the attribute, so the
+     * problem is invisible on the NES, PS3 and desktop and fatal on the
+     * devkitPPC / devkitARM / devkitA64 / PSP / PS2 toolchains.
+     *
+     * NOTHING IS LOST BY REMOVING IT. On the NES, where these fold to a
+     * constant and the fold actually matters, llvm-mos compiles to LTO bitcode
+     * BY DEFAULT -- no -flto anywhere in the flags -- and the NES link hands
+     * every demo .cpp to one whole-program invocation. The backend's body is
+     * therefore visible at link time either way, and a function whose whole
+     * body is `return { true, no_device }` is inlined on its merits at -Os
+     * without being ordered to be. A measured `while (!...done)` loop around
+     * one of these compiles to nothing at all.
+     *
+     * The convention this follows is video.hpp's: ::video::Is50Hz() is
+     * `AI inline` because its body IS in that header, while
+     * ::video::DetectRefresh() is declared plain because its body is not.
+     * ::AI belongs on a definition, not on a promise (technology.hpp).
+     */
+    Response SetMetaData(const void* src);
+    Response GetMetaData(void* tar);
+    Response Save(const u8* src, std::size_t size);
+    Response Load(u8* tar, std::size_t size);
+    Response Load(u8* tar, std::size_t size, const Response* response);
+    Response CreateSave(const u8* src, std::size_t size, const Response* response);
+    Response GetSaveLocation();
 }

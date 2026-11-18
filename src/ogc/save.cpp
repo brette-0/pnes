@@ -34,6 +34,16 @@
  * of the sector; ::save::Load hands back the first @p size bytes. Saving 64
  * and loading 32 back is well defined and gives the first 32.
  *
+ * THIS BACKEND RESERVES NOTHING. What a caller passes is the whole of what
+ * reaches the card, starting at offset 0. The GameCube does keep a save's
+ * comment block, banner and icon INSIDE the save file -- reached through
+ * card_direntry's `comment_addr` / `icon_addr` -- but those are the
+ * APPLICATION'S bytes to lay out and fill, declared as members at the front of
+ * its own save struct. Nothing here places them, offsets past them, or has an
+ * opinion about where they are; the one thing this file still owes them is a
+ * CARD_SetStatus that tells the directory entry the offsets the application
+ * chose, which does not exist yet.
+ *
  * A PATH IS `"a:name"` or `"b:name"`: slot letter, colon, then at most 31
  * characters (CARD_FILENAMELEN is 32, terminator included). Anything else is
  * REJECTED rather than defaulted -- defaulting to slot A is how a save lands
@@ -71,16 +81,37 @@ namespace {
  * project that wants its own code says so once in its own build and nothing
  * here has to grow an option for it.
  */
-#ifndef SAVE_GAMECODE
-#define SAVE_GAMECODE "PNES"
+#ifndef OGC_GAME_CODE
+#define OGC_GAME_CODE "PNES"
 #endif
-#ifndef SAVE_COMPANY
-#define SAVE_COMPANY "BR"
+#ifndef OGC_COMPANY_CODE
+#define OGC_COMPANY_CODE "BR"
 #endif
-constexpr char kGameCode[] = SAVE_GAMECODE;
-constexpr char kCompany[]  = SAVE_COMPANY;
-static_assert(sizeof(kGameCode) == 5, "SAVE_GAMECODE must be exactly 4 characters");
-static_assert(sizeof(kCompany)  == 3, "SAVE_COMPANY must be exactly 2 characters");
+#ifndef OGC_FILENAME
+#define OGC_FILENAME "pnes_save"
+#endif
+constexpr char kGameCode[] = OGC_GAME_CODE;
+constexpr char kCompany[]  = OGC_COMPANY_CODE;
+constexpr char kFileName[] = OGC_FILENAME;
+
+/**
+ * @brief Where ::save::CreateSave puts the save when the caller names nowhere.
+ *
+ * Literal concatenation, so the slot is SPELLED OUT rather than defaulted
+ * inside ::ParsePath -- which still refuses a path that does not name one, for
+ * the reason its own comment gives. "No path at all" and "a path that forgot
+ * its slot" are different mistakes, and only the first has an obvious answer.
+ *
+ * Slot A because it is the one every GameCube has populated first and the one
+ * a single-card player is using. A game that wants to offer the choice passes
+ * a path and this is never consulted.
+ */
+constexpr char kDefaultPath[] = "a:" OGC_FILENAME;
+static_assert(sizeof(kDefaultPath) == sizeof(kFileName) + 2, "kDefaultPath must be \"a:\" + the name");
+static_assert(sizeof(kGameCode) == 5, "OGC_GAME_CODE must be exactly 4 characters");
+static_assert(sizeof(kCompany)  == 3, "OGC_COMPANY_CODE must be exactly 2 characters");
+static_assert(sizeof(kFileName) > 1 && sizeof(kFileName) <= CARD_FILENAMELEN,
+    "OGC_FILENAME must be 1-31 characters (CARD_FILENAMELEN is 32, terminator included)");
 
 /** @brief Largest card sector this file is prepared to transfer. */
 constexpr u32 kSectorMax = 8192;
@@ -96,6 +127,22 @@ constexpr u32 kSectorMax = 8192;
 alignas(32) u8 staging[kSectorMax];
 
 /**
+ * @brief The card_stat a metadata operation works through.
+ *
+ * COPIED IN AND OUT RATHER THAN USED IN PLACE, for the same reason ::Begin
+ * snapshots a save's payload up front: the sequence spans frames and the caller
+ * is free to carry on using its own object meanwhile. It also keeps
+ * ::save::SetMetaData's `const void*` honest -- CARD_SetStatus takes a
+ * NON-const card_stat and writes back the offsets it derives from icon_addr
+ * (__card_updateiconoffsets' whole job), so handing it the caller's object
+ * would mean const_casting away a promise this backend made.
+ */
+card_stat metaStat;
+
+/** @brief Where ::save::GetMetaData copies ::metaStat once it is filled. */
+void* metaOut = nullptr;
+
+/**
  * @brief Mount work area, owned for the life of the program.
  *
  * CARD_WORKAREA_SIZE is 5*8*1024 = 40960 bytes and the card system keeps using
@@ -106,7 +153,17 @@ alignas(32) u8 staging[kSectorMax];
 alignas(32) u8 workarea[CARD_WORKAREA_SIZE];
 
 /** @brief What the in-flight sequence is doing, if anything. */
-enum class Op : u8 { None, Saving, Loading, Creating, Finding };
+enum class Op : u8 { None, Saving, Loading, Creating, Finding, GettingMeta, SettingMeta };
+
+/**
+ * @brief True for the two operations that move a card_stat, not file bytes.
+ *
+ * They share the whole sequence -- probe, mount, find-or-open, finish -- and
+ * differ only in what the Transfer tick calls, which is why they are ops here
+ * rather than a second state machine. What they do NOT share is the staging
+ * buffer or @p size: a directory entry is not file contents and has no prefix.
+ */
+constexpr bool IsMeta(Op o) { return o == Op::GettingMeta || o == Op::SettingMeta; }
 
 /** @brief One libogc step per tick, in the order they run. */
 enum class Phase : u8 { Probe, Mount, Resolve, Transfer, Finish };
@@ -222,7 +279,17 @@ bool Fail(save::eError err, s32 native = CARD_ERROR_FATAL_ERROR) {
     lastErr    = err;
     lastNative = native;
     Abort();
-    return false;
+    // TRUE, NOT FALSE: `true` means the sequence is OVER, not that it worked.
+    // ::Report pairs it with ::lastErr, so the caller gets `done` with the real
+    // save::eError and its `while (!response.done)` loop ENDS.
+    //
+    // It used to return false, and that made every error here unreportable: a
+    // failure abandoned the sequence (::Abort clears ::op) while answering "not
+    // finished", so the next tick began the same doomed attempt and answered
+    // the same way forever. save.hpp names that outcome as one of the two a
+    // game cannot recover from -- "not finished yet (its loop never ends)" --
+    // and the whole save::eError vocabulary was unreachable because of it.
+    return true;
 }
 
 /**
@@ -236,8 +303,9 @@ bool Fail(save::eError err, s32 native = CARD_ERROR_FATAL_ERROR) {
  * an empty slot is the ordinary case, and a search that reported "not finished"
  * forever would pump audio and video until the console was switched off.
  *
- * Anything else -- a save or a load -- has genuinely failed, and reports
- * `false` because `bool` is all it can report. See this file's header comment.
+ * A save or a load that has run out of slots has genuinely failed, and reports
+ * the same `true`: the sequence is over either way, and which of the two it was
+ * is in ::lastErr, not in this bool. See this file's header comment.
  */
 bool Exhausted(save::eError err, s32 native) {
     const bool finding = (op == Op::Finding);
@@ -252,7 +320,13 @@ bool Exhausted(save::eError err, s32 native) {
     lastErr = err;
     if (finding) haveLocation = false;
     Abort();
-    return finding;
+    // `finding` is still computed above (a failed search forgets its remembered
+    // location), but the RETURN is unconditional for the reason ::Fail's is: a
+    // save or load that has run out of slots is finished, and saying otherwise
+    // hangs the caller instead of telling it what went wrong. This used to
+    // return `finding`, which made a search the only operation here that could
+    // report a failure at all.
+    return true;
 }
 
 /**
@@ -303,6 +377,16 @@ bool ProbeCurrentSlot() {
         lastErr = save::failed; lastNative = CARD_ERROR_FATAL_ERROR;
         return false;
     }
+    if (op != Op::Finding && static_cast<u32>(pending) > static_cast<u32>(sect)) {
+        // What a caller passes must fit ONE sector, because ::Tick's transfer
+        // moves exactly `sector` bytes from offset 0 -- anything that spilled
+        // past that would be silently truncated and reported as a save.
+        // ::Begin's cap is against kSectorMax, which is the widest sector this
+        // file is built for; a card with a NARROWER one lands here instead.
+        // Refused rather than clipped.
+        lastErr = save::too_large; lastNative = CARD_ERROR_INSSPACE;
+        return false;
+    }
     chn    = kSlots[slotIndex];
     sector = static_cast<u32>(sect);
     return true;
@@ -341,7 +425,14 @@ const char* PathOf(const save::Response* response) {
 bool Begin(Op want, const u8* src, u8* tar, std::size_t size, const char* path) {
     // `path` here is already unwrapped from the caller's save::Response by the
     // entry points below -- only its `path` field is consumed. See ::PathOf.
-    if (want != Op::Finding) {
+    if (want != Op::Finding && !IsMeta(want)) {
+        // The widest sector this file is built for. The real limit is the
+        // CARD'S sector, which is not known until ::ProbeCurrentSlot has
+        // asked -- this is the cheap bound that can be applied before the card
+        // is touched at all, and the exact one is enforced there.
+        //
+        // NOT applied to the metadata ops: they move no file bytes and pass no
+        // size, so `size == 0` is their ordinary case and not a mistake.
         if (size == 0 || size > kSectorMax) return Fail(save::too_large);
     }
 
@@ -374,6 +465,13 @@ bool Begin(Op want, const u8* src, u8* tar, std::size_t size, const char* path) 
     } else if (want == Op::Loading) {
         if (!tar) return Fail(save::failed);
         dest = tar;
+    } else if (want == Op::SettingMeta) {
+        if (!src) return Fail(save::failed);
+        std::memcpy(&metaStat, src, sizeof metaStat);
+        metaOut = nullptr;
+    } else if (want == Op::GettingMeta) {
+        if (!tar) return Fail(save::failed);
+        metaOut = tar;
     }
 
     op       = want;
@@ -491,6 +589,26 @@ bool Tick(Op want, const u8* src, u8* tar, std::size_t size, const char* path) {
         }
 
         case Phase::Transfer: {
+            // THE DIRECTORY ENTRY, NOT THE FILE. No staging buffer and no cache
+            // maintenance: a card_stat is an ordinary object libogc fills with
+            // the CPU, and the directory block it ends up in is the card
+            // system's own buffer rather than one of ours.
+            //
+            // ::file.filenum is how both calls address the entry, and ::Resolve
+            // has already set it -- CARD_Open and CARD_Create both fill it -- so
+            // no separate directory lookup is needed here.
+            if (IsMeta(op)) {
+                const s32 err = (op == Op::GettingMeta)
+                    ? CARD_GetStatus(chn, file.filenum, &metaStat)
+                    : CARD_SetStatus(chn, file.filenum, &metaStat);
+                if (err != CARD_ERROR_READY) return Fail(MapError(err), err);
+                // Only a Get copies back: ::metaOut is null for a Set, whose
+                // caller passed a const pointer and is promised no writeback.
+                if (metaOut) std::memcpy(metaOut, &metaStat, sizeof metaStat);
+                phase = Phase::Finish;
+                return false;
+            }
+
             // Cache maintenance around the DMA, both directions. libogc may do
             // this inside card.c -- its source is not part of this SDK install,
             // so it cannot be confirmed here -- and doing it twice costs only
@@ -585,15 +703,21 @@ Response Load(u8* tar, const std::size_t size, const Response* response) {
  * @brief Creates the save at the location @p response names, writing @p size
  *        bytes of @p src.
  *
- * A create must name its file -- there is nothing to search for yet -- so a
- * response with no path is refused outright rather than left pending. A
- * response straight out of an unsuccessful ::GetSaveLocation is exactly that:
- * the caller has to put a location of its own choosing in first.
+ * A RESPONSE WITH NO PATH IS NO LONGER REFUSED. It used to be, because there
+ * was nothing for a create to search for and no name it could invent; now
+ * ::kDefaultPath exists (OGC_FILENAME, set in the build), so "create this
+ * game's save" is a complete instruction on its own. A response straight out
+ * of an unsuccessful ::GetSaveLocation is exactly that instruction -- the
+ * Get-then-Create flow needs no name from the caller at all.
+ *
+ * A caller that DOES name a location still gets it, which is what keeps the
+ * identity-based search worth having: the file can be called anything and
+ * ::GetSaveLocation will still find it (see this file's header comment).
  */
 Response CreateSave(const u8* src, const std::size_t size, const Response* response) {
     if (Busy(Op::Creating)) return { .done = false, .err = busy, .path = nullptr };
-    if (!PathOf(response))  return { .done = true,  .err = bad_path, .path = nullptr };
-    return Report(Tick(Op::Creating, src, nullptr, size, PathOf(response)));
+    const char* const named = PathOf(response);
+    return Report(Tick(Op::Creating, src, nullptr, size, named ? named : kDefaultPath));
 }
 
 /**
@@ -607,6 +731,55 @@ Response CreateSave(const u8* src, const std::size_t size, const Response* respo
 Response GetSaveLocation() {
     if (Busy(Op::Finding)) return { .done = false, .err = busy, .path = nullptr };
     return Report(Tick(Op::Finding, nullptr, nullptr, 0, nullptr));
+}
+
+/**
+ * @brief Reads this save's directory entry into @p tar (a `card_stat`).
+ *
+ * THE DIRECTORY ENTRY IS NOT IN THE SAVE FILE. It is a 64-byte record in one of
+ * the card's own directory blocks, holding the gamecode, company, file name,
+ * permissions -- and the OFFSETS of the comment block, banner and icon WITHIN
+ * the file. So this call costs a save none of its bytes, and it is the only way
+ * to learn or state where an application put its metadata.
+ *
+ * @p tar IS A `card_stat*`, passed as `void*` so that pnes/save.hpp can declare
+ * this on every target without every target's build pulling in ogc/card.h. A
+ * GameCube application includes that header anyway (save.hpp does it for the
+ * TARGET_GC build) and passes `&stat`.
+ *
+ * Ticked like everything else here, because it needs the card mounted and the
+ * file resolved: the same probe/mount/find-or-open sequence a load runs.
+ */
+Response GetMetaData(void* tar) {
+    if (Busy(Op::GettingMeta)) return { .done = false, .err = busy, .path = nullptr };
+    return Report(Tick(Op::GettingMeta, nullptr, static_cast<u8*>(tar), 0, nullptr));
+}
+
+/**
+ * @brief Writes @p src (a `card_stat`) to this save's directory entry.
+ *
+ * WHAT IT ACTUALLY CHANGES is five fields -- `banner_fmt`, `icon_addr`,
+ * `icon_fmt`, `icon_speed`, `comment_addr` -- plus a `last_modified` stamp.
+ * CARD_SetStatus leaves the gamecode, company, file name, permissions, block
+ * and length alone, which is why it is the call this backend uses rather than
+ * CARD_SetStatusEx: nothing here can disturb the identity pair that
+ * ::GetSaveLocation's CARD_FindFirst filters on.
+ *
+ * TWO VALUES ARE REJECTED OUTRIGHT, both as CARD_ERROR_FATAL_ERROR (so
+ * save::failed): an `icon_addr` that is neither 0xFFFFFFFF nor below 512, and a
+ * `comment_addr` whose 64-byte block would straddle an 8192-byte boundary
+ * (`comment_addr % 8192 > 8128`). An application laying the metadata out at the
+ * front of its own save struct satisfies both without trying.
+ *
+ * ONE TRAP WORTH NAMING: frame 0's icon speed must be NONZERO. libogc forces a
+ * frame's format to 0 when its speed is 0, and counts only frames with both set
+ * when it places the shared palette -- so a static icon with speed 0 renders as
+ * nothing at all. Set the speed bits by hand; CARD_SetIconSpeed and
+ * CARD_GetIconSpeed (ogc/card.h) are both defective in this libogc.
+ */
+Response SetMetaData(const void* src) {
+    if (Busy(Op::SettingMeta)) return { .done = false, .err = busy, .path = nullptr };
+    return Report(Tick(Op::SettingMeta, static_cast<const u8*>(src), nullptr, 0, nullptr));
 }
 
 } // namespace save
@@ -650,6 +823,15 @@ Response CreateSave(const u8*, const std::size_t, const Response*) {
 
 // A finished search with nowhere to have looked.
 Response GetSaveLocation() {
+    return { .done = true, .err = missing, .path = nullptr };
+}
+
+// No EXI slot means no card, no directory and no entry to read or write.
+Response GetMetaData(void*) {
+    return { .done = true, .err = missing, .path = nullptr };
+}
+
+Response SetMetaData(const void*) {
     return { .done = true, .err = missing, .path = nullptr };
 }
 

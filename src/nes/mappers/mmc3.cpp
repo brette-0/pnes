@@ -189,7 +189,9 @@ namespace save {
     AI Response Load(u8* const, const std::size_t) { return { .done = true, .err = found }; }
     AI Response Load(u8* const, const std::size_t, const Response* const) { return { .done = true, .err = found }; }
     AI Response GetSaveLocation() { return { .done = true, .err = found }; }
-                                                                                                // but not to be used
+    AI Response GetMetaData (void* const) { return { .done = true, .err = found }; }
+    AI Response SetMetaData (const void* const) { return { .done = true, .err = found }; }
+                                                                                    // but not to be used
 }
 
 #endif
