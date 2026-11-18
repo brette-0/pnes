@@ -1888,9 +1888,9 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR T
         # change for the life of a game, that no asset determines, and that take
         # none of the file's 8192 bytes. They are cache STRINGs for the same reason
         # WIIU_TITLE_ID and friends are -- a project overrides them once in its own
-        # build, and `cmake -LH` lists them. The second half is described by
-        # OGC_SAVE_CONFIG's TOML and generated below, because it is derived from
-        # the assets rather than declared.
+        # build, and `cmake -LH` lists them. The second half -- the comment text
+        # and the pixels -- is not described anywhere in this build: it is
+        # declared and filled by the application's own save struct.
         #
         # OGC_GAME_CODE / OGC_COMPANY_CODE ARE THE ONES THAT CANNOT MOVE LATER.
         # src/ogc/save.cpp searches with CARD_FindFirst(chn, &dir, false), whose
@@ -1921,71 +1921,6 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR T
             message(FATAL_ERROR
                 "OGC_FILENAME must be 1-31 characters, got \"${OGC_FILENAME}\" (${_ogc_filename_len}) "
                 "-- CARD_FILENAMELEN is 32 including the terminator")
-        endif()
-
-        set(OGC_SAVE_CONFIG "${CMAKE_SOURCE_DIR}/demo/sys_assets/ogc/saveconfig.toml"
-                CACHE FILEPATH "GameCube save banner/icon/comment description (TOML)")
-
-        # ------------------------------------------------------------------
-        # saveconfig.toml -> the directory-entry format fields and file offsets.
-        #
-        # A CONFIGURE step, not a build step, unlike tools/sfx_list_to_hpp.cmake:
-        # that script's input is written DURING the build by the FamiStudio export,
-        # so it cannot be read any earlier. This one's input is committed source
-        # that exists before anything runs, and generating at configure time means
-        # the header is unconditionally present before the first compile -- no
-        # ordering edge between a custom command and the TU that includes it.
-        # CMAKE_CONFIGURE_DEPENDS is what makes editing the TOML re-run it, the
-        # same way demo/chr/config.toml drives blobman.
-        #
-        # `cmake -P` AND NOT A HOST TOOL, even though tools/blobman already links
-        # toml++: a host C++ compiler is not guaranteed to exist here at all (see
-        # the blobman block's own comment -- docker/Dockerfile.ps2 is Alpine with
-        # only the MIPS cross toolchain), and nothing in this transform needs more
-        # than text work. The pixel conversion will need a real tool; this does not.
-        # ------------------------------------------------------------------
-        set(OGC_SAVE_LAYOUT_HPP ${CMAKE_BINARY_DIR}/gen/ogc_saveconf.hpp)
-        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-                     ${OGC_SAVE_CONFIG}
-                     ${CMAKE_SOURCE_DIR}/tools/ogc_saveconf_to_hpp.cmake)
-
-        # OPTIONAL, not required. A project whose save struct carries its own
-        # layout -- the metadata declared as members, so the struct IS the file
-        # -- has no use for a separate description of where things go, and
-        # should not have to keep an unused TOML around to build. With no
-        # config there is simply no generated header and OGC_HAVE_SAVE_LAYOUT
-        # stays undefined, which is what src/ogc/save.cpp gates its include and
-        # its layout assertions on.
-        if(EXISTS ${OGC_SAVE_CONFIG})
-        execute_process(
-                COMMAND ${CMAKE_COMMAND}
-                        -DSAVE_CONFIG=${OGC_SAVE_CONFIG}
-                        -DOUT_HPP=${OGC_SAVE_LAYOUT_HPP}
-                        -DHEADER_SIZE=8192
-                        -P ${CMAKE_SOURCE_DIR}/tools/ogc_saveconf_to_hpp.cmake
-                RESULT_VARIABLE _ogc_saveconf_result
-                OUTPUT_VARIABLE _ogc_saveconf_out
-                ERROR_VARIABLE  _ogc_saveconf_err)
-        if(NOT _ogc_saveconf_result EQUAL 0)
-            message(FATAL_ERROR
-                "Generating the GameCube save layout from ${OGC_SAVE_CONFIG} failed:\n${_ogc_saveconf_err}")
-        endif()
-        # The script's own STATUS line (how much of the region the layout uses) is
-        # swallowed by OUTPUT_VARIABLE above, so re-emit it rather than lose it --
-        # it is the one number worth seeing on every configure.
-        if(_ogc_saveconf_out)
-            string(STRIP "${_ogc_saveconf_out}" _ogc_saveconf_out)
-            message(STATUS "${_ogc_saveconf_out}")
-        endif()
-        if(_ogc_saveconf_err)
-            string(STRIP "${_ogc_saveconf_err}" _ogc_saveconf_err)
-            message(WARNING "${_ogc_saveconf_err}")
-        endif()
-        target_compile_definitions(pnes PRIVATE OGC_HAVE_SAVE_LAYOUT)
-        else()
-            message(STATUS
-                "No GameCube save config at ${OGC_SAVE_CONFIG} -- skipping the save "
-                "layout header. The save struct is expected to carry its own layout.")
         endif()
 
     endif()
@@ -2020,10 +1955,6 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR T
                 "OGC_GAME_CODE=\"${OGC_GAME_CODE}\""
                 "OGC_COMPANY_CODE=\"${OGC_COMPANY_CODE}\""
                 "OGC_FILENAME=\"${OGC_FILENAME}\"")
-
-        # Where the generated save layout lands. PRIVATE: src/ogc/save.cpp is the
-        # only consumer, and a game has pnes/save.hpp for everything it needs.
-        target_include_directories(pnes PRIVATE ${CMAKE_BINARY_DIR}/gen)
 
     endif()
 
