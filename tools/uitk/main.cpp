@@ -221,15 +221,14 @@ constexpr int kNegSpaceViolationRole = Qt::UserRole + 14;
 // single character is allowed since it's just the character that marks
 // where a line break is permitted.
 constexpr int kSplitterRole = Qt::UserRole + 15;
-// Which Target/Region names (see kTargetNames/kRegionNames) this node should
-// disappear on -- a node is hidden if the scene's *current* target/region
+// Which Target names (see kTargetNames) this node should
+// disappear on -- a node is hidden if the scene's *current* target
 // (picked in the sidebar) is in either list. Unlike the scene-wide
-// target/region themselves, this is genuinely per-node: each node picks its
+// target itself, this is genuinely per-node: each node picks its
 // own set independently, and a node's effective visibility also factors in
 // every ancestor's own hide lists (see isEffectivelyHidden()) even though
 // that inherited part is never itself stored on the child.
 constexpr int kHideTargetsRole = Qt::UserRole + 16;
-constexpr int kHideRegionsRole = Qt::UserRole + 17;
 // SingleChoice-only: index (into its option children, in tree order) that
 // should be selected on Make -- baked directly as SingleChoice's
 // defaultOption constructor argument, same as nOptions (the child count)
@@ -358,7 +357,6 @@ const QStringList kTargetNames = {"NES", "GBA", "GCN", "DS",     "DSI", "Wii",
 
 // TV broadcast standard the scene is authored/timed against. Same idea as
 // kTargetNames -- scene-wide, matched by name rather than index.
-const QStringList kRegionNames = {"NTSC", "PAL"};
 
 // Fixed viewport tile counts for each target, mirroring the
 // video::viewport_tx()/viewport_ty() constants each backend actually compiles
@@ -591,30 +589,28 @@ QVector<QTreeWidgetItem*> collectPrefixedItems(QTreeWidgetItem* node) {
     return result;
 }
 
-// A node is hidden for the current target/region if *it* was set to hide on
+// A node is hidden for the current target if *it* was set to hide on
 // either one, or if any ancestor was -- children never store this
-// themselves (their own kHideTargetsRole/kHideRegionsRole entries, if any,
+// themselves (their own kHideTargetsRole entries, if any,
 // are independent of a parent's), but they still visually disappear along
 // with a hidden parent, so the check walks all the way up to root.
-bool isEffectivelyHidden(const QTreeWidgetItem* item, const QString& target, const QString& region) {
+bool isEffectivelyHidden(const QTreeWidgetItem* item, const QString& target) {
     for (const QTreeWidgetItem* n = item; n && isPrefixedItem(n); n = n->parent()) {
         if (n->data(0, kHideTargetsRole).toStringList().contains(target)) return true;
-        if (n->data(0, kHideRegionsRole).toStringList().contains(region)) return true;
     }
     return false;
 }
 
 // A SingleChoice's options, in tree order -- its direct ctTextBox/rtTextBox
 // children (not grandchildren: an option is a leaf, it doesn't itself group
-// further options). Hidden-for-target/region children are dropped, same as
+// further options). Hidden-for-target children are dropped, same as
 // everywhere else in codegen, so a scene never bakes/counts an option that
 // isn't actually present on the exported target.
-QVector<QTreeWidgetItem*> singleChoiceMembers(const QTreeWidgetItem* scItem, const QString& target,
-                                                const QString& region) {
+QVector<QTreeWidgetItem*> singleChoiceMembers(const QTreeWidgetItem* scItem, const QString& target) {
     QVector<QTreeWidgetItem*> result;
     for (int i = 0; i < scItem->childCount(); ++i) {
         QTreeWidgetItem* child = scItem->child(i);
-        if (isComponentItem(child) && !isEffectivelyHidden(child, target, region)) {
+        if (isComponentItem(child) && !isEffectivelyHidden(child, target)) {
             result.push_back(child);
         }
     }
@@ -643,10 +639,10 @@ QVector<QTreeWidgetItem*> singleChoiceMembers(const QTreeWidgetItem* scItem, con
 //
 // Deliberately NOT a nested Canvas, which has a Pass() but no rect of its own,
 // and would need focus to mean two things at once.
-bool hasGeneratedPass(const QTreeWidgetItem* item, const QString& target, const QString& region) {
+bool hasGeneratedPass(const QTreeWidgetItem* item, const QString& target) {
     if (isSliderItem(item)) return true;
     if (isButtonItem(item)) return item->data(0, kButtonToggleableRole).toBool();
-    return isSingleChoiceItem(item) && !singleChoiceMembers(item, target, region).isEmpty();
+    return isSingleChoiceItem(item) && !singleChoiceMembers(item, target).isEmpty();
 }
 
 // Whether this node is a component of some Canvas -- i.e. whether a Canvas's
@@ -656,10 +652,10 @@ bool hasGeneratedPass(const QTreeWidgetItem* item, const QString& target, const 
 // Canvas above it. Doesn't check hidden-ness: a hidden Canvas hides everything
 // under it (isEffectivelyHidden walks up), so a visible node under a Canvas is
 // a node under a visible Canvas.
-bool isCanvasComponent(const QTreeWidgetItem* item, const QString& target, const QString& region) {
+bool isCanvasComponent(const QTreeWidgetItem* item, const QString& target) {
     const QTreeWidgetItem* parent = item ? item->parent() : nullptr;
     while (parent && !isPrefixedItem(parent)) parent = parent->parent();
-    return parent && isCanvasItem(parent) && hasGeneratedPass(item, target, region);
+    return parent && isCanvasItem(parent) && hasGeneratedPass(item, target);
 }
 
 // A Canvas's components, in tree order: the nodes nested under it that have a
@@ -671,13 +667,12 @@ bool isCanvasComponent(const QTreeWidgetItem* item, const QString& target, const
 // Descends through non-prefixed branch nodes for the same reason codegen does
 // (they're transparent, see childNamespaceNames), but stops at any prefixed
 // node it takes: a Button's own label children are the Button's business, not
-// the Canvas's. Hidden-for-target/region nodes are dropped, same as
+// the Canvas's. Hidden-for-target nodes are dropped, same as
 // everywhere else, so a Canvas never indexes a component that isn't on the
 // exported target -- which also means the same scene can have a different
 // component count per target, and that is fine: nothing outside the generated
 // namespace depends on the indices.
-QVector<QTreeWidgetItem*> canvasComponents(const QTreeWidgetItem* canvasItem, const QString& target,
-                                            const QString& region) {
+QVector<QTreeWidgetItem*> canvasComponents(const QTreeWidgetItem* canvasItem, const QString& target) {
     QVector<QTreeWidgetItem*> result;
     std::function<void(const QTreeWidgetItem*)> visit = [&](const QTreeWidgetItem* n) {
         for (int i = 0; i < n->childCount(); ++i) {
@@ -686,8 +681,8 @@ QVector<QTreeWidgetItem*> canvasComponents(const QTreeWidgetItem* canvasItem, co
                 visit(child);  // transparent branch
                 continue;
             }
-            if (isEffectivelyHidden(child, target, region)) continue;
-            if (hasGeneratedPass(child, target, region)) result.push_back(child);
+            if (isEffectivelyHidden(child, target)) continue;
+            if (hasGeneratedPass(child, target)) result.push_back(child);
         }
     };
     visit(canvasItem);
@@ -714,7 +709,7 @@ QVector<QTreeWidgetItem*> canvasComponents(const QTreeWidgetItem* canvasItem, co
 // `posXExpr: "(VIEWPORT_TX - this.textSize) / 2"` centers one. It resolves
 // only against ctTextBox/rtTextBox nodes, same as pos/size, since only they
 // carry text. `.enabled` is 1 if the referenced node is currently visible on
-// the sidebar's selected Target/Region (0 if it, or an ancestor, hides on
+// the sidebar's selected Target (0 if it, or an ancestor, hides on
 // either -- see isEffectivelyHidden), so a sibling can conditionally shift
 // its own placement around whatever this scene won't actually draw there --
 // e.g. `posYExpr: "Other.pos.y + Other.enabled * 8"` sits directly below
@@ -1063,7 +1058,6 @@ QJsonObject serializeNode(const QTreeWidgetItem* item) {
     }
     if (isPrefixedItem(item)) {
         obj["hideTargets"] = QJsonArray::fromStringList(item->data(0, kHideTargetsRole).toStringList());
-        obj["hideRegions"] = QJsonArray::fromStringList(item->data(0, kHideRegionsRole).toStringList());
     }
     QJsonArray children;
     for (int i = 0; i < item->childCount(); ++i) {
@@ -1162,14 +1156,13 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
     }
     if (isPrefixedItem(item)) {
         item->setData(0, kHideTargetsRole, obj["hideTargets"].toArray().toVariantList());
-        item->setData(0, kHideRegionsRole, obj["hideRegions"].toArray().toVariantList());
     }
     for (const QJsonValue& child : obj["children"].toArray()) {
         deserializeNode(item, child.toObject());
     }
 }
 
-// `quadrant`, `target`, `region`, and `linker_prefix` are all scene-wide
+// `quadrant`, `target` and `linker_prefix` are all scene-wide
 // (which quadrant of the 2x2 world grid the whole UI's tile positions resolve into,
 // which pnes backend the scene targets, which TV broadcast standard
 // it's timed against, and what codegen should emit ahead of every generated,
@@ -1177,7 +1170,7 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
 // stored once at the document's top level alongside "version" rather than on
 // every node.
 bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int quadrant, const QString& target,
-                   const QString& region, const QString& linkerPrefix, const QString& bssPrefix,
+                   const QString& linkerPrefix, const QString& bssPrefix,
                    const QString& dataPrefix, const QString& charmap, bool showTileGrid, int tileGridW,
                    int tileGridH) {
     QJsonArray nodes;
@@ -1188,7 +1181,6 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int quad
     doc["version"] = 1;
     doc["quadrant"] = quadrant;
     doc["target"] = target;
-    doc["region"] = region;
     doc["linker_prefix"] = linkerPrefix;
     doc["bss_prefix"] = bssPrefix;
     doc["data_prefix"] = dataPrefix;
@@ -1209,17 +1201,17 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int quad
     return true;
 }
 
-// Parses a .uis file's node list and scene-wide nametable/target/region/
+// Parses a .uis file's node list and scene-wide nametable/target/
 // linker_prefix without touching any tree -- callers apply it (or don't, on
 // failure) themselves, so a corrupt/unreadable file never wipes out whatever
-// scene was already open. `target`/`region` are matched by name rather than
+// scene was already open. `target` is matched by name rather than
 // trusted as-is, since the caller (whose combo defines the valid set) is the
 // one who knows what a missing or unrecognized value should fall back to.
 // `linker_prefix`/`bss_prefix`/`data_prefix`/`charmap` have no such
 // validation -- they're free-form text -- and simply default to empty when
 // absent (e.g. an older file).
 bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outQuadrant, QString& outTarget,
-                   QString& outRegion, QString& outLinkerPrefix, QString& outBssPrefix, QString& outDataPrefix,
+                   QString& outLinkerPrefix, QString& outBssPrefix, QString& outDataPrefix,
                    QString& outCharmap, bool& outShowTileGrid, int& outTileGridW, int& outTileGridH) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -1241,7 +1233,6 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outQuadrant, Q
         docObj.contains("quadrant") ? docObj["quadrant"] : docObj["nametable"];
     outQuadrant = std::clamp(quadrantVal.toInt(0), 0, 3);
     outTarget = doc.object()["target"].toString();
-    outRegion = doc.object()["region"].toString();
     outLinkerPrefix = doc.object()["linker_prefix"].toString();
     outBssPrefix = doc.object()["bss_prefix"].toString();
     outDataPrefix = doc.object()["data_prefix"].toString();
@@ -1487,7 +1478,7 @@ struct TargetGeometry {
     int h(const QTreeWidgetItem* item) const { return std::clamp<int>(static_cast<int>(at(item, 3)), 1, 255); }
 };
 
-TargetGeometry resolveGeometryForTarget(QTreeWidgetItem* rootItem, const QString& target, const QString& region) {
+TargetGeometry resolveGeometryForTarget(QTreeWidgetItem* rootItem, const QString& target) {
     TargetGeometry out;
     const QVector<QTreeWidgetItem*> components = collectComponentItems(rootItem);
 
@@ -1550,14 +1541,14 @@ TargetGeometry resolveGeometryForTarget(QTreeWidgetItem* rootItem, const QString
         if (it == byName.constEnd()) return std::nullopt;
         // .textSize and .enabled depend on nothing that is still resolving, so
         // they are answered directly rather than through the map below -- and
-        // .enabled against THIS export's target/region, the same check
+        // .enabled against THIS export's target, the same check
         // isEffectivelyHidden makes when deciding to skip the node entirely.
         if (prop == 4) {
             return isComponentItem(*it)
                        ? std::optional<long long>((*it)->data(0, kTextContentRole).toString().length())
                        : std::nullopt;
         }
-        if (prop == 5) return isEffectivelyHidden(*it, target, region) ? 0 : 1;
+        if (prop == 5) return isEffectivelyHidden(*it, target) ? 0 : 1;
         const auto found = resolved.find({*it, prop});
         return found != resolved.end() ? std::optional<long long>(found->second) : std::nullopt;
     };
@@ -1607,11 +1598,11 @@ TargetGeometry resolveGeometryForTarget(QTreeWidgetItem* rootItem, const QString
 // which hold whatever target the scene was last authored on. `.enabled`
 // (prop 5) is the one exception that isn't itself stored on the node -- it's
 // recomputed here the same way resolveAllPtr's own resolveIdent does, against
-// this export's actual target/region rather than whatever happened to be
+// this export's actual target rather than whatever happened to be
 // selected in the sidebar when the scene was last edited. Shared by
 // genCtTextBoxBody/genCtTextBoxEraseBody and genSingleChoiceDecl's own copy of
 // the same logic.
-long long resolvePositionRef(QTreeWidgetItem* rootItem, const QString& target, const QString& region,
+long long resolvePositionRef(QTreeWidgetItem* rootItem, const QString& target,
                               const QTreeWidgetItem* self, const QString& rawName, int prop,
                               const TargetGeometry& geom) {
     const QString wanted = (rawName == QLatin1String("this")) ? bareName(self) : rawName;
@@ -1623,7 +1614,7 @@ long long resolvePositionRef(QTreeWidgetItem* rootItem, const QString& target, c
             case 2:
             case 3: return geom.at(other, prop);
             case 4: return other->data(0, kTextContentRole).toString().length();
-            case 5: return isEffectivelyHidden(other, target, region) ? 0 : 1;
+            case 5: return isEffectivelyHidden(other, target) ? 0 : 1;
             default: return 0;
         }
     }
@@ -1649,7 +1640,7 @@ long long resolvePositionRef(QTreeWidgetItem* rootItem, const QString& target, c
 // members, so this re-evaluates inline in Draw_/Erase_ rather than needing
 // separate mutable storage populated by a Make_.
 QString emitGeomComponent(const QTreeWidgetItem* item, int prop, bool variadic, QTreeWidgetItem* rootItem,
-                           const QString& target, const QString& region, const TargetGeometry& geom,
+                           const QString& target, const TargetGeometry& geom,
                            int depth = 0) {
     if (variadic) {
         QString src = item->data(0, kGeomExprRoles[prop]).toString().trimmed();
@@ -1657,8 +1648,8 @@ QString emitGeomComponent(const QTreeWidgetItem* item, int prop, bool variadic, 
         bool ok = false;
         const ExprPtr ast = ExprParser(src).parse(ok);
         if (ok) {
-            auto resolveFor = [rootItem, target, region, item, &geom](const QString& n, int p) {
-                return resolvePositionRef(rootItem, target, region, item, n, p, geom);
+            auto resolveFor = [rootItem, target, item, &geom](const QString& n, int p) {
+                return resolvePositionRef(rootItem, target, item, n, p, geom);
             };
             // Another node's pos/size: splice in that node's own expression
             // (parenthesized), recursively -- see emitExprCpp. Size references
@@ -1668,13 +1659,13 @@ QString emitGeomComponent(const QTreeWidgetItem* item, int prop, bool variadic, 
             // B.pos.x = A.pos.x -- the editor's resolver just leaves those
             // unresolved) falls back to the baked value instead of recursing
             // forever.
-            auto substitute = [rootItem, target, region, item, depth, &geom](const QString& n,
+            auto substitute = [rootItem, target, item, depth, &geom](const QString& n,
                                                                              int p) -> std::optional<QString> {
                 if (p < 0 || p > 3 || depth >= 16) return std::nullopt;
                 const QString wanted = (n == QLatin1String("this")) ? bareName(item) : n;
                 for (QTreeWidgetItem* other : collectComponentItems(rootItem)) {
                     if (bareName(other) != wanted) continue;
-                    return "(" + emitGeomComponent(other, p, true, rootItem, target, region, geom, depth + 1) + ")";
+                    return "(" + emitGeomComponent(other, p, true, rootItem, target, geom, depth + 1) + ")";
                 }
                 return std::nullopt;
             };
@@ -1718,7 +1709,7 @@ QString emitGeomComponent(const QTreeWidgetItem* item, int prop, bool variadic, 
 // never is.
 CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes,
                                bool variadic, QTreeWidgetItem* rootItem, const QString& target,
-                               const QString& region, const QString& dataPrefixTok, const QString& charmapFn,
+                               const QString& dataPrefixTok, const QString& charmapFn,
                                const QString& ntOffXExpr, const QString& ntOffYExpr,
                                const TargetGeometry& geom) {
     const int x = geom.x(item) + ntOffX;
@@ -1776,8 +1767,8 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
                 // fixed ntOffX/ntOffY ints -- see generateCode's own comment
                 // on them) keep the nametable-quadrant term itself runtime-
                 // resolved too, for the same reason.
-                const QString xExpr = emitGeomComponent(item, 0, true, rootItem, target, region, geom);
-                const QString yExpr = emitGeomComponent(item, 1, true, rootItem, target, region, geom);
+                const QString xExpr = emitGeomComponent(item, 0, true, rootItem, target, geom);
+                const QString yExpr = emitGeomComponent(item, 1, true, rootItem, target, geom);
                 QString xFinal = startCol ? QString("(%1 + %2)").arg(xExpr).arg(startCol) : xExpr;
                 QString yFinal = row ? QString("(%1 + %2)").arg(yExpr).arg(row) : yExpr;
                 if (ntOffXExpr != QLatin1String("0")) xFinal = QString("(%1 + %2)").arg(xFinal, ntOffXExpr);
@@ -1806,7 +1797,7 @@ CtTextBoxGen genCtTextBoxBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
 // covers the full box, not just whatever rows the current text wraps to, so
 // switching to shorter text later doesn't leave stale tiles behind.
 QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
-                               QTreeWidgetItem* rootItem, const QString& target, const QString& region,
+                               QTreeWidgetItem* rootItem, const QString& target,
                                const QString& charmapFn, const QString& ntOffXExpr, const QString& ntOffYExpr,
                                const TargetGeometry& geom) {
     const int x = geom.x(item) + ntOffX;
@@ -1837,8 +1828,8 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
             // has to erase exactly where the current Draw_ call landed, which
             // only holds if both re-derive the same expression at runtime --
             // ntOffXExpr/ntOffYExpr included.
-            const QString xExpr = emitGeomComponent(item, 0, true, rootItem, target, region, geom);
-            const QString yExpr = emitGeomComponent(item, 1, true, rootItem, target, region, geom);
+            const QString xExpr = emitGeomComponent(item, 0, true, rootItem, target, geom);
+            const QString yExpr = emitGeomComponent(item, 1, true, rootItem, target, geom);
             QString xFinal = xExpr;
             QString yFinal = row ? QString("(%1 + %2)").arg(yExpr).arg(row) : yExpr;
             if (ntOffXExpr != QLatin1String("0")) xFinal = QString("(%1 + %2)").arg(xFinal, ntOffXExpr);
@@ -1873,16 +1864,16 @@ QString genCtTextBoxEraseBody(const QTreeWidgetItem* item, int ntOffX, int ntOff
 // permanent storage per node, a branch on every Make(), and a state that goes
 // stale the moment a caller makes a subtree directly (which callers do -- see
 // genSingleChoiceDecl). Redundant work is both the cheaper and the safer half.
-QStringList childNamespaceNames(const QTreeWidgetItem* item, const QString& target, const QString& region) {
+QStringList childNamespaceNames(const QTreeWidgetItem* item, const QString& target) {
     QStringList names;
     for (int i = 0; i < item->childCount(); ++i) {
         QTreeWidgetItem* child = item->child(i);
         if (!isPrefixedItem(child)) {
-            names += childNamespaceNames(child, target, region);  // transparent branch
+            names += childNamespaceNames(child, target);  // transparent branch
             continue;
         }
-        if (isEffectivelyHidden(child, target, region)) continue;
-        if (isSingleChoiceItem(child) && singleChoiceMembers(child, target, region).isEmpty()) continue;
+        if (isEffectivelyHidden(child, target)) continue;
+        if (isSingleChoiceItem(child) && singleChoiceMembers(child, target).isEmpty()) continue;
         names << bareName(child);
     }
     return names;
@@ -1918,7 +1909,7 @@ QStringList childNamespaceNames(const QTreeWidgetItem* item, const QString& targ
 // through the volatile object field by field.
 QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                                 bool runtimePos, QTreeWidgetItem* rootItem, const QString& target,
-                                const QString& region, const QString& ntOffXExpr, const QString& ntOffYExpr,
+                                const QString& ntOffXExpr, const QString& ntOffYExpr,
                                 const TargetGeometry& geom) {
     const int x = geom.x(item) + ntOffX;
     const int y = geom.y(item) + ntOffY;
@@ -1952,14 +1943,14 @@ QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOf
     QString wCpp = QString::number(w);
     QString hCpp = QString::number(h);
     if (variadic) {
-        xCpp = emitGeomComponent(item, 0, true, rootItem, target, region, geom);
-        yCpp = emitGeomComponent(item, 1, true, rootItem, target, region, geom);
+        xCpp = emitGeomComponent(item, 0, true, rootItem, target, geom);
+        yCpp = emitGeomComponent(item, 1, true, rootItem, target, geom);
         if (ntOffXExpr != QLatin1String("0")) xCpp = QString("(%1 + %2)").arg(xCpp, ntOffXExpr);
         if (ntOffYExpr != QLatin1String("0")) yCpp = QString("(%1 + %2)").arg(yCpp, ntOffYExpr);
         xCpp = QString("static_cast<u16>(%1)").arg(xCpp);
         yCpp = QString("static_cast<u16>(%1)").arg(yCpp);
-        const QString wExpr = emitGeomComponent(item, 2, true, rootItem, target, region, geom);
-        const QString hExpr = emitGeomComponent(item, 3, true, rootItem, target, region, geom);
+        const QString wExpr = emitGeomComponent(item, 2, true, rootItem, target, geom);
+        const QString hExpr = emitGeomComponent(item, 3, true, rootItem, target, geom);
         if (wExpr.contains(QLatin1String("video::"))) wCpp = QString("static_cast<u8>(%1)").arg(wExpr);
         if (hExpr.contains(QLatin1String("video::"))) hCpp = QString("static_cast<u8>(%1)").arg(hExpr);
     }
@@ -1972,7 +1963,7 @@ QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOf
     // but ordering it this way means a child Make() that ever did read the
     // parent reads a resolved one.
     QStringList childMakes;
-    for (const QString& kid : childNamespaceNames(item, target, region)) {
+    for (const QString& kid : childNamespaceNames(item, target)) {
         childMakes << QString("    %1::Make();").arg(kid);
     }
     const QString childTail = childMakes.isEmpty() ? QString() : ("\n" + childMakes.join("\n"));
@@ -2034,9 +2025,9 @@ QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOf
 // it places the instance's own mutable storage, and, on a runtime-viewport
 // target, its mutable options array.
 QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, const QString& target,
-                             const QString& region, const QString& bssPrefixTok, const QString& dataPrefixTok,
+                             const QString& bssPrefixTok, const QString& dataPrefixTok,
                              bool runtimePos) {
-    const QVector<QTreeWidgetItem*> members = singleChoiceMembers(scItem, target, region);
+    const QVector<QTreeWidgetItem*> members = singleChoiceMembers(scItem, target);
     if (members.isEmpty()) {
         return QString();
     }
@@ -2119,7 +2110,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     // constexpr table, or, on a runtime-viewport target, mutable storage the
     // Make() below folds once the table is filled.
     const bool wantRect =
-        scItem->data(0, kSingleChoiceHasRectRole).toBool() || isCanvasComponent(scItem, target, region);
+        scItem->data(0, kSingleChoiceHasRectRole).toBool() || isCanvasComponent(scItem, target);
     const QString boundsFold =
         QString("    u16 x0 = options[0].pos.x;\n"
                  "    u16 y0 = options[0].pos.y;\n"
@@ -2158,7 +2149,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     // twice -- a parent always makes its children, and repeating a few stores
     // beats tracking what has already been made (see generateCode).
     QStringList makeBody;
-    for (const QString& kid : childNamespaceNames(scItem, target, region)) {
+    for (const QString& kid : childNamespaceNames(scItem, target)) {
         makeBody << QString("    %1::Make();").arg(kid);
     }
     if (runtimePos) {
@@ -2407,7 +2398,7 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
 // button used to cost one whole byte (`atomic bool` is never smaller, and is
 // often padded further); eight buttons now cost exactly one byte between them.
 QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
-                       bool runtimePos, QTreeWidgetItem* rootItem, const QString& target, const QString& region,
+                       bool runtimePos, QTreeWidgetItem* rootItem, const QString& target,
                        const QString& ntOffXExpr, const QString& ntOffYExpr, int bitIndex,
                        const QString& stateArrayName, const TargetGeometry& geom) {
     const bool toggleable = item->data(0, kButtonToggleableRole).toBool();
@@ -2417,7 +2408,7 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     const QString maskExpr = QString("(1u << %1)").arg(bitInByte);
 
     QStringList lines =
-        genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
+        genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target,
                             ntOffXExpr, ntOffYExpr, geom);
 
     lines << QString("inline AI void Enable() { %1 |= %2; }").arg(byteExpr, maskExpr);
@@ -2591,13 +2582,13 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
 // Pass() spends and as the `vertical` constant below, and what to measure
 // against it stays the hooks' decision.
 QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
-                       bool runtimePos, QTreeWidgetItem* rootItem, const QString& target, const QString& region,
+                       bool runtimePos, QTreeWidgetItem* rootItem, const QString& target,
                        const QString& bssPrefixTok, const QString& ntOffXExpr, const QString& ntOffYExpr,
                        const TargetGeometry& geom) {
     const bool vertical = item->data(0, kSliderVerticalRole).toBool();
 
     QStringList lines =
-        genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
+        genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target,
                             ntOffXExpr, ntOffYExpr, geom);
 
     // The slider's holding value -- the one piece of state uitk does own for
@@ -2801,9 +2792,9 @@ QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
 // draw, and that menu's own Draw() is omitted rather than half-emitted (see
 // genSingleChoiceDecl). This is what decides whether a Canvas can offer
 // DrawComponents() at all.
-bool componentHasDraw(QTreeWidgetItem* item, const QString& target, const QString& region) {
+bool componentHasDraw(QTreeWidgetItem* item, const QString& target) {
     if (isSingleChoiceItem(item)) {
-        const QVector<QTreeWidgetItem*> members = singleChoiceMembers(item, target, region);
+        const QVector<QTreeWidgetItem*> members = singleChoiceMembers(item, target);
         if (members.isEmpty()) return false;
         for (QTreeWidgetItem* member : members) {
             if (!isCtTextBoxItem(member)) return false;
@@ -2857,9 +2848,9 @@ bool componentHasDraw(QTreeWidgetItem* item, const QString& target, const QStrin
 // pointers INTO it (see InvokeableComponant). So the table goes wherever the
 // target's ordinary constant data goes, which is resident, and the bank a
 // scene declares stays for the things that scene's own code reads.
-QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const QString& region,
+QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target,
                        const QString& bssPrefixTok) {
-    const QVector<QTreeWidgetItem*> comps = canvasComponents(canvasItem, target, region);
+    const QVector<QTreeWidgetItem*> comps = canvasComponents(canvasItem, target);
     const int size = comps.size();
     const bool vertical = canvasItem->data(0, kCanvasVerticalRole).toBool();
 
@@ -2945,7 +2936,7 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
     // `index` is re-seeded here rather than only in its initializer so that
     // making a scene twice puts the focus back where the scene starts.
     QStringList makeBody;
-    for (const QString& kid : childNamespaceNames(canvasItem, target, region)) {
+    for (const QString& kid : childNamespaceNames(canvasItem, target)) {
         makeBody << QString("    %1::Make();").arg(kid);
     }
     if (size > 0) makeBody << QString("    index = 0;");
@@ -2996,7 +2987,7 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
     // to the rest of its first-frame drawing.
     bool allComponentsDrawable = true;
     for (QTreeWidgetItem* comp : comps) {
-        if (!componentHasDraw(comp, target, region)) {
+        if (!componentHasDraw(comp, target)) {
             allComponentsDrawable = false;
             break;
         }
@@ -3167,17 +3158,17 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target, const 
 }
 
 // Builds the target-specific .hpp/.cpp pair for `rootItem`'s whole scene.
-// Components hidden on `target`/`region` (or under a hidden ancestor -- see
+// Components hidden on `target` (or under a hidden ancestor -- see
 // isEffectivelyHidden) are skipped entirely, so an export never emits a
 // function for something the scene itself says shouldn't exist there.
-GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, const QString& region, int quadrant,
+GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, int quadrant,
                              const QString& linkerPrefix, const QString& bssPrefix, const QString& dataPrefix,
                              const QString& charmap, const QString& sceneName) {
     // Every node's geometry, resolved for THIS target rather than read back out
     // of the editor's cached roles, which hold the target the scene was last
     // authored on (see TargetGeometry). Computed once here and handed to every
     // emitter below, so one export is one resolution.
-    const TargetGeometry geom = resolveGeometryForTarget(rootItem, target, region);
+    const TargetGeometry geom = resolveGeometryForTarget(rootItem, target);
 
     const int ntOffX = (quadrant & 1) * kNametableQuadW;
     const int ntOffY = ((quadrant >> 1) & 1) * kNametableQuadH;
@@ -3256,7 +3247,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
     static const QString kButtonStateArrayName = QStringLiteral("button_state");
     QVector<QTreeWidgetItem*> visibleButtons;
     for (QTreeWidgetItem* item : collectComponentItems(rootItem)) {
-        if (isButtonItem(item) && !isEffectivelyHidden(item, target, region)) {
+        if (isButtonItem(item) && !isEffectivelyHidden(item, target)) {
             visibleButtons.push_back(item);
         }
     }
@@ -3316,7 +3307,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                 emitted += emitNodeNamespace(child, qualPrefix);  // transparent branch
                 continue;
             }
-            if (isEffectivelyHidden(child, target, region)) continue;
+            if (isEffectivelyHidden(child, target)) continue;
 
             const QString name = bareName(child);
             const QString qual = qualPrefix.isEmpty() ? name : (qualPrefix + "::" + name);
@@ -3324,7 +3315,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
             QStringList body = emitNodeNamespace(child, qual);
 
             if (isButtonItem(child)) {
-                body << genButtonDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
+                body << genButtonDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target,
                                        ntOffXExpr, ntOffYExpr, buttonBitIndex.value(child), kButtonStateArrayName,
                                        geom);
                 // Only a toggleable button gets a Pass(), and so only one of
@@ -3332,25 +3323,25 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                 if (child->data(0, kButtonToggleableRole).toBool()) usesInput = true;
                 makeAll << qual;
             } else if (isSliderItem(child)) {
-                body << genSliderDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target, region,
+                body << genSliderDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target,
                                        bssPrefixTok, ntOffXExpr, ntOffYExpr, geom);
                 usesInput = true;
                 makeAll << qual;
             } else if (isSingleChoiceItem(child)) {
                 const QString decl =
-                    genSingleChoiceDecl(child, rootItem, target, region, bssPrefixTok, dataPrefixTok, runtimePos);
+                    genSingleChoiceDecl(child, rootItem, target, bssPrefixTok, dataPrefixTok, runtimePos);
                 if (decl.isEmpty()) continue;  // no visible options -- nothing to construct
                 body << decl;
                 usesInput = true;
                 makeAll << qual;
             } else if (isCanvasItem(child)) {
-                body << genCanvasDecl(child, target, region, bssPrefixTok);
+                body << genCanvasDecl(child, target, bssPrefixTok);
                 // A Canvas names input:: only once it has somewhere to move
                 // focus TO: with one component its Pass() just forwards the
                 // payload, and with none it has no Pass() at all. Either way
                 // any component it does hold is a slider or a toggleable
                 // button, which has already set this itself.
-                if (canvasComponents(child, target, region).size() > 1) usesInput = true;
+                if (canvasComponents(child, target).size() > 1) usesInput = true;
                 makeAll << qual;
             } else {
                 // Every remaining prefixed kind is a geometry node -- ctTextBox,
@@ -3362,7 +3353,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                 // constexpr-where-it-can-be geometry every other node already
                 // got (see kRectKind and genGeometryStorage).
                 QStringList own = genGeometryStorage(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem,
-                                                      target, region, ntOffXExpr, ntOffYExpr, geom);
+                                                      target, ntOffXExpr, ntOffYExpr, geom);
                 makeAll << qual;
 
                 const QString charmapFn = nodeCharmapFn(child);
@@ -3383,14 +3374,14 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, co
                     // gets duplicated into every caller, there's no single
                     // out-of-line copy left for a section attribute to pin.
                     const CtTextBoxGen gen = genCtTextBoxBody(child, ntOffX, ntOffY, isNes, variadic, rootItem,
-                                                                target, region, dataPrefixTok, charmapFn,
+                                                                target, dataPrefixTok, charmapFn,
                                                                 ntOffXExpr, ntOffYExpr, geom);
                     if (!gen.rootDecls.isEmpty()) own << gen.rootDecls;
                     own << QString("inline AI void Draw() {\n%1\n}").arg(gen.body);
 
                     if (child->data(0, kProvideErasingRole).toBool()) {
                         const QString eraseBody = genCtTextBoxEraseBody(child, ntOffX, ntOffY, isNes, variadic,
-                                                                          rootItem, target, region, charmapFn,
+                                                                          rootItem, target, charmapFn,
                                                                           ntOffXExpr, ntOffYExpr, geom);
                         own << QString("inline AI void Erase() {\n%1\n}").arg(eraseBody);
                     }
@@ -3527,10 +3518,10 @@ class TileGridWidget : public QWidget {
     static constexpr double kGlyphSupersample = 4.0;
 
 public:
-    TileGridWidget(double tilePx, QTreeWidget* tree, QComboBox* targetCombo, QComboBox* regionCombo,
+    TileGridWidget(double tilePx, QTreeWidget* tree, QComboBox* targetCombo,
                    QCheckBox* showTileGridCheck, QSpinBox* tileGridWSpin, QSpinBox* tileGridHSpin,
                    QWidget* parent = nullptr)
-        : QWidget(parent), tilePx_(tilePx), tree_(tree), targetCombo_(targetCombo), regionCombo_(regionCombo),
+        : QWidget(parent), tilePx_(tilePx), tree_(tree), targetCombo_(targetCombo),
           showTileGridCheck_(showTileGridCheck), tileGridWSpin_(tileGridWSpin), tileGridHSpin_(tileGridHSpin) {
         // A monospace font from the OS, sized to fill most of a cell's
         // height -- its glyphs are narrower than they are tall, though, so
@@ -3838,16 +3829,15 @@ private:
     // Walks the whole tree (not just root's direct children) so components
     // nested deeper -- not reachable from the UI yet, but already valid
     // structurally -- are rendered and hit-testable too. Anything hidden for
-    // the scene's current Target/Region (or nested under something that is)
+    // the scene's current Target (or nested under something that is)
     // is filtered out here rather than in the caller, so paintEvent() and
     // hitTest() -- the only two places this is used -- automatically agree
     // that a hidden node is neither seen nor clickable.
     QVector<QTreeWidgetItem*> collectComponents() const {
         const QString target = targetCombo_->currentText();
-        const QString region = regionCombo_->currentText();
         QVector<QTreeWidgetItem*> result;
         for (QTreeWidgetItem* item : collectComponentItems(tree_->invisibleRootItem())) {
-            if (!isEffectivelyHidden(item, target, region)) {
+            if (!isEffectivelyHidden(item, target)) {
                 result.push_back(item);
             }
         }
@@ -3897,7 +3887,6 @@ private:
     double tilePx_;
     QTreeWidget* tree_;
     QComboBox* targetCombo_;
-    QComboBox* regionCombo_;
     QCheckBox* showTileGridCheck_;
     QSpinBox* tileGridWSpin_;
     QSpinBox* tileGridHSpin_;
@@ -3917,11 +3906,10 @@ struct Sidebar {
     QLineEdit* xEdit;
     QLineEdit* yEdit;
     QComboBox* targetCombo;
-    QComboBox* regionCombo;
 
     // Editor-only tile-grid overlay controls (see showTileGridCheck above) --
     // exposed so createViewportPanel's TileGridWidget can read them, same as
-    // targetCombo/regionCombo.
+    // targetCombo.
     QCheckBox* showTileGridCheck;
     QSpinBox* tileGridWSpin;
     QSpinBox* tileGridHSpin;
@@ -4043,13 +4031,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     targetCombo->addItems(kTargetNames);
     targetCombo->setToolTip("Which pnes backend this scene targets.");
 
-    // Which TV broadcast standard the scene is timed against -- also
-    // scene-wide, for the same reason as target: one scene, one region.
-    auto* regionCombo = new QComboBox(content);
-    regionCombo->addItems(kRegionNames);
-    regionCombo->setToolTip("Which TV broadcast standard this scene is authored/timed against.");
-
-    // A free-form string, scene-wide like nametable/target/region, emitted by
+    // A free-form string, scene-wide like nametable/target, emitted by
     // codegen ahead of every generated function definition that isn't itself
     // tagged as AI-authored -- e.g. a section/placement attribute -- so those
     // definitions land wherever the linker is meant to put them rather than
@@ -4202,7 +4184,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         }
     });
 
-    auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, quadrantCombo, targetCombo, regionCombo,
+    auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, quadrantCombo, targetCombo,
                      linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, showTileGridCheck,
                      tileGridWSpin, tileGridHSpin]() {
         QString path = QFileDialog::getSaveFileName(window, "Save Scene", QString(), "UI Scene (*.uis)");
@@ -4213,7 +4195,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             path += ".uis";
         }
         if (!writeUisFile(path, rootItem, quadrantCombo->currentIndex(), targetCombo->currentText(),
-                           regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text(),
+                           linkerPrefixEdit->text(), bssPrefixEdit->text(),
                            dataPrefixEdit->text(), charmapEdit->text(), showTileGridCheck->isChecked(),
                            tileGridWSpin->value(), tileGridHSpin->value())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + path);
@@ -4226,13 +4208,13 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     };
 
     auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window, quadrantCombo, targetCombo,
-                   regionCombo, linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, showTileGridCheck,
+                   linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, showTileGridCheck,
                    tileGridWSpin, tileGridHSpin]() {
         if (currentPath->isEmpty()) {
             return doSaveAs();
         }
         if (!writeUisFile(*currentPath, rootItem, quadrantCombo->currentIndex(), targetCombo->currentText(),
-                           regionCombo->currentText(), linkerPrefixEdit->text(), bssPrefixEdit->text(),
+                           linkerPrefixEdit->text(), bssPrefixEdit->text(),
                            dataPrefixEdit->text(), charmapEdit->text(), showTileGridCheck->isChecked(),
                            tileGridWSpin->value(), tileGridHSpin->value())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + *currentPath);
@@ -4266,7 +4248,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // runCliExport) can load a scene the exact same way without going
     // through a file-picker dialog or the unsaved-changes prompt.
     auto loadSceneFromFile = [tree, rootItem, currentPath, dirty, loading, updateTitle, resolveAllPtr,
-                               quadrantCombo, targetCombo, regionCombo, linkerPrefixEdit, bssPrefixEdit,
+                               quadrantCombo, targetCombo, linkerPrefixEdit, bssPrefixEdit,
                                dataPrefixEdit, charmapEdit, showTileGridCheck, tileGridWSpin,
                                tileGridHSpin](const QString& path) -> bool {
         // Parse before touching the tree, so a corrupt/unreadable file never
@@ -4274,7 +4256,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         QJsonArray nodes;
         int quadrant = 0;
         QString target;
-        QString region;
         QString linkerPrefix;
         QString bssPrefix;
         QString dataPrefix;
@@ -4282,15 +4263,14 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         bool showTileGrid = false;
         int tileGridW = 8;
         int tileGridH = 8;
-        if (!parseUisFile(path, nodes, quadrant, target, region, linkerPrefix, bssPrefix, dataPrefix, charmap,
+        if (!parseUisFile(path, nodes, quadrant, target, linkerPrefix, bssPrefix, dataPrefix, charmap,
                            showTileGrid, tileGridW, tileGridH)) {
             return false;
         }
-        // An unrecognized or missing target/region (an older file, or a
-        // hand-edited one) falls back to the first entry rather than leaving
-        // the combo on whatever it happened to already be showing.
+        // An unrecognized or missing target (an older file, or a hand-edited
+        // one) falls back to the first entry rather than leaving the combo on
+        // whatever it happened to already be showing.
         const int targetIndex = std::max(0, static_cast<int>(kTargetNames.indexOf(target)));
-        const int regionIndex = std::max(0, static_cast<int>(kRegionNames.indexOf(region)));
         *loading = true;
         qDeleteAll(rootItem->takeChildren());
         for (const QJsonValue& node : nodes) {
@@ -4298,7 +4278,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         }
         quadrantCombo->setCurrentIndex(quadrant);
         targetCombo->setCurrentIndex(targetIndex);
-        regionCombo->setCurrentIndex(regionIndex);
         linkerPrefixEdit->setText(linkerPrefix);
         bssPrefixEdit->setText(bssPrefix);
         dataPrefixEdit->setText(dataPrefix);
@@ -4356,12 +4335,12 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // Writes one target's generated .hpp/.cpp pair into `dir`/<target-lower>/,
     // matching the gen/<target>/... layout the #include STRCAT(...) convention
     // (technology.hpp) expects on the consuming side.
-    auto exportOneTarget = [window, rootItem, regionCombo, quadrantCombo, linkerPrefixEdit, bssPrefixEdit,
+    auto exportOneTarget = [window, rootItem, quadrantCombo, linkerPrefixEdit, bssPrefixEdit,
                              dataPrefixEdit, charmapEdit, sceneName,
                              writeIfChanged](const QString& dir, const QString& target) -> bool {
         const QString targetDir = dir + "/" + target.toLower();
         if (!QDir().mkpath(targetDir)) return false;
-        const GeneratedFiles files = generateCode(rootItem, target, regionCombo->currentText(),
+        const GeneratedFiles files = generateCode(rootItem, target,
                                                     quadrantCombo->currentIndex(), linkerPrefixEdit->text(),
                                                     bssPrefixEdit->text(), dataPrefixEdit->text(),
                                                     charmapEdit->text(), sceneName());
@@ -4401,8 +4380,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                       [markDirtyFromCombo](int) { markDirtyFromCombo(); });
     QObject::connect(targetCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                       [markDirtyFromCombo](int) { markDirtyFromCombo(); });
-    QObject::connect(regionCombo, qOverload<int>(&QComboBox::currentIndexChanged),
-                      [markDirtyFromCombo](int) { markDirtyFromCombo(); });
     QObject::connect(linkerPrefixEdit, &QLineEdit::textChanged,
                       [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
     QObject::connect(bssPrefixEdit, &QLineEdit::textChanged,
@@ -4418,7 +4395,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                       [markDirtyFromCombo](int) { markDirtyFromCombo(); });
 
     // --- Properties panel: shows/edits the selected node's geometry,
-    // alignment, and hide-on-Target/Region lists. Hidden entirely (not just
+    // alignment, and hide-on-Target lists. Hidden entirely (not just
     // grayed out) whenever the selection isn't a prefixed node (e.g. root, or
     // nothing selected) -- a root/branch node has no such properties at all,
     // so there's nothing here for it to show; individual rows within it are
@@ -4483,7 +4460,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                                      "LEFT/RIGHT along a row, measured off Size X. Inside a Canvas, set\n"
                                      "this to the opposite of the Canvas's own axis so both can be moved.");
 
-    // Hide-on-Target/Region: a checkable-menu button rather than a list
+    // Hide-on-Target: a checkable-menu button rather than a list
     // widget, so a multi-select fits the sidebar's width without eating a
     // block of vertical space the way an always-expanded checklist would.
     auto* hideTargetsButton = new QPushButton(properties);
@@ -4497,18 +4474,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     hideTargetsButton->setMenu(hideTargetsMenu);
     hideTargetsButton->setToolTip("Hide this node (and its children) whenever the scene's current "
                                    "Target is one of the checked platforms.");
-
-    auto* hideRegionsButton = new QPushButton(properties);
-    auto* hideRegionsMenu = new QMenu(hideRegionsButton);
-    QVector<QAction*> hideRegionActions;
-    for (const QString& name : kRegionNames) {
-        QAction* action = hideRegionsMenu->addAction(name);
-        action->setCheckable(true);
-        hideRegionActions.push_back(action);
-    }
-    hideRegionsButton->setMenu(hideRegionsMenu);
-    hideRegionsButton->setToolTip("Hide this node (and its children) whenever the scene's current "
-                                   "Region is one of the checked broadcast standards.");
 
     // Summarizes which of `actions` are currently checked onto `button`'s own
     // label (e.g. "GBA, PSP", or "(none)") so the selection is visible
@@ -4549,7 +4514,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
 
     // Grouped into "Geometry" (any geometry node's position/size),
     // "Properties" (textbox-only: alignment/text/splitter), and "Visibility"
-    // (every prefixed kind's hide-on-Target/Region) -- whole groups are
+    // (every prefixed kind's hide-on-Target) -- whole groups are
     // shown/hidden together per the selected node's kind (see the
     // currentItemChanged handler below), rather than toggling individual
     // rows within a single shared form.
@@ -4612,7 +4577,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     auto* visibilityForm = new QFormLayout(visibilityGroup);
     visibilityForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     visibilityForm->addRow("Hide on Target", hideTargetsButton);
-    visibilityForm->addRow("Hide on Region", hideRegionsButton);
 
     propertiesLayout->addWidget(geometryGroup);
     propertiesLayout->addWidget(componentGroup);
@@ -4632,7 +4596,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                          choiceHasRectCheck, canvasVerticalCheck, sliderVerticalCheck,
                          buttonDefaultEnabledCheck,
                          buttonToggleableCheck, buttonHasBoxCheck, hideTargetsButton,
-                         hideTargetActions, hideRegionsButton, hideRegionActions, updateHideButtonSummary,
+                         hideTargetActions, updateHideButtonSummary,
                          suppressHideWrite](QTreeWidgetItem* item) {
         const QSignalBlocker bx(posXEdit);
         const QSignalBlocker by(posYEdit);
@@ -4679,13 +4643,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         for (QAction* action : hideTargetActions) {
             action->setChecked(hideTargets.contains(action->text()));
         }
-        const QStringList hideRegions = item->data(0, kHideRegionsRole).toStringList();
-        for (QAction* action : hideRegionActions) {
-            action->setChecked(hideRegions.contains(action->text()));
-        }
         *suppressHideWrite = false;
         updateHideButtonSummary(hideTargetsButton, hideTargetActions);
-        updateHideButtonSummary(hideRegionsButton, hideRegionActions);
     };
 
     // Flags the exact field(s) the resolver couldn't work out for the
@@ -4716,7 +4675,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             // ctTextBox-only: rtTextBox's text isn't known until runtime, so
             // there's no fixed erase tile to bake. Default Option only means
             // something for SingleChoice itself. Visibility (hide-on-
-            // Target/Region) applies to every prefixed kind, so that group is
+            // Target) applies to every prefixed kind, so that group is
             // never toggled off here.
             geometryGroup->setVisible(isGeometryItem(current));
             componentGroup->setVisible(isComponentItem(current));
@@ -4882,12 +4841,6 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         QObject::connect(action, &QAction::toggled, [writeHideSelection, hideTargetsButton, hideTargetActions,
                                                        updateHideButtonSummary](bool) {
             writeHideSelection(kHideTargetsRole, hideTargetsButton, hideTargetActions, updateHideButtonSummary);
-        });
-    }
-    for (QAction* action : hideRegionActions) {
-        QObject::connect(action, &QAction::toggled, [writeHideSelection, hideRegionsButton, hideRegionActions,
-                                                       updateHideButtonSummary](bool) {
-            writeHideSelection(kHideRegionsRole, hideRegionsButton, hideRegionActions, updateHideButtonSummary);
         });
     }
     // addCtTextBoxNode()/addRtTextBoxNode()/addNegativeSpaceNode() take an explicit parent so
@@ -5252,7 +5205,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // shown in red with an explanatory tooltip, rather than silently left
     // with a stale or wrong value.
     auto resolving = std::make_shared<bool>(false);
-    *resolveAllPtr = [window, rootItem, xEdit, yEdit, tilePx, resolving, targetCombo, regionCombo]() {
+    *resolveAllPtr = [window, rootItem, xEdit, yEdit, tilePx, resolving, targetCombo]() {
         if (*resolving) {
             // Re-entrant call: our own setData() calls below re-fire
             // itemChanged, which is also wired to call this function. The
@@ -5346,7 +5299,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                            : std::nullopt;
             }
             // .enabled (prop 5) is 1/0 for whether the referenced node is
-            // currently visible on the sidebar's selected Target/Region --
+            // currently visible on the sidebar's selected Target --
             // i.e. the same check isEffectivelyHidden() makes at export time
             // to decide whether to skip a node entirely, but here as a value
             // other expressions can build conditional placement on (e.g.
@@ -5356,7 +5309,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             // ancestors') and the combos below, never on another node's
             // still-resolving pos/size.
             if (prop == 5) {
-                return isEffectivelyHidden(it.value(), targetCombo->currentText(), regionCombo->currentText())
+                return isEffectivelyHidden(it.value(), targetCombo->currentText())
                            ? 0
                            : 1;
             }
@@ -5511,15 +5464,12 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     QObject::connect(xEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
     QObject::connect(yEdit, &QLineEdit::textChanged, [resolveAllPtr](const QString&) { (*resolveAllPtr)(); });
 
-    // `.enabled` (see ExprNode/resolveIdent above) reads whichever
-    // Target/Region is currently selected, so anything referencing it needs
-    // a fresh resolution pass whenever either changes too -- a node's own
-    // Hide Targets/Hide Regions lists already trigger one via the tree's
-    // itemChanged signal (see resolveAllPtr's connection above), since
-    // those live on the tree item itself.
+    // `.enabled` (see ExprNode/resolveIdent above) reads whichever Target is
+    // currently selected, so anything referencing it needs a fresh resolution
+    // pass whenever that changes too -- a node's own Hide Targets list already
+    // triggers one via the tree's itemChanged signal (see resolveAllPtr's
+    // connection above), since that lives on the tree item itself.
     QObject::connect(targetCombo, qOverload<int>(&QComboBox::currentIndexChanged),
-                      [resolveAllPtr](int) { (*resolveAllPtr)(); });
-    QObject::connect(regionCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                       [resolveAllPtr](int) { (*resolveAllPtr)(); });
 
     auto* globalGroup = new QGroupBox("Global", content);
@@ -5527,14 +5477,13 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     globalForm->addRow("Viewport X (tx):", xEdit);
     globalForm->addRow("Viewport Y (tx):", yEdit);
     globalForm->addRow("Target:", targetCombo);
-    globalForm->addRow("Region:", regionCombo);
     layout->addWidget(globalGroup);
 
     // "Scene" holds everything that's a property of *this* scene's export
     // (placement attributes + the quadrant it targets) rather than of the
-    // viewport/Target/Region concepts above -- split out now, ahead of any
+    // viewport/Target concepts above -- split out now, ahead of any
     // actual need, so a later per-scene field has an obvious home instead of
-    // getting wedged into Global alongside Viewport/Target/Region.
+    // getting wedged into Global alongside Viewport/Target.
     auto* sceneGroup = new QGroupBox("Scene", content);
     auto* sceneForm = new QFormLayout(sceneGroup);
     sceneForm->addRow("Quadrant:", quadrantCombo);
@@ -5572,7 +5521,7 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                       });
     updateGlobalSceneVisibility(tree->currentItem());
 
-    return {content, tree, xEdit, yEdit, targetCombo, regionCombo,
+    return {content, tree, xEdit, yEdit, targetCombo,
              showTileGridCheck, tileGridWSpin, tileGridHSpin,
              sceneName, loadSceneFromFile, hasUnresolvedErrors, exportOneTarget,
              doSave, doSaveAs, confirmDiscard, displayName};
@@ -5591,9 +5540,9 @@ struct ViewportPanel {
 };
 
 ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidget* tree, QLineEdit* xEdit,
-                                   QLineEdit* yEdit, QComboBox* targetCombo, QComboBox* regionCombo,
+                                   QLineEdit* yEdit, QComboBox* targetCombo,
                                    QCheckBox* showTileGridCheck, QSpinBox* tileGridWSpin, QSpinBox* tileGridHSpin) {
-    auto* grid = new TileGridWidget(tilePx, tree, targetCombo, regionCombo, showTileGridCheck, tileGridWSpin,
+    auto* grid = new TileGridWidget(tilePx, tree, targetCombo, showTileGridCheck, tileGridWSpin,
                                      tileGridHSpin);
 
     // Any change to a component's data (position, size, alignment, text,
@@ -5604,11 +5553,10 @@ ViewportPanel createViewportPanel(QMainWindow* window, double tilePx, QTreeWidge
     // about the grid directly.
     QObject::connect(tree, &QTreeWidget::itemChanged, grid, [grid](QTreeWidgetItem*, int) { grid->update(); });
 
-    // Hide-on-Target/Region is evaluated against whichever Target/Region is
+    // Hide-on-Target is evaluated against whichever Target is
     // *currently* selected, so a node can appear or disappear the moment
     // either combo changes, without anything on the tree itself changing.
     QObject::connect(targetCombo, qOverload<int>(&QComboBox::currentIndexChanged), grid, [grid](int) { grid->update(); });
-    QObject::connect(regionCombo, qOverload<int>(&QComboBox::currentIndexChanged), grid, [grid](int) { grid->update(); });
 
     // Same idea for the tile-grid overlay itself -- toggling it, or changing
     // its spacing, only touches these three widgets directly (see
@@ -5695,7 +5643,7 @@ struct TabManager {
 
         auto viewportPtr = std::make_shared<ViewportPanel>(
             createViewportPanel(window, tilePx, sidebar.tree, sidebar.xEdit, sidebar.yEdit, sidebar.targetCombo,
-                                 sidebar.regionCombo, sidebar.showTileGridCheck, sidebar.tileGridWSpin,
+                                 sidebar.showTileGridCheck, sidebar.tileGridWSpin,
                                  sidebar.tileGridHSpin));
 
         // Pushed before either widget is added below, so the currentChanged
