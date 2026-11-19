@@ -137,6 +137,13 @@ void main() {
         WaitBody();
     }
 
+    // Both currencies, once per attempt: the portable code the switch below
+    // acts on, and the CARD_ERROR_* behind it. The library folds four very
+    // different situations into save::no_device -- empty slot, a non-card
+    // device in the slot, a broken directory, a foreign font encoding -- and
+    // this is the only place that difference is visible.
+    log("pregame: GetSaveLocation err=%d native=%d", response.err, save::LastNativeError());
+
     switch (response.err) {
        case save::found: {
 #ifdef TARGET_GC

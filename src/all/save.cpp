@@ -72,4 +72,8 @@ __attribute__((weak)) Response GetDeviceStatus(u8) { return { .done = true, .err
 // no first call to wait through: this answer is the settled one.
 __attribute__((weak)) u8 FreeDevices(const std::size_t) { return 0; }
 
+// Nothing has gone wrong, because nothing was ever attempted: every call here
+// refuses before it touches anything, so there is no platform code to report.
+__attribute__((weak)) i32 LastNativeError() { return 0; }
+
 }

@@ -230,6 +230,52 @@ u8 slotIndex = 0;
 bool slotFixed = false;
 
 /**
+ * @brief The most informative outcome this sweep has seen, and libogc's code
+ *        for it.
+ *
+ * LAST SLOT WINS WAS A WRONG ANSWER, not just an imprecise one. A sweep used to
+ * report whatever the final slot said, so the ordinary one-card console --
+ * card in slot A, slot B empty -- answered a search like this:
+ *
+ *   slot A: mounted, CARD_FindFirst -> CARD_ERROR_NOFILE  ->  save::missing
+ *   slot B: empty                                         ->  save::no_device
+ *   reported: save::no_device
+ *
+ * ...which tells a game "there is no memory card" about a console with a
+ * memory card in it, and sends it down the "ask for a card" branch instead of
+ * the "offer to create a save" one. The informative answer was found first and
+ * then thrown away.
+ *
+ * SO OUTCOMES ARE RANKED (::Rank) AND THE BEST ONE IS REPORTED. ::no_device is
+ * the weakest -- it means "nothing is in this slot", which says nothing about
+ * the console as a whole; ::busy is better, since something is there and merely
+ * did not answer; anything else is a real verdict about a real card and wins.
+ * Ties go to the EARLIER slot, so slot A's answer is the one a player hears
+ * when both cards say the same thing.
+ */
+save::eError sweepErr    = save::no_device;
+s32          sweepNative = CARD_ERROR_NOCARD;
+bool         sweepSeen   = false;
+
+/**
+ * @brief Ticks spent waiting for one slot's probe to settle before giving up.
+ *
+ * A channel that answers CARD_ERROR_BUSY has not decided yet -- a card
+ * inserted a moment ago, or a channel touched for the first time this frame
+ * (which is how a two-card console reported ::busy for slot B immediately
+ * after slot A's sweep). Treating that as an empty slot, which this did, loses
+ * a card that was about to answer.
+ *
+ * CAPPED, because the alternative to giving up is a loop that never ends: a
+ * channel wedged in BUSY would otherwise keep a `while (!response.done)`
+ * caller pumping frames until the console was switched off. Sixty ticks is a
+ * second of settling at 60Hz, far longer than an insertion needs, after which
+ * the slot is reported save::failed -- an answer, and an honest one.
+ */
+constexpr u8 kProbeRetryLimit = 60;
+u8 probeRetries = 0;
+
+/**
  * @brief The last SETTLED answer ::save::GetDeviceStatus gave for each slot.
  *
  * TWO JOBS, AND THE SECOND IS THE ONE THAT NEEDED A CACHE AT ALL.
@@ -399,16 +445,41 @@ save::eError MapError(s32 err) {
     }
 }
 
+/**
+ * @brief How much an outcome is worth saying, for ::sweepErr's comparison.
+ *
+ * Three tiers only, because that is all the distinction a caller can act on:
+ * nothing was there, something was there but silent, or something answered.
+ */
+constexpr u8 Rank(const save::eError err) {
+    switch (err) {
+        case save::no_device: return 0;   // nothing in this slot
+        case save::busy:      return 1;   // something, but it did not answer
+        default:              return 2;   // a real verdict about a real card
+    }
+}
+
+/** @brief Offers one slot's outcome to the sweep; the best one is kept. */
+void NoteSlotOutcome(const save::eError err, const s32 native) {
+    // Strictly greater, so a tie leaves the EARLIER slot's answer in place.
+    if (!sweepSeen || Rank(err) > Rank(sweepErr)) {
+        sweepErr    = err;
+        sweepNative = native;
+        sweepSeen   = true;
+    }
+}
+
 /** @brief Tears down whatever the sequence had open and returns it to idle. */
 void Abort() {
     if (opened)  { CARD_Close(&file); opened = false; }
     if (mounted) { CARD_Unmount(chn); mounted = false; }
-    op        = Op::None;
-    phase     = Phase::Probe;
-    pending   = 0;
-    dest      = nullptr;
-    slotIndex = 0;
-    slotFixed = false;
+    op           = Op::None;
+    phase        = Phase::Probe;
+    pending      = 0;
+    dest         = nullptr;
+    slotIndex    = 0;
+    slotFixed    = false;
+    probeRetries = 0;
 }
 
 /**
@@ -535,10 +606,46 @@ void RememberLocation(s32 slot, const char* name) {
 s32 ProbeMedia(s32 slot, u32& sectorOut, save::eError& errOut) {
     s32 sect = 0;
     const s32 err = CARD_ProbeEx(slot, nullptr, &sect);
-    if (err != CARD_ERROR_READY) {
+
+    /*
+     * CARD_ERROR_NOCARD WITH A SECTOR SIZE IN HAND IS A CARD, AND THIS IS THE
+     * ORDINARY STATE OF ONE. Taking `err != CARD_ERROR_READY` as "nothing
+     * there" -- which this did, and which ::ProbeCurrentSlot did before the
+     * two shared a probe -- made the whole backend unable to find a memory
+     * card AT ALL, on hardware and in Dolphin alike. libogc ships no card.c in
+     * this SDK install, so the shape below is read out of libogc.a's own
+     * CARD_ProbeEx (powerpc-eabi-objdump -dr, section .text.CARD_ProbeEx):
+     *
+     *     if (EXI_ProbeEx(chn) <= 0)                 // 0 -> BUSY, <0 -> NOCARD
+     *     if (card->attached) { fill; return CARD_ERROR_READY; }
+     *     if (EXI_GetState(chn) & 8)   return CARD_ERROR_WRONGDEVICE;
+     *     if (!EXI_GetID(chn, 0, &id)) return CARD_ERROR_BUSY;
+     *     if (!__card_iscard(id))      return CARD_ERROR_WRONGDEVICE;
+     *     if (mem)  *mem  = ...;
+     *     if (sect) *sect = card_sector_size[(id >> 9) & 7];
+     *     return CARD_ERROR_NOCARD;                  // the -3 saved at the top
+     *
+     * CARD_ERROR_READY is returned ONLY on the `card->attached` path -- that is,
+     * only for a card that is ALREADY MOUNTED. Every sequence here probes
+     * before it mounts, so READY was unreachable: the probe refused the slot,
+     * the mount never ran, the card never became attached, and the next probe
+     * refused it again. A GameCube with a card in slot A reported save::no_device
+     * forever.
+     *
+     * THE DISCRIMINATOR IS THE OUT PARAMETER, NOT THE CODE. Of the three paths
+     * that return CARD_ERROR_NOCARD, only the unmounted-card one writes
+     * @p sect first; the early `EXI_ProbeEx() < 0` return writes nothing. So a
+     * zeroed `sect` coming back still -3 means an empty slot, and a filled one
+     * means a card waiting to be mounted. That is why `sect` is zeroed here
+     * rather than trusted to be untouched.
+     */
+    const bool present = (err == CARD_ERROR_READY) ||
+                         (err == CARD_ERROR_NOCARD && sect > 0);
+    if (!present) {
         errOut = MapError(err);
         return err;
     }
+
     if (sect <= 0 || static_cast<u32>(sect) > kSectorMax) {
         // A card whose sector is wider than the staging buffer: refused rather
         // than transferred at the wrong width and called a save.
@@ -871,6 +978,15 @@ bool Begin(Op want, const u8* src, u8* tar, std::size_t size, const char* path) 
     pending  = size;
     phase    = Phase::Probe;
     detached = false;
+
+    // A fresh sweep: no slot has offered an outcome yet, and nothing has been
+    // waited on. ::sweepErr starts at the weakest answer so the first real one
+    // displaces it (::Rank).
+    sweepErr     = save::no_device;
+    sweepNative  = CARD_ERROR_NOCARD;
+    sweepSeen    = false;
+    probeRetries = 0;
+
     CARD_Init(kGameCode, kCompany);
     return false;
 }
@@ -945,9 +1061,24 @@ bool Tick(Op want, const u8* src, u8* tar, std::size_t size, const char* path) {
     switch (phase) {
         case Phase::Probe:
             if (!ProbeCurrentSlot()) {
+                // NOT SETTLED IS NOT EMPTY: stay on this slot and ask again
+                // next tick, up to ::kProbeRetryLimit. Advancing here is what
+                // turned a card still coming up on the bus into "no memory
+                // card in either slot".
+                if (lastErr == save::busy) {
+                    if (++probeRetries < kProbeRetryLimit) return false;
+                    // Out of patience. The slot gets an answer rather than
+                    // another lap: save::busy as a FINISHED outcome would tell
+                    // a caller to retry a call that will do this again.
+                    lastErr    = save::failed;
+                    lastNative = CARD_ERROR_BUSY;
+                }
+                probeRetries = 0;
+                NoteSlotOutcome(lastErr, lastNative);
                 if (AdvanceSlot()) return false;      // try the other slot
-                return Exhausted(lastErr, lastNative);
+                return Exhausted(sweepErr, sweepNative);
             }
+            probeRetries = 0;
             phase = Phase::Mount;
             return false;
 
@@ -958,8 +1089,9 @@ bool Tick(Op want, const u8* src, u8* tar, std::size_t size, const char* path) {
                 // unusable rather than absent. Recorded so the probe-only
                 // device calls stop offering it (::deviceBroken).
                 if (IsUnusableCode(err)) deviceBroken[slotIndex] = true;
+                NoteSlotOutcome(MapError(err), err);
                 if (AdvanceSlot()) { phase = Phase::Probe; return false; }
-                return Exhausted(MapError(err), err);
+                return Exhausted(sweepErr, sweepNative);
             }
             deviceBroken[slotIndex] = false;   // it mounted; whatever it was, it is not that now
             mounted = true;
@@ -972,8 +1104,14 @@ bool Tick(Op want, const u8* src, u8* tar, std::size_t size, const char* path) {
             if (err != CARD_ERROR_READY) {
                 // Not on this card -- try the next one, unless a path pinned
                 // the slot, in which case "not here" is the whole answer.
+                //
+                // THIS IS THE OUTCOME THE OLD SWEEP THREW AWAY: a mounted card
+                // with no save on it answers CARD_ERROR_NOFILE here, which is
+                // save::missing -- "there is somewhere to save, and your save
+                // is not on it". See ::sweepErr.
+                NoteSlotOutcome(MapError(err), err);
                 if (AdvanceSlot()) { phase = Phase::Probe; return false; }
-                return Exhausted(MapError(err), err);
+                return Exhausted(sweepErr, sweepNative);
             }
             if (op == Op::Finding) {
                 RememberLocation(chn, targetName);
@@ -1283,6 +1421,21 @@ u8 AccessibleDevices() {
  * and either mismatch starts a fresh sweep rather than returning an answer to a
  * question nobody asked.
  */
+/**
+ * @brief ::lastNative, the CARD_ERROR_* behind the last finished operation.
+ *
+ * The reason this backend keeps two error values at all (see ::lastErr): a game
+ * acts on save::no_device, and a developer still needs to see whether that was
+ * CARD_ERROR_NOCARD, CARD_ERROR_WRONGDEVICE (an SD adapter in the slot),
+ * CARD_ERROR_BROKEN or CARD_ERROR_ENCODING -- four very different situations
+ * that this library deliberately reports as one.
+ *
+ * NOT the device cache's ::deviceNative: that one belongs to a status poll, and
+ * a menu asking about slot B every few frames must not be able to overwrite
+ * what a failed save left here.
+ */
+i32 LastNativeError() { return static_cast<i32>(lastNative); }
+
 u8 FreeDevices(const std::size_t size) {
     // Refused by ::Begin whatever the card says, so no device can take it and
     // there is nothing to go and measure. Reported as a settled 0 rather than
@@ -1429,6 +1582,9 @@ Response GetDeviceStatus(u8) {
 
 /** @brief No devices, so none of them has room, whatever the size. */
 u8 FreeDevices(const std::size_t) { return 0; }
+
+/** @brief No EXI slot means nothing ever ran, so there is no code to report. */
+i32 LastNativeError() { return 0; }
 
 } // namespace save
 

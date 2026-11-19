@@ -277,4 +277,28 @@ namespace save {
      * backend could write at all, reports no devices rather than all of them.
      */
     u8 FreeDevices(std::size_t size);
+
+    /**
+     * @brief The BACKEND'S OWN code for the last thing that went wrong, for a
+     *        developer rather than for a player.
+     *
+     * save::eError is deliberately small -- a game acts on "there is nowhere to
+     * save", not on which of eleven libogc codes produced that. This is the
+     * other half of that trade: the platform's raw code, unmapped, for a log
+     * line or a watch window.
+     *
+     * NOT PART OF THE CONTRACT. The VALUE is whatever the platform uses (on the
+     * GameCube, one of libogc's CARD_ERROR_*, which are negative), so nothing
+     * portable can switch on it and no backend promises any particular number.
+     * ::i32 rather than libogc's own `s32`, which is the same width but exists
+     * only on a GameCube build -- this declaration is compiled on every target.
+     * Zero means "nothing has gone wrong" on every backend, which is also what
+     * a platform with no save device answers forever.
+     *
+     * It describes the last FINISHED operation, so read it after `done`. A
+     * status poll never sets it: ::GetDeviceStatus and ::AccessibleDevices
+     * deliberately leave it alone so that a menu refreshing itself cannot
+     * overwrite what a failed save left behind.
+     */
+    i32 LastNativeError();
 }
