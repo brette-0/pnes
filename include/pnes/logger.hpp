@@ -396,10 +396,33 @@ namespace log_detail {
 /// or an enum with one as its underlying type -- exactly eGameModes'
 /// shape) is further promoted to int/unsigned, since operator<< treats
 /// (unsigned) char as a character to print, not a number to format.
+/// ::std::underlying_type_t, but only ever INSTANTIATED for an enum.
+///
+/// NOT std::conditional_t<std::is_enum_v<T>, std::underlying_type_t<T>, T>,
+/// which is what this replaced and which cannot work: conditional_t is an
+/// ordinary template, so BOTH its branches are instantiated before the
+/// condition picks one, and std::underlying_type<T> has no `type` member for a
+/// non-enum T. The result was a hard error -- "no type named 'type' in
+/// 'struct std::underlying_type<unsigned char>'", reported inside this header
+/// rather than at the call site -- for any ::log argument that was a plain
+/// byte. That went unnoticed because the only byte-sized values this project
+/// had ever logged were scoped enums (eGameModes), and the generic-debug
+/// branch this lives in is compiled out of a Release build (NDEBUG) -- so it
+/// took a `log("%d", someU8)` in a Debug build off NES to surface it.
+///
+/// A partial specialisation defers the lookup: the primary template names no
+/// underlying type at all, and only the `true` specialisation mentions it, so
+/// nothing asks a non-enum for one.
+template <typename T, bool = std::is_enum_v<T>>
+struct UnderlyingOf { using type = T; };
+
+template <typename T>
+struct UnderlyingOf<T, true> { using type = std::underlying_type_t<T>; };
+
 template <typename T>
 constexpr auto LogPrintable(T &&value) {
     using Raw = std::remove_cvref_t<T>;
-    using Underlying = std::conditional_t<std::is_enum_v<Raw>, std::underlying_type_t<Raw>, Raw>;
+    using Underlying = typename UnderlyingOf<Raw>::type;
     if constexpr (std::is_integral_v<Underlying> && sizeof(Underlying) == 1) {
         using Promoted = std::conditional_t<std::is_signed_v<Underlying>, int, unsigned>;
         return static_cast<Promoted>(static_cast<Underlying>(value));

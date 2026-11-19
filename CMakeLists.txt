@@ -4228,6 +4228,23 @@ if(NOT REGION STREQUAL "US" AND NOT REGION STREQUAL "EU" AND NOT REGION STREQUAL
 endif()
 target_compile_definitions(pnes PUBLIC "REGION=\"${REGION}\"")
 
+# THE SAME VALUE AS A DEFINED/NOT-DEFINED FLAG, because the string above cannot
+# be tested by the preprocessor. REGION reaches C++ as the literal "US", and a
+# string literal is not valid in a #if expression -- `#if REGION == JP` is a
+# hard error on the token, not a comparison that comes out false. So the market
+# is ALSO published the way the platform is: exactly one of REGION_US,
+# REGION_EU and REGION_JP is defined, and the others do not exist.
+#
+# Same model as TARGET_NES / TARGET_GC / TARGET_OGC, and usable the same three
+# ways -- `#ifdef REGION_JP`, `#if REGION_JP`, `#if defined(REGION_JP)` -- since
+# a definition with no value is 1. A build whose REGION is misspelt cannot
+# reach here: the STREQUAL guard above rejects anything but the three markets,
+# which is what keeps "no REGION_* is defined" from being a silent outcome.
+#
+# The string stays, rather than being replaced by this: it is what a title
+# screen or a log line prints, and nothing about that wants an #ifdef.
+target_compile_definitions(pnes PUBLIC "REGION_${REGION}")
+
 # One SAVE_FILE define for every target, for the same reason REGION gets one:
 # the save backends are per-platform, but "does this game use save technology
 # at all" is not, and every backend needs to compile itself away when it

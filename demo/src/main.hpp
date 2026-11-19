@@ -28,6 +28,20 @@ enum class eGameModes : u8 {
     Title,  // title screen
     World,  // world map, level select
     Level,  // gameplay, platforming in level
+#ifdef TARGET_GC
+    // Save discovery: find, load or create the save before any mode that
+    // assumes it exists runs. The mode main.cpp BOOTS into off the NES, even
+    // though it is last in this list -- the order here is just the numbering,
+    // and appending keeps Title at 0 on every target rather than renumbering
+    // the three modes that existed before it for one platform's benefit.
+    //
+    // NOT ON NES, where there is no device to find and no card to choose: the
+    // MMC3 backend answers every save call with ::save::found because the save
+    // IS the cart, so an NES build boots straight to the title and this mode
+    // is not compiled at all -- nor is it on any other non-GameCube target, for
+    // the reason the guard in demo/src/modes/pregame.cpp gives.
+    Pregame,
+#endif
 };
 
 /** @brief Viewport width in metatiles (tiles / 2). */
