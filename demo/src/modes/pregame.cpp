@@ -43,6 +43,30 @@ using namespace br0::intsh;
 namespace pregame {
 
 /**
+ * @brief The level this mode's effects play at: full scale.
+ *
+ * NOT ::ui::impl::SfxLevel(), WHICH IS SILENT HERE -- and that is why nothing
+ * could be heard. That function reads the options page's SFX slider:
+ *
+ *     const Rect r = ac::SFXSlider::rect;
+ *     return SliderCoefficient(r.size.x, ac::SFXSlider::amount);
+ *
+ * Both halves are zero until `gen::options::Make()` has resolved the scene and
+ * the slider has a position, and that call lives in title::main -- which runs
+ * AFTER this mode, since this is the one that hands over to it. So every
+ * ::SfxPlay from here asked for volume 0 and the effects played inaudibly
+ * rather than not at all.
+ *
+ * FULL SCALE, BY DECISION rather than as a fallback: audio::SfxPlay's volume is
+ * a byte the GameCube backend divides by 255 for its 0.0-1.0 mix
+ * (pnes/audio.hpp), so 255 is 100%. These are the save flow's only sounds, they
+ * happen before a player has been offered a volume control at all, and the
+ * on/off gate above is still honoured -- ::ui::impl::SfxEnabled() answers true
+ * off NES, which is where this mode exists.
+ */
+constexpr u8 kSfxLevel = 255;
+
+/**
  * @brief One frame of this mode: audio, the sound-effect mailbox, present.
  *
  * THE MAILBOX IS SPENT HERE, which is the arrangement title mode has for the
@@ -62,7 +86,7 @@ static void WaitBody() {
         ui::impl::pendingSfx = 0;
         if (ui::impl::SfxEnabled()) {
             audio::SfxPlay(static_cast<u8>(queued - 1), ui::impl::kSfxChannel,
-                           ui::impl::SfxLevel());
+                           kSfxLevel);
         }
     }
     video::WaitForPresent();
