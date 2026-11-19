@@ -1171,7 +1171,8 @@ void deserializeNode(QTreeWidgetItem* parent, const QJsonObject& obj) {
 // every node.
 bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int quadrant, const QString& target,
                    const QString& linkerPrefix, const QString& bssPrefix,
-                   const QString& dataPrefix, const QString& charmap, bool showTileGrid, int tileGridW,
+                   const QString& dataPrefix, const QString& charmap, const QString& specialInclude,
+                   bool bssSeparate, const QString& bssSymbolPrefix, bool showTileGrid, int tileGridW,
                    int tileGridH) {
     QJsonArray nodes;
     for (int i = 0; i < rootItem->childCount(); ++i) {
@@ -1185,6 +1186,9 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int quad
     doc["bss_prefix"] = bssPrefix;
     doc["data_prefix"] = dataPrefix;
     doc["charmap"] = charmap;
+    doc["special_include"] = specialInclude;
+    doc["bss_separate"] = bssSeparate;
+    doc["bss_symbol_prefix"] = bssSymbolPrefix;
     // Editor-only canvas aid (see showTileGridCheck/tileGridWSpin/
     // tileGridHSpin above) -- round-tripped here so it's remembered per
     // scene, but never read by generateCode/exportOneTarget.
@@ -1212,7 +1216,8 @@ bool writeUisFile(const QString& path, const QTreeWidgetItem* rootItem, int quad
 // absent (e.g. an older file).
 bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outQuadrant, QString& outTarget,
                    QString& outLinkerPrefix, QString& outBssPrefix, QString& outDataPrefix,
-                   QString& outCharmap, bool& outShowTileGrid, int& outTileGridW, int& outTileGridH) {
+                   QString& outCharmap, QString& outSpecialInclude, bool& outBssSeparate,
+                   QString& outBssSymbolPrefix, bool& outShowTileGrid, int& outTileGridW, int& outTileGridH) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
@@ -1237,6 +1242,12 @@ bool parseUisFile(const QString& path, QJsonArray& outNodes, int& outQuadrant, Q
     outBssPrefix = doc.object()["bss_prefix"].toString();
     outDataPrefix = doc.object()["data_prefix"].toString();
     outCharmap = doc.object()["charmap"].toString();
+    // Free-form like the prefixes above, and absent from any scene written
+    // before they existed -- which reads back as an empty Special Include and
+    // a scene that doesn't split its BSS, i.e. exactly what it did then.
+    outSpecialInclude = doc.object()["special_include"].toString();
+    outBssSeparate = doc.object()["bss_separate"].toBool(false);
+    outBssSymbolPrefix = doc.object()["bss_symbol_prefix"].toString();
     // Editor-only canvas aid -- missing from an older file, so it defaults
     // to off at 1x1 rather than failing the whole parse.
     outShowTileGrid = doc.object()["showTileGrid"].toBool(false);
@@ -1384,6 +1395,108 @@ struct GeneratedFiles {
     // string-sniffing `cpp` to decide whether that empty file is even worth
     // writing (see exportOneTarget).
     bool cppHasContent = false;
+    // The scene's whole mutable storage as plain `type name;` lines -- what a
+    // scene with Generate BSS Separately set gets written to bss.hpp beside
+    // its header instead of declaring any of it itself (see BssSplit).
+    QString bss;
+    // Whether `bss` holds any declaration at all, as opposed to just the
+    // do-not-edit banner. False on every scene that hasn't asked for a
+    // separate BSS, and also on one that has but owns no mutable storage on
+    // this target -- callers use it to decide whether the file is worth
+    // writing at all (see exportOneTarget), same as `cppHasContent`.
+    bool bssHasContent = false;
+};
+
+// --- Separate BSS ----------------------------------------------------------
+//
+// With a scene's Generate BSS Separately set, none of its mutable storage is
+// declared in the generated header at all: every such variable moves to a
+// second file (<scene>/<target>/bss.hpp) as a plain, unqualified
+// `type name;` declaration -- no namespace, no include guard, no initializer,
+// nothing a compiler could object to being pasted straight into the middle of
+// a struct the project already has. That is the whole point of it: a scene's
+// state becomes a member of something the game owns (a save-data block, a RAM
+// pool) rather than an `inline` object uitk declared and placed itself.
+//
+// STATE, and nothing else: a Slider's `amount`, a SingleChoice's `option`, and
+// the scene-wide `button_state` mask -- the three things a player can change
+// and a save file would want to keep. A node's geometry (`rect`/`pos`), a
+// SingleChoice's `options` anchor table and a Canvas's focus `index` are all
+// mutable too, and all stay exactly where they were: they are derived from the
+// scene's own layout and re-derived by Make() on every boot, so putting them
+// in a save-data block would persist something the next build may contradict.
+//
+// The storage leaves the namespace, but every generated body still names it
+// unqualified (`option`, `amount`, `index`, `rect`, `pos`) -- so what takes
+// its place in the header is a reference bound to the real object:
+//
+//     inline atomic u8& option = saveData.config.options_region_option;
+//
+// A reference bound to a global lvalue is constant-initialized, so it costs
+// nothing at runtime and leaves every emitted body exactly as it was. The
+// flattened name is the node's path from the scene root joined with '_' plus
+// the variable's own name (options_region_option), which is also why nothing
+// in one bss.hpp can collide with anything else in it -- the scene tree
+// already guarantees those paths are unique.
+//
+// Whatever declares the owner of that storage is the scene's business, not
+// uitk's: a scene splitting its BSS out is expected to name the header its
+// prefix comes from in Special Include (see generateCode), exactly as a
+// charmap's own header has always been.
+struct BssSplit {
+    // Off on a scene that hasn't opted in -- decl() then emits precisely the
+    // `inline` declaration it always did, initializer and placement attribute
+    // included, and nothing is collected.
+    bool enabled = false;
+    // Verbatim text every flattened name is reached through, e.g.
+    // "saveData.config." -- never parsed, and not required to end in a dot
+    // (a scene wanting plain globals can set a bare "ui_" or nothing at all).
+    QString symbolPrefix;
+    // Where decl() collects the plain declarations, in emission order. Owned
+    // by generateCode; null whenever `enabled` is false.
+    QStringList* decls = nullptr;
+    // The current node's flattened path -- the scene name at the top level,
+    // extended per node by at() exactly as emitNodeNamespace extends the
+    // `::`-joined qualified name beside it.
+    QString path;
+
+    // This same split, scoped to a child node. Transparent branch nodes don't
+    // call it, for the same reason they contribute no namespace: their names
+    // were never validated as identifiers (see emitNodeNamespace).
+    BssSplit at(const QString& nodeName) const {
+        BssSplit next = *this;
+        next.path = path.isEmpty() ? nodeName : (path + "_" + nodeName);
+        return next;
+    }
+
+    QString flat(const QString& name) const { return path.isEmpty() ? name : (path + "_" + name); }
+
+    // One storage declaration, as the header should carry it. `placementTok`
+    // is the scene's BSS Prefix (a linker-section attribute) and is dropped
+    // from a split-out declaration: the object isn't declared here any more,
+    // so there is nothing here left to place, and placing whatever bss.hpp
+    // gets pasted into is the project's own business. `init` is dropped for
+    // the harder reason that a plain declaration cannot carry one at all --
+    // every call site with an initializer to lose re-seeds it from that
+    // node's own Make() instead.
+    QString decl(const QString& placementTok, const QString& type, const QString& name,
+                 const QString& init = QString(), int arrayLen = -1) const {
+        const QString subscript = (arrayLen >= 0) ? QString("[%1]").arg(arrayLen) : QString();
+        if (!enabled) {
+            const QString initTok = init.isEmpty() ? QString() : (" = " + init);
+            return QString("%1inline %2 %3%4%5;").arg(placementTok, type, name, subscript, initTok);
+        }
+        *decls << QString("%1 %2%3;").arg(type, flat(name), subscript);
+        const QString owner = symbolPrefix + flat(name);
+        // Reference-to-array for an array, so `name[i]` and `&name[0]` both
+        // still mean what they did: `atomic Rect (&options)[3]`, not
+        // `atomic Rect& options[3]` -- an array of references, which is not a
+        // thing C++ has.
+        if (arrayLen >= 0) {
+            return QString("inline %1 (&%2)[%3] = %4;").arg(type, name).arg(arrayLen).arg(owner);
+        }
+        return QString("inline %1& %2 = %3;").arg(type, name, owner);
+    }
 };
 
 // Mirrors src/nes/video.cpp's xy_to_nt_addr exactly -- the PPU-address math
@@ -1910,7 +2023,8 @@ QStringList childNamespaceNames(const QTreeWidgetItem* item, const QString& targ
 QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                                 bool runtimePos, QTreeWidgetItem* rootItem, const QString& target,
                                 const QString& ntOffXExpr, const QString& ntOffYExpr,
-                                const TargetGeometry& geom) {
+                                const TargetGeometry& geom,
+                                const QStringList& extraMakeSeeds = QStringList()) {
     const int x = geom.x(item) + ntOffX;
     const int y = geom.y(item) + ntOffY;
     const int w = geom.w(item);
@@ -1966,7 +2080,14 @@ QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOf
     for (const QString& kid : childNamespaceNames(item, target)) {
         childMakes << QString("    %1::Make();").arg(kid);
     }
-    const QString childTail = childMakes.isEmpty() ? QString() : ("\n" + childMakes.join("\n"));
+    // Everything this node's Make() ends with: its children's own Make()s,
+    // then whatever initializer a caller's split-out storage could no longer
+    // carry for itself (`extraMakeSeeds` -- see BssSplit::decl, and
+    // genSliderDecl/genButtonDecl for the two that have one). Children first,
+    // same contract as every other Make() here.
+    QStringList makeTail = childMakes;
+    makeTail += extraMakeSeeds;
+    const QString childTail = makeTail.isEmpty() ? QString() : ("\n" + makeTail.join("\n"));
 
     QStringList lines;
     if (runtimePos) {
@@ -1989,15 +2110,15 @@ QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOf
         // exposes the same call, and no caller needs a #if to decide whether it
         // exists. It still makes the children, whose own Make()s are equally
         // empty here; the whole chain inlines away to nothing.
-        lines << (childMakes.isEmpty() ? QString("inline AI void Make() {}")
-                                        : QString("inline AI void Make() {\n%1\n}").arg(childMakes.join("\n")));
+        lines << (makeTail.isEmpty() ? QString("inline AI void Make() {}")
+                                      : QString("inline AI void Make() {\n%1\n}").arg(makeTail.join("\n")));
     } else {
         lines << QString("inline atomic u16 pos;");
-        lines << (childMakes.isEmpty()
+        lines << (makeTail.isEmpty()
                       ? QString("inline AI void Make() { pos = ppu::CartesianToAddress(rect.pos); }")
                       : QString("inline AI void Make() {\n"
-                                 "    pos = ppu::CartesianToAddress(rect.pos);\n%1\n}")
-                            .arg(childMakes.join("\n")));
+                                 "    pos = ppu::CartesianToAddress(rect.pos);%1\n}")
+                            .arg(childTail));
     }
     return lines;
 }
@@ -2025,7 +2146,7 @@ QStringList genGeometryStorage(const QTreeWidgetItem* item, int ntOffX, int ntOf
 // it places the instance's own mutable storage, and, on a runtime-viewport
 // target, its mutable options array.
 QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, const QString& target,
-                             const QString& bssPrefixTok, const QString& dataPrefixTok,
+                             const QString& bssPrefixTok, const QString& dataPrefixTok, const BssSplit& bss,
                              bool runtimePos) {
     const QVector<QTreeWidgetItem*> members = singleChoiceMembers(scItem, target);
     if (members.isEmpty()) {
@@ -2069,7 +2190,11 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
     // called Pass() itself), same reasoning as the mutable `options` array
     // above. `nOptions` never changes once generated, so it's a plain
     // compile-time constant instead.
-    lines << QString("%1inline atomic u8 option = %2;").arg(bssPrefixTok).arg(defaultOption);
+    // Make() below re-seeds this unconditionally anyway, which is what lets a
+    // split-out declaration drop the initializer and still start where the
+    // scene says it should.
+    lines << bss.decl(bssPrefixTok, QStringLiteral("atomic u8"), QStringLiteral("option"),
+                       QString::number(defaultOption));
     lines << QString("inline constexpr u8 nOptions = %1;").arg(nOptions);
 
     // Which axis this menu steps (kSingleChoiceVerticalRole), as a value the
@@ -2400,16 +2525,29 @@ QString genSingleChoiceDecl(QTreeWidgetItem* scItem, QTreeWidgetItem* rootItem, 
 QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                        bool runtimePos, QTreeWidgetItem* rootItem, const QString& target,
                        const QString& ntOffXExpr, const QString& ntOffYExpr, int bitIndex,
-                       const QString& stateArrayName, const TargetGeometry& geom) {
+                       const QString& stateArrayName, const TargetGeometry& geom, const BssSplit& bss) {
     const bool toggleable = item->data(0, kButtonToggleableRole).toBool();
+    const bool defaultEnabled = item->data(0, kButtonDefaultEnabledRole).toBool();
     const int byteIndex = bitIndex / 8;
     const int bitInByte = bitIndex % 8;
     const QString byteExpr = QString("%1[%2]").arg(stateArrayName).arg(byteIndex);
     const QString maskExpr = QString("(1u << %1)").arg(bitInByte);
 
+    // This button's starting state. It normally rides in `button_state`'s own
+    // initializer (see generateCode), which a split-out declaration cannot
+    // carry -- so with the scene's BSS split out it is seeded from this
+    // button's Make() instead. Not emitted otherwise: Make() has never reset a
+    // button the way it re-seeds a SingleChoice's `option`, and making a scene
+    // twice should keep meaning what it already meant.
+    QStringList stateSeed;
+    if (bss.enabled) {
+        stateSeed << (defaultEnabled ? QString("    %1 |= %2;").arg(byteExpr, maskExpr)
+                                      : QString("    %1 &= static_cast<u8>(~%2);").arg(byteExpr, maskExpr));
+    }
+
     QStringList lines =
         genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target,
-                            ntOffXExpr, ntOffYExpr, geom);
+                            ntOffXExpr, ntOffYExpr, geom, stateSeed);
 
     lines << QString("inline AI void Enable() { %1 |= %2; }").arg(byteExpr, maskExpr);
     lines << QString("inline AI void Disable() { %1 &= static_cast<u8>(~%2); }").arg(byteExpr, maskExpr);
@@ -2584,12 +2722,24 @@ QString genButtonDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
 QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool isNes, bool variadic,
                        bool runtimePos, QTreeWidgetItem* rootItem, const QString& target,
                        const QString& bssPrefixTok, const QString& ntOffXExpr, const QString& ntOffYExpr,
-                       const TargetGeometry& geom) {
+                       const TargetGeometry& geom, const BssSplit& bss) {
     const bool vertical = item->data(0, kSliderVerticalRole).toBool();
 
-    QStringList lines =
-        genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target,
-                            ntOffXExpr, ntOffYExpr, geom);
+    const QString amountDecl =
+        bss.decl(bssPrefixTok, QStringLiteral("atomic u8"), QStringLiteral("amount"), QStringLiteral("0"));
+    // A slider is the one node whose state has an initializer no Make() was
+    // already rewriting, so splitting it out means Make() has to -- and a
+    // Make() can only name a namespace member declared before it, which is
+    // why the declaration moves ahead of the geometry (Make() included) in
+    // that case alone. Nothing moves on a scene that hasn't split its BSS.
+    QStringList lines;
+    QStringList amountSeed;
+    if (bss.enabled) {
+        lines << amountDecl;
+        amountSeed << QStringLiteral("    amount = 0;");
+    }
+    lines += genGeometryStorage(item, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target,
+                                 ntOffXExpr, ntOffYExpr, geom, amountSeed);
 
     // The slider's holding value -- the one piece of state uitk does own for
     // one. `atomic` (technology.hpp: volatile on NES, a true atomic
@@ -2604,7 +2754,7 @@ QString genSliderDecl(const QTreeWidgetItem* item, int ntOffX, int ntOffY, bool 
     // byte), which the scene has no way to know, so the only thing that
     // would be right for every slider is the storage itself. Writing and
     // bounding it is the caller's job.
-    lines << QString("%1inline atomic u8 amount = 0;").arg(bssPrefixTok);
+    if (!bss.enabled) lines << amountDecl;
 
     // Which axis the handle moves along (kSliderVerticalRole). The generated
     // Pass() below already bakes it into the two input bits it spends, so this
@@ -3163,7 +3313,8 @@ QString genCanvasDecl(QTreeWidgetItem* canvasItem, const QString& target,
 // function for something the scene itself says shouldn't exist there.
 GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, int quadrant,
                              const QString& linkerPrefix, const QString& bssPrefix, const QString& dataPrefix,
-                             const QString& charmap, const QString& sceneName) {
+                             const QString& charmap, const QString& specialInclude, bool bssSeparate,
+                             const QString& bssSymbolPrefix, const QString& sceneName) {
     // Every node's geometry, resolved for THIS target rather than read back out
     // of the editor's cached roles, which hold the target the scene was last
     // authored on (see TargetGeometry). Computed once here and handed to every
@@ -3230,6 +3381,17 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, in
         return override_.isEmpty() ? defaultCharmapFn : ("charmap_" + override_);
     };
 
+    // Where a scene with Generate BSS Separately set sends its state, and the
+    // flattened names it is reached back through (see BssSplit). The path
+    // starts at the scene itself, so every name in the file it builds reads as
+    // the node path that produced it -- options_mainCanvas_volume_amount.
+    QStringList bssDecls;
+    BssSplit bss;
+    bss.enabled = bssSeparate;
+    bss.symbolPrefix = bssSymbolPrefix.trimmed();
+    bss.decls = &bssDecls;
+    bss.path = sceneName;
+
     QStringList hppDecls;
     QStringList cppDefs;
     // Whether anything in this scene has a generated Pass() -- i.e. whether
@@ -3267,12 +3429,15 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, in
         for (unsigned b : byteDefaults) {
             byteLiterals << QString("0x%1").arg(b, 2, 16, QLatin1Char('0'));
         }
+        // No placement attribute: this predates the scene's BSS Prefix reaching
+        // it and nothing has asked for it there. Split out, the per-button
+        // default bits move into each button's own Make() (see genButtonDecl)
+        // -- all this declaration ever carried was those defaults.
         hppDecls << QString("// Every Button's enabled/disabled bit, packed into the fewest bytes that fit\n"
                              "// them all -- one bit per button, in the order they appear in the scene.\n"
-                             "inline atomic u8 %1[%2] = {%3};\n")
-                        .arg(kButtonStateArrayName)
-                        .arg(byteCount)
-                        .arg(byteLiterals.join(", "));
+                             "%1\n")
+                        .arg(bss.decl(QString(), QStringLiteral("atomic u8"), kButtonStateArrayName,
+                                       "{" + byteLiterals.join(", ") + "}", byteCount));
     }
 
     // One recursive walk, emitting a nested `namespace <nodeName>` per node so a
@@ -3298,38 +3463,45 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, in
     // Make(), and a state that can go stale if a caller makes a subtree
     // directly. Redundant work is the cheaper and the safer of the two.
     QStringList makeAll;
-    std::function<QStringList(QTreeWidgetItem*, const QString&)> emitNodeNamespace =
-        [&](QTreeWidgetItem* node, const QString& qualPrefix) -> QStringList {
+    //
+    // `nodeBss` travels alongside `qualPrefix` for exactly the same reason and
+    // by exactly the same rule -- extended per emitted namespace, passed
+    // straight through a transparent branch -- so a split-out symbol's
+    // flattened name retraces the same path its qualified name does.
+    std::function<QStringList(QTreeWidgetItem*, const QString&, const BssSplit&)> emitNodeNamespace =
+        [&](QTreeWidgetItem* node, const QString& qualPrefix, const BssSplit& nodeBss) -> QStringList {
         QStringList emitted;
         for (int i = 0; i < node->childCount(); ++i) {
             QTreeWidgetItem* child = node->child(i);
             if (!isPrefixedItem(child)) {
-                emitted += emitNodeNamespace(child, qualPrefix);  // transparent branch
+                emitted += emitNodeNamespace(child, qualPrefix, nodeBss);  // transparent branch
                 continue;
             }
             if (isEffectivelyHidden(child, target)) continue;
 
             const QString name = bareName(child);
             const QString qual = qualPrefix.isEmpty() ? name : (qualPrefix + "::" + name);
+            const BssSplit childBss = nodeBss.at(name);
 
-            QStringList body = emitNodeNamespace(child, qual);
+            QStringList body = emitNodeNamespace(child, qual, childBss);
 
             if (isButtonItem(child)) {
                 body << genButtonDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target,
                                        ntOffXExpr, ntOffYExpr, buttonBitIndex.value(child), kButtonStateArrayName,
-                                       geom);
+                                       geom, childBss);
                 // Only a toggleable button gets a Pass(), and so only one of
                 // those puts input:: in the header -- see genButtonDecl.
                 if (child->data(0, kButtonToggleableRole).toBool()) usesInput = true;
                 makeAll << qual;
             } else if (isSliderItem(child)) {
                 body << genSliderDecl(child, ntOffX, ntOffY, isNes, variadic, runtimePos, rootItem, target,
-                                       bssPrefixTok, ntOffXExpr, ntOffYExpr, geom);
+                                       bssPrefixTok, ntOffXExpr, ntOffYExpr, geom, childBss);
                 usesInput = true;
                 makeAll << qual;
             } else if (isSingleChoiceItem(child)) {
                 const QString decl =
-                    genSingleChoiceDecl(child, rootItem, target, bssPrefixTok, dataPrefixTok, runtimePos);
+                    genSingleChoiceDecl(child, rootItem, target, bssPrefixTok, dataPrefixTok, childBss,
+                                         runtimePos);
                 if (decl.isEmpty()) continue;  // no visible options -- nothing to construct
                 body << decl;
                 usesInput = true;
@@ -3429,7 +3601,7 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, in
         return emitted;
     };
 
-    hppDecls += emitNodeNamespace(rootItem, QString());
+    hppDecls += emitNodeNamespace(rootItem, QString(), bss);
 
     // One call that makes the whole scene. Every node now carries geometry, so
     // without this a caller would have to name each one individually just to
@@ -3453,6 +3625,15 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, in
         // input::UP/DOWN/LEFT/RIGHT, for the generated Pass() of every
         // interactive node kind -- SingleChoice, Button, Slider.
         hppIncludes << "#include <pnes/input.hpp>";
+    }
+    // Whatever else this scene says its header needs and uitk has no way to
+    // know about: the declaration of a split-out BSS block's owner
+    // (saveData's own header), a project charmap's header, a library a
+    // hand-written hook is expected to be able to reach. Emitted verbatim as
+    // the one line of C++ it is -- never parsed, never validated, and last,
+    // so it can rely on everything above it being in scope already.
+    if (!specialInclude.trimmed().isEmpty()) {
+        hppIncludes << specialInclude.trimmed();
     }
 
     QString charmapNote;
@@ -3504,6 +3685,21 @@ GeneratedFiles generateCode(QTreeWidgetItem* rootItem, const QString& target, in
                        "\n}  // namespace gen::%1\n")
                   .arg(sceneName, sceneName, cppDefs.join("\n"));
     out.cppHasContent = !cppDefs.isEmpty();
+    // Deliberately nothing but a banner comment and the declarations: no
+    // #pragma once, no include guard, no namespace, no includes of its own.
+    // This file exists to be pasted into the middle of whatever the project
+    // already has (see BssSplit), which is also why every type it names --
+    // `atomic`, `u8` -- has to already be in scope at that point, exactly as a
+    // charmap's does.
+    if (bssSeparate && !bssDecls.isEmpty()) {
+        out.bss = QString("// Generated by uitk from \"%1\" -- do not edit by hand.\n"
+                           "// %2's mutable state, as plain declarations: no guards and no namespace,\n"
+                           "// to be included wherever the project wants this storage to live. The\n"
+                           "// generated header reaches it back through \"%3\".\n\n"
+                           "%4\n")
+                       .arg(sceneName, target, bss.symbolPrefix, bssDecls.join("\n"));
+        out.bssHasContent = true;
+    }
     return out;
 }
 
@@ -4092,6 +4288,48 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
                              "unencoded C string instead (unless a node's own Charmap Override sets one). "
                              "A textbox's Charmap Override property replaces this default for that node.");
 
+    // One line of C++, emitted verbatim as the last #include in the generated
+    // header (see generateCode). Scene-wide, free-form, and never parsed: it
+    // is there for whatever a scene's generated code needs in scope that uitk
+    // cannot know about -- most immediately the header declaring the object a
+    // split-out BSS block lives in, since the generated header names it.
+    auto* specialIncludeEdit = new QLineEdit(content);
+    specialIncludeEdit->setPlaceholderText("#include <game/saveData.hpp>");
+    specialIncludeEdit->setToolTip("One line of C++ emitted verbatim as the last include in the generated "
+                                    "header -- e.g. the header declaring whatever a split-out BSS block's "
+                                    "Symbol Prefix names. Written as-is, never parsed. Left empty, nothing "
+                                    "is emitted.");
+
+    // Moves every piece of state this scene owns -- every Slider's `amount`,
+    // every SingleChoice's `option`, and the scene-wide `button_state` mask --
+    // out of the generated header and into a separate bss.hpp beside it, as
+    // plain `type name;` declarations with no namespace and no include guards
+    // (see BssSplit). The header then reaches each one back through Symbol
+    // Prefix below, so the scene's state can live in the game's own save-data
+    // block or RAM pool instead of wherever uitk would have put it. Nothing
+    // else moves: geometry and a Canvas's focus index are re-derived by Make()
+    // on every boot, so they have no business in a save file.
+    auto* bssSeparateCheck = new QCheckBox(content);
+    bssSeparateCheck->setToolTip("Moves every Slider amount, SingleChoice option and the scene's button_state "
+                                  "mask into a separate bss.hpp (no namespace, no include guards) that the "
+                                  "project includes wherever that storage should live. The generated header "
+                                  "declares a reference to each in its place, reached through Symbol Prefix.");
+
+    // What the generated header reaches that split-out storage through,
+    // pasted verbatim ahead of each flattened name: "saveData.config." makes
+    // this scene's Widescreen button bit live at
+    // saveData.config.<scene>_button_state. Only meaningful with Generate BSS
+    // Separately set, which is why it follows it in the form and is disabled
+    // without it.
+    auto* bssSymbolPrefixEdit = new QLineEdit(content);
+    bssSymbolPrefixEdit->setPlaceholderText("saveData.config.");
+    bssSymbolPrefixEdit->setEnabled(false);
+    bssSymbolPrefixEdit->setToolTip("Pasted verbatim ahead of every split-out symbol's flattened name -- e.g. "
+                                     "\"saveData.config.\" puts this scene's state at "
+                                     "saveData.config.<scene>_<node>_<name>. Trailing dot (or ::, or nothing "
+                                     "at all for plain globals) included as written.");
+    QObject::connect(bssSeparateCheck, &QCheckBox::toggled, bssSymbolPrefixEdit, &QLineEdit::setEnabled);
+
     // Purely a canvas aid, scene-wide like the fields above -- toggles an
     // overlay of grid lines every `tileGridWSpin`/`tileGridHSpin` tiles over
     // the viewport (see TileGridWidget::paintEvent) to help line up
@@ -4185,7 +4423,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     });
 
     auto doSaveAs = [window, rootItem, currentPath, dirty, updateTitle, quadrantCombo, targetCombo,
-                     linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, showTileGridCheck,
+                     linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, specialIncludeEdit,
+                     bssSeparateCheck, bssSymbolPrefixEdit, showTileGridCheck,
                      tileGridWSpin, tileGridHSpin]() {
         QString path = QFileDialog::getSaveFileName(window, "Save Scene", QString(), "UI Scene (*.uis)");
         if (path.isEmpty()) {
@@ -4196,7 +4435,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         }
         if (!writeUisFile(path, rootItem, quadrantCombo->currentIndex(), targetCombo->currentText(),
                            linkerPrefixEdit->text(), bssPrefixEdit->text(),
-                           dataPrefixEdit->text(), charmapEdit->text(), showTileGridCheck->isChecked(),
+                           dataPrefixEdit->text(), charmapEdit->text(), specialIncludeEdit->text(),
+                           bssSeparateCheck->isChecked(), bssSymbolPrefixEdit->text(),
+                           showTileGridCheck->isChecked(),
                            tileGridWSpin->value(), tileGridHSpin->value())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + path);
             return false;
@@ -4208,14 +4449,17 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     };
 
     auto doSave = [rootItem, currentPath, dirty, updateTitle, doSaveAs, window, quadrantCombo, targetCombo,
-                   linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, showTileGridCheck,
+                   linkerPrefixEdit, bssPrefixEdit, dataPrefixEdit, charmapEdit, specialIncludeEdit,
+                   bssSeparateCheck, bssSymbolPrefixEdit, showTileGridCheck,
                    tileGridWSpin, tileGridHSpin]() {
         if (currentPath->isEmpty()) {
             return doSaveAs();
         }
         if (!writeUisFile(*currentPath, rootItem, quadrantCombo->currentIndex(), targetCombo->currentText(),
                            linkerPrefixEdit->text(), bssPrefixEdit->text(),
-                           dataPrefixEdit->text(), charmapEdit->text(), showTileGridCheck->isChecked(),
+                           dataPrefixEdit->text(), charmapEdit->text(), specialIncludeEdit->text(),
+                           bssSeparateCheck->isChecked(), bssSymbolPrefixEdit->text(),
+                           showTileGridCheck->isChecked(),
                            tileGridWSpin->value(), tileGridHSpin->value())) {
             QMessageBox::warning(window, "Save Failed", "Could not write file:\n" + *currentPath);
             return false;
@@ -4249,7 +4493,8 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // through a file-picker dialog or the unsaved-changes prompt.
     auto loadSceneFromFile = [tree, rootItem, currentPath, dirty, loading, updateTitle, resolveAllPtr,
                                quadrantCombo, targetCombo, linkerPrefixEdit, bssPrefixEdit,
-                               dataPrefixEdit, charmapEdit, showTileGridCheck, tileGridWSpin,
+                               dataPrefixEdit, charmapEdit, specialIncludeEdit, bssSeparateCheck,
+                               bssSymbolPrefixEdit, showTileGridCheck, tileGridWSpin,
                                tileGridHSpin](const QString& path) -> bool {
         // Parse before touching the tree, so a corrupt/unreadable file never
         // wipes out whatever scene was already open.
@@ -4260,11 +4505,15 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         QString bssPrefix;
         QString dataPrefix;
         QString charmap;
+        QString specialInclude;
+        bool bssSeparate = false;
+        QString bssSymbolPrefix;
         bool showTileGrid = false;
         int tileGridW = 8;
         int tileGridH = 8;
         if (!parseUisFile(path, nodes, quadrant, target, linkerPrefix, bssPrefix, dataPrefix, charmap,
-                           showTileGrid, tileGridW, tileGridH)) {
+                           specialInclude, bssSeparate, bssSymbolPrefix, showTileGrid, tileGridW,
+                           tileGridH)) {
             return false;
         }
         // An unrecognized or missing target (an older file, or a hand-edited
@@ -4282,6 +4531,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
         bssPrefixEdit->setText(bssPrefix);
         dataPrefixEdit->setText(dataPrefix);
         charmapEdit->setText(charmap);
+        specialIncludeEdit->setText(specialInclude);
+        bssSeparateCheck->setChecked(bssSeparate);
+        bssSymbolPrefixEdit->setText(bssSymbolPrefix);
         showTileGridCheck->setChecked(showTileGrid);
         tileGridWSpin->setValue(std::min(tileGridW, tileGridWSpin->maximum()));
         tileGridHSpin->setValue(std::min(tileGridH, tileGridHSpin->maximum()));
@@ -4336,14 +4588,17 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     // matching the gen/<target>/... layout the #include STRCAT(...) convention
     // (technology.hpp) expects on the consuming side.
     auto exportOneTarget = [window, rootItem, quadrantCombo, linkerPrefixEdit, bssPrefixEdit,
-                             dataPrefixEdit, charmapEdit, sceneName,
+                             dataPrefixEdit, charmapEdit, specialIncludeEdit, bssSeparateCheck,
+                             bssSymbolPrefixEdit, sceneName,
                              writeIfChanged](const QString& dir, const QString& target) -> bool {
         const QString targetDir = dir + "/" + target.toLower();
         if (!QDir().mkpath(targetDir)) return false;
         const GeneratedFiles files = generateCode(rootItem, target,
                                                     quadrantCombo->currentIndex(), linkerPrefixEdit->text(),
                                                     bssPrefixEdit->text(), dataPrefixEdit->text(),
-                                                    charmapEdit->text(), sceneName());
+                                                    charmapEdit->text(), specialIncludeEdit->text(),
+                                                    bssSeparateCheck->isChecked(),
+                                                    bssSymbolPrefixEdit->text(), sceneName());
         const bool hppOk = writeIfChanged(targetDir + "/" + sceneName() + ".hpp", files.hpp);
 
         // Only write the .cpp when codegen actually put something in it
@@ -4362,7 +4617,20 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
             cppOk = QFile::remove(cppPath);
             std::fprintf(stdout, cppOk ? "  removed    %s\n" : "  FAILED     %s\n", qPrintable(cppPath));
         }
-        return hppOk && cppOk;
+        // bss.hpp, beside the pair, for a scene that splits its state out
+        // (see BssSplit) -- and removed again when one stops doing so, same
+        // reasoning as the stale .cpp above: a file the scene no longer
+        // generates has no business still sitting in gen/ for someone to
+        // include.
+        const QString bssPath = targetDir + "/bss.hpp";
+        bool bssOk = true;
+        if (files.bssHasContent) {
+            bssOk = writeIfChanged(bssPath, files.bss);
+        } else if (QFile::exists(bssPath)) {
+            bssOk = QFile::remove(bssPath);
+            std::fprintf(stdout, bssOk ? "  removed    %s\n" : "  FAILED     %s\n", qPrintable(bssPath));
+        }
+        return hppOk && cppOk && bssOk;
     };
 
 
@@ -4387,6 +4655,11 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     QObject::connect(dataPrefixEdit, &QLineEdit::textChanged,
                       [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
     QObject::connect(charmapEdit, &QLineEdit::textChanged,
+                      [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
+    QObject::connect(specialIncludeEdit, &QLineEdit::textChanged,
+                      [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
+    QObject::connect(bssSeparateCheck, &QCheckBox::toggled, [markDirtyFromCombo](bool) { markDirtyFromCombo(); });
+    QObject::connect(bssSymbolPrefixEdit, &QLineEdit::textChanged,
                       [markDirtyFromCombo](const QString&) { markDirtyFromCombo(); });
     QObject::connect(showTileGridCheck, &QCheckBox::toggled, [markDirtyFromCombo](bool) { markDirtyFromCombo(); });
     QObject::connect(tileGridWSpin, qOverload<int>(&QSpinBox::valueChanged),
@@ -5491,6 +5764,9 @@ Sidebar createSidebar(UitkMainWindow* window, int maxTilesX, int maxTilesY, doub
     sceneForm->addRow("BSS Prefix:", bssPrefixEdit);
     sceneForm->addRow("Data Prefix:", dataPrefixEdit);
     sceneForm->addRow("Default Charmap:", charmapEdit);
+    sceneForm->addRow("Special Include:", specialIncludeEdit);
+    sceneForm->addRow("Generate BSS Separately:", bssSeparateCheck);
+    sceneForm->addRow("Symbol Prefix:", bssSymbolPrefixEdit);
     layout->addWidget(sceneGroup);
 
     // Separate from Global/Scene (which are both exported in one way or

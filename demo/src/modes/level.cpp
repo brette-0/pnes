@@ -13,8 +13,9 @@
 #include "../graphics/metatiles.hpp"
 
 // NES only: EnterLevelSetup gates TrackPlay on the options scene's DISABLE
-// MUSIC button, and the button's state bit lives in this generated header
-// (gen::options::button_state). Guarded because the button itself is
+// MUSIC button, and the bit holding that state is reached through this
+// generated header (gen::options::button_state, which the scene now keeps in
+// the save file -- see demo/src/save.hpp). Guarded because the button itself is
 // NES-only -- options.uis hides it on every other target, where the audio
 // column is the two mix sliders instead, so the namespace the gate names
 // does not exist there (demo/ui/impl/sliders.hpp carries the mirror of this

@@ -1,5 +1,7 @@
 {
     "bss_prefix": "SYSMEM",
+    "bss_separate": true,
+    "bss_symbol_prefix": "saveData.config.",
     "charmap": "generic",
     "data_prefix": "OPTIONS_DATA",
     "linker_prefix": "OPTIONS",
@@ -532,6 +534,7 @@
     "quadrant": 2,
     "region": "NTSC",
     "showTileGrid": true,
+    "special_include": "#include \"../../../src/save.hpp\"",
     "target": "GBA",
     "tileGridH": 2,
     "tileGridW": 2,

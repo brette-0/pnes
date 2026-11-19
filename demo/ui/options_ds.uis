@@ -1,5 +1,7 @@
 {
     "bss_prefix": "SYSMEM",
+    "bss_separate": true,
+    "bss_symbol_prefix": "saveData.config.",
     "charmap": "generic",
     "data_prefix": "OPTIONS_DATA",
     "linker_prefix": "OPTIONS",
@@ -373,6 +375,7 @@
     "quadrant": 0,
     "region": "NTSC",
     "showTileGrid": true,
+    "special_include": "#include \"../../../src/save.hpp\"",
     "target": "DS",
     "tileGridH": 2,
     "tileGridW": 2,

@@ -184,6 +184,22 @@ add_compile_definitions(PROJECT_NAME="${PROJECT_NAME}")
 # standard-injection machinery to work for this toolchain at all.
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=gnu++23>)
 
+include(FetchContent)
+
+# ----------------------------------------------------------------------
+# stb — nothings/stb publishes no tags and rewrites master history (its
+# maintainer force-pushes amended commits), so tracking the branch broke
+# every CI job with a stale _deps clone: FetchContent re-fetches, then tries
+# to rebase the old master onto the rewritten one and dies on add/add
+# conflicts in every file. Pinning an explicit commit means a detached
+# checkout with no rebase, and makes the vorbis decoder we build against
+# reproducible. Bump this deliberately. GIT_SHALLOW is deliberately absent:
+# shallow-fetching a bare commit hash needs CMake 3.24+, and this project
+# only requires 3.21.
+# ----------------------------------------------------------------------
+set(STB_GIT_TAG "033efa1bcb750136ac98e997d53833b758e0089b"
+        CACHE STRING "nothings/stb commit to fetch")
+
 # ----------------------------------------------------------------------
 # br0::intsh — header-only integer type aliases, used via #include <intsh>.
 # An INTERFACE target, so the same declaration serves both the NES and
@@ -191,7 +207,6 @@ add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=gnu++23>)
 # below (after project()), and the target is linked PUBLIC onto the
 # pnes library so the include dir propagates to the demo.
 # ----------------------------------------------------------------------
-include(FetchContent)
 FetchContent_Declare(
         intsh
         GIT_REPOSITORY https://github.com/brette-0/intsh.git
@@ -1990,8 +2005,7 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR T
     FetchContent_Declare(
             stb
             GIT_REPOSITORY https://github.com/nothings/stb.git
-            GIT_TAG        master
-            GIT_SHALLOW    TRUE
+            GIT_TAG        ${STB_GIT_TAG}
     )
     FetchContent_MakeAvailable(stb)
     target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
@@ -2372,8 +2386,7 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     FetchContent_Declare(
             stb
             GIT_REPOSITORY https://github.com/nothings/stb.git
-            GIT_TAG        master
-            GIT_SHALLOW    TRUE
+            GIT_TAG        ${STB_GIT_TAG}
     )
     FetchContent_MakeAvailable(stb)
     target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
@@ -2742,8 +2755,7 @@ transcoded into the .nro's RomFS as sfx/<name>.raw.")
         FetchContent_Declare(
                 stb
                 GIT_REPOSITORY https://github.com/nothings/stb.git
-                GIT_TAG        master
-                GIT_SHALLOW    TRUE
+                GIT_TAG        ${STB_GIT_TAG}
         )
         FetchContent_MakeAvailable(stb)
         target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
@@ -3062,8 +3074,7 @@ copied into the .wuhb content tree (mounted at /vol/content).")
         FetchContent_Declare(
                 stb
                 GIT_REPOSITORY https://github.com/nothings/stb.git
-                GIT_TAG        master
-                GIT_SHALLOW    TRUE
+                GIT_TAG        ${STB_GIT_TAG}
         )
         FetchContent_MakeAvailable(stb)
         target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
@@ -3377,8 +3388,7 @@ copied into the .wuhb content tree (mounted at /vol/content).")
             FetchContent_Declare(
                     stb
                     GIT_REPOSITORY https://github.com/nothings/stb.git
-                    GIT_TAG        master
-                    GIT_SHALLOW    TRUE
+                    GIT_TAG        ${STB_GIT_TAG}
             )
             FetchContent_MakeAvailable(stb)
             target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
@@ -3592,8 +3602,7 @@ copied into the .wuhb content tree (mounted at /vol/content).")
         FetchContent_Declare(
                 stb
                 GIT_REPOSITORY https://github.com/nothings/stb.git
-                GIT_TAG        master
-                GIT_SHALLOW    TRUE
+                GIT_TAG        ${STB_GIT_TAG}
         )
         FetchContent_MakeAvailable(stb)
         target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})
@@ -4144,8 +4153,7 @@ else()
     FetchContent_Declare(
             stb
             GIT_REPOSITORY https://github.com/nothings/stb.git
-            GIT_TAG        master
-            GIT_SHALLOW    TRUE
+            GIT_TAG        ${STB_GIT_TAG}
     )
     FetchContent_MakeAvailable(stb)
     target_include_directories(pnes PRIVATE ${stb_SOURCE_DIR})

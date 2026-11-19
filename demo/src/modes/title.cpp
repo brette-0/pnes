@@ -1859,8 +1859,10 @@ namespace ui::impl {
 
     // The SFX on/off button, NES only -- and the bit reads as "the feature is
     // ON", so effects play exactly while it is set: set is what paints DISABLE
-    // SFX, i.e. the action the box offers (ui/impl/buttons.hpp), and
-    // button_state's 0x07 seed has it set at boot. The identical polarity, and
+    // SFX, i.e. the action the box offers (ui/impl/buttons.hpp), and the
+    // button's Default Enabled has it set at boot -- out of its own Make() now
+    // that button_state lives in the save file (demo/src/save.hpp) and so
+    // carries no initializer of its own. The identical polarity, and
     // the identical reading, as the music bit level.cpp checks before TrackPlay.
     //
     // ALWAYS ON EVERYWHERE ELSE, because there is no such button to read:
