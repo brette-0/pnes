@@ -668,6 +668,7 @@ bool LoadSave() {
 
 bool ValidateSave() {
     // run checks on saveData
+    if (saveData.version != saveVersion) return false;
     return true;
 }
 
@@ -696,7 +697,11 @@ bool TryCreateSave() {
                 useCard2 = false;
                 break;
 
-            case Continue:
+            // Card2, NOT Continue. ::cardOpts is { Card1, Card2 }, so the
+            // right-hand option comes back as Card2 -- which matched neither
+            // case, fell to the default, logged "unknown choice selected" and
+            // left ::useCard2 false. Picking card 2 created the save on card 1.
+            case Card2:
                 useCard2 = true;
                 break;
 
@@ -712,9 +717,36 @@ bool TryCreateSave() {
             WaitBody();
         }
 
+        // CHECKED BEFORE IT IS HANDED ON, because a response that names no
+        // device does not stop a create -- it redirects it. save::CreateSave
+        // reads only `path`, and a null one means "wherever this game's save
+        // goes by default", which is slot A whatever the player chose. So a
+        // device that stopped being usable between the sweep and here would
+        // silently put the save on the other card.
+        if (response.err != save::found) {
+            PrintContext(saveNoDeviceText.data());
+            log("pregame: card %d unusable before create (err=%d native=%d)",
+                static_cast<u8>(useCard2 + 1), response.err, save::LastNativeError());
+            switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                case Retry:
+                    return false; // re attempt
+
+                case Continue:
+                    break;  // no save load
+
+                default:
+                    log("unknown choice selected");
+                    break;  // something bad happened
+            }
+            return true;
+        }
+
         while (response = save::CreateSave(&saveData, sizeof(saveData), &response), !response.done) {
             WaitBody();
         }
+
+        log("pregame: create on %s -> err=%d native=%d",
+            response.path ? response.path : "(no path)", response.err, save::LastNativeError());
 
         switch (response.err) {
             case save::found:
@@ -876,15 +908,15 @@ void PopulateSaveData() {
 
 #ifdef TARGET_GC
 const OGC_BANNER_CI(banner) = {
-    // embed
+#embed <card/banner.ci>
 };
 
 const OGC_ICON_CI(icon) = {
-    // embed
+#embed <card/icon.ci>
 };
 
 #ifdef REGION_JP
-const char gameName[32] = "\x00";   // shift-JIS
+const char gameName[32] = "\x00";   // shift-JIS todo: the japanese are hungry for letters
 const char gameDesc[32] = "\x00";   // shift-JIS
 #else
 const char gameName[32] = "Super Mary Sisters\x00";   // ASCII

@@ -773,17 +773,38 @@ jobs:
         with:
           arch: x64
 
+      # MSVC 14.52's STL -- Visual Studio 18, which the windows-latest image
+      # now ships -- static_asserts that clang is at least 22 (error STL1000,
+      # yvals_core.h): the headers are only validated against that floor. The
+      # image's preinstalled LLVM is older, so every STL-including translation
+      # unit fails, while SDL3 builds straight past it because SDL is C and
+      # never includes yvals_core.h. Raise clang to meet the floor rather than
+      # defining _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH past it: suppressing
+      # the assert buys an unvalidated pairing, and this codebase leans on
+      # gnu++23 and C23 #embed, exactly where that pairing matters.
+      #
+      # choco upgrades the standalone LLVM in place, so the install prefix
+      # stays C:\Program Files\LLVM and the configure step below can name
+      # clang by absolute path. That is also why it does not pass a bare
+      # `clang`: vcvarsall puts VS's own (older) bundled clang on PATH, and
+      # which one wins differs per arch -- that is why win-arm64 hit STL1000
+      # first. An absolute path makes all three jobs provably use this clang.
+      - name: Upgrade LLVM to meet the MSVC STL's clang floor
+        shell: cmd
+        run: choco upgrade llvm -y --no-progress
+
       - name: Cache build tree
         uses: actions/cache@v5
         with:
           path: cmake-build-win-x64-release
-          key: win-x64-v2-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
-          restore-keys: win-x64-v2-
+          key: win-x64-v3-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: win-x64-v3-
 
       - name: Build demo
         shell: cmd
         run: |
-          cmake --preset win-x64-release -B cmake-build-win-x64-release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          "C:/Program Files/LLVM/bin/clang.exe" --version
+          cmake --preset win-x64-release -B cmake-build-win-x64-release -DCMAKE_C_COMPILER="C:/Program Files/LLVM/bin/clang.exe" -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang++.exe"
           cmake --build cmake-build-win-x64-release -j
 
       - uses: actions/upload-artifact@v7
@@ -821,17 +842,24 @@ jobs:
         with:
           arch: x86
 
+      # Same LLVM upgrade as win-x64 (see its comment for why the MSVC STL
+      # requires it and why clang is named by absolute path below).
+      - name: Upgrade LLVM to meet the MSVC STL's clang floor
+        shell: cmd
+        run: choco upgrade llvm -y --no-progress
+
       - name: Cache build tree
         uses: actions/cache@v5
         with:
           path: cmake-build-win-x86-release
-          key: win-x86-v2-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
-          restore-keys: win-x86-v2-
+          key: win-x86-v3-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: win-x86-v3-
 
       - name: Build demo
         shell: cmd
         run: |
-          cmake --preset win-x86-release -B cmake-build-win-x86-release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          "C:/Program Files/LLVM/bin/clang.exe" --version
+          cmake --preset win-x86-release -B cmake-build-win-x86-release -DCMAKE_C_COMPILER="C:/Program Files/LLVM/bin/clang.exe" -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang++.exe"
           cmake --build cmake-build-win-x86-release -j
 
       - uses: actions/upload-artifact@v7
@@ -870,17 +898,24 @@ jobs:
         with:
           arch: arm64
 
+      # Same LLVM upgrade as win-x64 (see its comment for why the MSVC STL
+      # requires it and why clang is named by absolute path below).
+      - name: Upgrade LLVM to meet the MSVC STL's clang floor
+        shell: cmd
+        run: choco upgrade llvm -y --no-progress
+
       - name: Cache build tree
         uses: actions/cache@v5
         with:
           path: cmake-build-win-arm64-release
-          key: win-arm64-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
-          restore-keys: win-arm64-v1-
+          key: win-arm64-v2-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: win-arm64-v2-
 
       - name: Build demo
         shell: cmd
         run: |
-          cmake --preset win-arm64-release -B cmake-build-win-arm64-release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          "C:/Program Files/LLVM/bin/clang.exe" --version
+          cmake --preset win-arm64-release -B cmake-build-win-arm64-release -DCMAKE_C_COMPILER="C:/Program Files/LLVM/bin/clang.exe" -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang++.exe"
           cmake --build cmake-build-win-arm64-release -j
 
       - uses: actions/upload-artifact@v7

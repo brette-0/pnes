@@ -2137,6 +2137,135 @@ transcoded to raw PCM and #embedded into the GC/Wii .dol.")
     add_custom_target(ogc-sfx-assets DEPENDS ${OGC_SFX_OUTPUTS})
     add_dependencies(pnes ogc-sfx-assets)
 
+    # ----------------------------------------------------------------------
+    # Memory-card BANNER + ICON -> CI8, EMBEDDED in the save struct.
+    #
+    # GAMECUBE ONLY, like the save identity block above and for the same
+    # reason: these are the pictures the GameCube system menu draws beside a
+    # save file, and the Wii in this same branch has no memory card to put one
+    # on. demo/src/modes/pregame.cpp declares both arrays inside `#ifdef
+    # TARGET_GC`, so on Wii there is nothing to fill.
+    #
+    # WHAT THE MENU READS IS A GX TEXTURE, NOT A PNG -- CI8 pixels in 8x4
+    # tiles, followed by a 256-entry big-endian RGB5A3 palette. Those two
+    # facts are what tools/ogc_card_image.py exists for; its header says more.
+    # The sizes are fixed by the hardware and are exactly the sizes
+    # OGC_BANNER_CI / OGC_ICON_CI declare in include/pnes/save.hpp:
+    #
+    #   banner  96x32  ->  3072 pixels + 512 palette = 3584
+    #   icon    32x32  ->  1024 pixels + 512 palette = 1536
+    #
+    # so a mismatch is a compile error at the #embed, not a corrupt save.
+    #
+    # ONE ICON FRAME, DELIBERATELY. A CI icon may carry up to CARD_MAXICONS
+    # frames sharing one palette, and this generates exactly one: the icon is
+    # STATIC. Two consequences for whatever fills the directory entry
+    # (save::SetMetaData, ogc/card.h):
+    #
+    #   - frame 0's speed must still be NONZERO -- libogc forces a frame's
+    #     format to 0 when its speed is 0, so a "static" icon declared at
+    #     speed 0 renders as nothing at all (src/ogc/save.cpp::SetMetaData
+    #     spells this trap out). Frame 1 is CARD_SPEED_END.
+    #   - THE BOUNCE BIT STAYS CLEAR. banner_fmt is CARD_BANNER_CI (0x01) and
+    #     nothing more: bit 2 of that byte is the icon's ping-pong/bounce
+    #     animation flag, which is meaningless for one frame and is NOT set
+    #     here. icon_fmt frame 0 is CARD_ICON_CI.
+    #
+    # THE CONVERSION IS TWO TOOLS BECAUSE EACH DOES WHAT IT IS GOOD AT:
+    # ImageMagick decodes the PNG, forces the exact dimensions and caps the
+    # image at 256 colours (the Wii U branch below already depends on it for
+    # the same kind of job); the Python step does the console-specific part --
+    # RGB5A3 encoding, the tile walk and the palette -- with no third-party
+    # module, so the only new build dependency is an interpreter. Neither is
+    # optional here, unlike the .mlb fixup in the NES branch: without the blobs
+    # pregame.cpp has nothing to #embed and the build fails later and less
+    # clearly, so say so at configure time.
+    #
+    # Output lands in the BUILD tree, beside the music and SFX blobs and under
+    # the same --embed-dir, because it is derived data: demo/sys_assets/ogc
+    # holds the two PNGs a human edits and nothing a build wrote.
+    # ----------------------------------------------------------------------
+    if(NOT TARGET_PLATFORM STREQUAL "wii")
+        set(OGC_CARD_ART_DIR ${CMAKE_SOURCE_DIR}/demo/sys_assets/ogc CACHE PATH
+                "Directory holding the GameCube memory-card banner.png (96x32) and \
+icon.png (32x32). Both are converted to CI8 and embedded in the save file.")
+        set(OGC_CARD_OUT_DIR ${OGC_ASSET_DIR}/card)
+        set(OGC_CARD_PACKER ${CMAKE_SOURCE_DIR}/tools/ogc_card_image.py)
+
+        find_program(IMAGEMAGICK_CONVERT NAMES magick convert)
+        find_program(PNES_PYTHON3 NAMES python3 python)
+        if(NOT IMAGEMAGICK_CONVERT)
+            message(FATAL_ERROR
+                    "pnes: ImageMagick (magick/convert) not found -- it decodes the "
+                    "memory-card banner/icon PNGs in ${OGC_CARD_ART_DIR} that "
+                    "demo/src/modes/pregame.cpp embeds. Install it (docker/"
+                    "Dockerfile.ogc does) or point OGC_CARD_ART_DIR at prebuilt art.")
+        endif()
+        if(NOT PNES_PYTHON3)
+            message(FATAL_ERROR
+                    "pnes: python3 not found -- tools/ogc_card_image.py packs the "
+                    "memory-card banner/icon into the CI8 form the GameCube system "
+                    "menu reads, and nothing else can produce it. Install python3 "
+                    "(docker/Dockerfile.ogc does).")
+        endif()
+
+        # banner is 96x32 and icon is 32x32; both are CARD_BANNER_W/H and
+        # CARD_ICON_W/H from ogc/card.h, restated here because this build is
+        # what has to resize to them.
+        set(OGC_CARD_OUTPUTS)
+        foreach(_card_art banner icon)
+            if(_card_art STREQUAL "banner")
+                set(_card_w 96)
+                set(_card_h 32)
+            else()
+                set(_card_w 32)
+                set(_card_h 32)
+            endif()
+            set(_card_src ${OGC_CARD_ART_DIR}/${_card_art}.png)
+            set(_card_raw ${OGC_CARD_OUT_DIR}/${_card_art}.rgba)
+            set(_card_ci  ${OGC_CARD_OUT_DIR}/${_card_art}.ci)
+            add_custom_command(
+                    OUTPUT ${_card_ci}
+                    # The raw RGBA is a handoff between the two tools and
+                    # nothing consumes it afterwards; as a BYPRODUCT it is
+                    # cleaned with the blob rather than left in the build tree.
+                    BYPRODUCTS ${_card_raw}
+                    COMMAND ${CMAKE_COMMAND} -E make_directory ${OGC_CARD_OUT_DIR}
+                    # -resize WxH! is exact, aspect ratio and all: the formats
+                    # are fixed sizes, so art that is off by a few pixels should
+                    # ship slightly squashed rather than fail the build. Same
+                    # `!` the Wii U artwork below uses.
+                    COMMAND ${IMAGEMAGICK_CONVERT} ${_card_src}
+                            -alpha on -resize ${_card_w}x${_card_h}!
+                            -colors 256 -depth 8 RGBA:${_card_raw}
+                    COMMAND ${PNES_PYTHON3} ${OGC_CARD_PACKER}
+                            --rgba ${_card_raw}
+                            --width ${_card_w} --height ${_card_h}
+                            --out ${_card_ci} --label ${_card_art}
+                    DEPENDS ${_card_src} ${OGC_CARD_PACKER}
+                    COMMENT "Packing GC card ${_card_art}: ${_card_art}.png -> embedded card/${_card_art}.ci (CI8 + RGB5A3)"
+                    VERBATIM)
+            list(APPEND OGC_CARD_OUTPUTS ${_card_ci})
+        endforeach()
+
+        # On `demo`, not on `pnes`: these are the APPLICATION's pixels, living
+        # in the application's own save struct. The library reserves no space
+        # for them and never sees them -- see the save-identity block's comment
+        # on which half of a save belongs to whom.
+        add_custom_target(ogc-card-assets DEPENDS ${OGC_CARD_OUTPUTS})
+        add_dependencies(demo ogc-card-assets)
+
+        # Same mechanism the music and SFX use on audio.cpp, scoped to the one
+        # TU that #embeds these: --embed-dir because -I is not reliably
+        # searched for #embed, and OBJECT_DEPENDS so re-exported art recompiles
+        # pregame.cpp instead of leaving last build's picture in the .dol.
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/demo/src/modes/pregame.cpp
+                PROPERTIES
+                    OBJECT_DEPENDS  "${OGC_CARD_OUTPUTS}"
+                    INCLUDE_DIRECTORIES "${OGC_ASSET_DIR}"
+                    COMPILE_OPTIONS "--embed-dir=${OGC_ASSET_DIR}")
+    endif()
+
     # See the TARGET_NES branch's own comment on this same call for
     # GEN_TARGET_DIR. Quoted: DEMO_TITLE_DIR is "wii u" (a space) on the Wii
     # branch below, and an unquoted argument here would split on that space

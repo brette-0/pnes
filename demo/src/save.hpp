@@ -2,6 +2,10 @@
 
 #include <pnes/save.hpp>
 
+#include "banks.hpp"
+
+constexpr u16 saveVersion = 0;
+
 enum eOptions : u8 {
 #ifdef TARGET_GC
     Continue,
@@ -41,7 +45,7 @@ struct SaveFile {
 };
 
 
-extern SaveFile saveData;
+extern CARTMEM SaveFile saveData;
 
 #ifdef TARGET_GC
 extern char* savePath;

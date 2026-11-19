@@ -1120,9 +1120,30 @@ namespace title {
                     // Nothing more this frame: the click owns it.
                 } else if (!canvasEntered) {
                     if (pressed & (input::LEFT | input::RIGHT)) {
-                        pOptionsPass = (pressed & input::LEFT) ? gen::options::videoCanvas::Pass
-                                                               : gen::options::audioCanvas::Pass;
-                        PlaceOptionsCorners();
+                        void (* const want)(u8) = (pressed & input::LEFT)
+                                                      ? gen::options::videoCanvas::Pass
+                                                      : gen::options::audioCanvas::Pass;
+                        // GUARDED ON A REAL CHANGE, which is the whole reason
+                        // the switch is expressed as a comparison now: LEFT
+                        // pressed while the left column already has the corners
+                        // moves nothing, and an effect there would have the page
+                        // announce a move a player did not make -- the same
+                        // guard ui/impl/singleChoice.hpp's DrawChange hooks keep,
+                        // and for the same reason. ::PlaceOptionsCorners is
+                        // skipped with it: it re-brackets whichever column is
+                        // selected (::SelectedCanvasRect), so with no change
+                        // there is nothing for it to move either.
+                        if (want != pOptionsPass) {
+                            pOptionsPass = want;
+                            // sfx::selectnext, the same effect a focus move
+                            // INSIDE a Canvas makes (ui::impl::UpdateCanvas):
+                            // stepping between the columns and stepping between
+                            // a column's components are one gesture to a player,
+                            // and only a slider's value has a direction worth
+                            // hearing differently.
+                            ui::impl::PostSfx(sfx::selectnext);
+                            PlaceOptionsCorners();
+                        }
                     } else if (pressed & input::A) {
                         canvasEntered = true;
                         SelectFocusedComponent();

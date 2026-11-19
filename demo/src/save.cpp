@@ -6,7 +6,7 @@
 
 #include "pnes/logger.hpp"
 
-SaveFile saveData;
+CARTMEM SaveFile saveData;
 
 constexpr void UpdateTextForSave(const char* buff, void* target, const std::size_t sName) {
 #ifdef TARGET_GC

@@ -20,6 +20,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # generator; git/wget/ca-certificates support FetchContent of intsh/tuple;
 # ffmpeg re-encodes the desktop WAV to the OGG the OGC audio backend embeds,
 # same as Dockerfile.switch/.wiiu/.web.)
+#
+# imagemagick + python3 are the GameCube memory-card banner/icon pipeline:
+# ImageMagick decodes demo/sys_assets/ogc/*.png and caps it at 256 colours,
+# tools/ogc_card_image.py packs that into the tiled CI8 + RGB5A3 form the
+# system menu reads, and demo/src/modes/pregame.cpp #embeds the result. Neither
+# is optional -- the GameCube build fails at configure time without them (the
+# Wii build in this same image uses neither, having no memory card).
+# python3-minimal would do; the full python3 is what the base image already
+# pulls in for its own scripts, and the packer imports only the stdlib.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ninja-build \
         git \
@@ -28,6 +37,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         xz-utils \
         file \
         ffmpeg \
+        imagemagick \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # The intsh/tuple dependencies declare a CMake 4.2 floor (and CMakePresets.json
