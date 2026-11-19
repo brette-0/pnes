@@ -42,10 +42,10 @@
 
 namespace save {
 
-__attribute__((weak)) Response Save(const u8*, const std::size_t) { return { .done = true, .err = no_device }; }
-__attribute__((weak)) Response Load(u8*, const std::size_t) { return { .done = true, .err = no_device }; }
-__attribute__((weak)) Response Load(u8*, const std::size_t, const Response*) { return { .done = true, .err = no_device }; }
-__attribute__((weak)) Response CreateSave(const u8*, const std::size_t, const Response*) { return { .done = true, .err = no_device }; }
+__attribute__((weak)) Response Save(const void*, const std::size_t) { return { .done = true, .err = no_device }; }
+__attribute__((weak)) Response Load(void*, const std::size_t) { return { .done = true, .err = no_device }; }
+__attribute__((weak)) Response Load(void*, const std::size_t, const Response*) { return { .done = true, .err = no_device }; }
+__attribute__((weak)) Response CreateSave(const void*, const std::size_t, const Response*) { return { .done = true, .err = no_device }; }
 
 // A finished search with nowhere to have looked.
 __attribute__((weak)) Response GetSaveLocation() { return { .done = true, .err = no_device }; }
@@ -55,5 +55,21 @@ __attribute__((weak)) Response GetSaveLocation() { return { .done = true, .err =
 // nothing to read and nothing to state.
 __attribute__((weak)) Response GetMetaData(void*) { return { .done = true, .err = no_device }; }
 __attribute__((weak)) Response SetMetaData(const void*) { return { .done = true, .err = no_device }; }
+
+// NO BITS SET, which is the honest answer and not a placeholder: this file is
+// linked where nothing can save at all, so no device is accessible and none
+// ever becomes accessible. A game that polls this before drawing a slot picker
+// draws none, and the call that could have contradicted that answers
+// ::no_device below for every index it is asked about.
+__attribute__((weak)) u8 AccessibleDevices() { return 0; }
+
+// Every index is past the last one when there are none, so there is no bounds
+// check to write: the answer is the same for 0 as for 200.
+__attribute__((weak)) Response GetDeviceStatus(u8) { return { .done = true, .err = no_device }; }
+
+// A subset of a mask with no bits in it. Nothing is accessible here, so nothing
+// can be free, and no size makes that different -- there is no sweep to run and
+// no first call to wait through: this answer is the settled one.
+__attribute__((weak)) u8 FreeDevices(const std::size_t) { return 0; }
 
 }

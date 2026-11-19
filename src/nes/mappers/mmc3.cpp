@@ -184,10 +184,10 @@ namespace save {
     // whether it holds anything MEANINGFUL is the game's own business and no
     // mapper can answer it: a fresh battery reads as garbage, which is what a
     // checksum in the data is for.
-    AI Response Save(const u8* const, const std::size_t) { return { .done = true, .err = found }; }
-    AI Response CreateSave(const u8* const, const std::size_t, const Response* const) { return { .done = true, .err = found }; }
-    AI Response Load(u8* const, const std::size_t) { return { .done = true, .err = found }; }
-    AI Response Load(u8* const, const std::size_t, const Response* const) { return { .done = true, .err = found }; }
+    AI Response Save(const void* const, const std::size_t) { return { .done = true, .err = found }; }
+    AI Response CreateSave(const void* const, const std::size_t, const Response* const) { return { .done = true, .err = found }; }
+    AI Response Load(void* const, const std::size_t) { return { .done = true, .err = found }; }
+    AI Response Load(void* const, const std::size_t, const Response* const) { return { .done = true, .err = found }; }
     AI Response GetSaveLocation() { return { .done = true, .err = found }; }
     AI Response GetMetaData (void* const) { return { .done = true, .err = found }; }
     AI Response SetMetaData (const void* const) { return { .done = true, .err = found }; }

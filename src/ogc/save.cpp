@@ -113,6 +113,37 @@ static_assert(sizeof(kCompany)  == 3, "OGC_COMPANY_CODE must be exactly 2 charac
 static_assert(sizeof(kFileName) > 1 && sizeof(kFileName) <= CARD_FILENAMELEN,
     "OGC_FILENAME must be 1-31 characters (CARD_FILENAMELEN is 32, terminator included)");
 
+/**
+ * @brief Where this game's save goes on each slot, indexed as ::kSlots is.
+ *
+ * WHAT ::save::GetDeviceStatus HANDS BACK, and the only reason it has a `path`
+ * to hand back at all: OGC_FILENAME is a PRIVATE compile definition of this
+ * library (CMakeLists.txt sets it with target_compile_definitions(pnes
+ * PRIVATE ...)), so nothing a game includes can spell "b:super_mary_sisters"
+ * for itself. A caller that wants to create its save on the slot a player
+ * picked therefore cannot name that slot -- unless the backend answers with a
+ * complete, creatable path, which is what this table is.
+ *
+ * ::kDefaultPath IS slot A's entry and stays its own object: its static_assert
+ * above is what checks the "a:" + name shape, and ::save::CreateSave reads it
+ * by name.
+ */
+constexpr char kSlotBPath[] = "b:" OGC_FILENAME;
+static_assert(sizeof(kSlotBPath) == sizeof(kFileName) + 2, "kSlotBPath must be \"b:\" + the name");
+constexpr const char* kDevicePath[2] = { kDefaultPath, kSlotBPath };
+
+/**
+ * @brief How many memory-card slots the console has. Not a run-time quantity.
+ *
+ * BACKEND-INTERNAL, AND NOT PART OF THE API: both slots exist on every
+ * GameCube ever made whether anything is inserted in them or not, so a slot
+ * count says nothing a caller can act on -- ::save::AccessibleDevices answers
+ * with a mask of the slots that are USABLE instead, and this is only how far
+ * the loop that builds it counts.
+ */
+constexpr u8 kDeviceCount = 2;
+static_assert(kDeviceCount <= 8, "::save::AccessibleDevices returns the mask in a u8");
+
 /** @brief Largest card sector this file is prepared to transfer. */
 constexpr u32 kSectorMax = 8192;
 
@@ -153,7 +184,7 @@ void* metaOut = nullptr;
 alignas(32) u8 workarea[CARD_WORKAREA_SIZE];
 
 /** @brief What the in-flight sequence is doing, if anything. */
-enum class Op : u8 { None, Saving, Loading, Creating, Finding, GettingMeta, SettingMeta };
+enum class Op : u8 { None, Saving, Loading, Creating, Finding, GettingMeta, SettingMeta, Surveying };
 
 /**
  * @brief True for the two operations that move a card_stat, not file bytes.
@@ -197,6 +228,87 @@ constexpr s32 kSlots[2] = { CARD_SLOTA, CARD_SLOTB };
 u8 slotIndex = 0;
 /** @brief Set when a path pinned the slot, so no searching happens at all. */
 bool slotFixed = false;
+
+/**
+ * @brief The last SETTLED answer ::save::GetDeviceStatus gave for each slot.
+ *
+ * TWO JOBS, AND THE SECOND IS THE ONE THAT NEEDED A CACHE AT ALL.
+ *
+ * The first is the refusal path: a status poll that arrives while a sequence
+ * owns the card answers from here rather than probing, because this file cannot
+ * prove a probe is safe mid-sequence -- libogc ships no card.c in this SDK
+ * install (see this file's header), so whether CARD_ProbeEx can touch an EXI
+ * channel another CARD_* call is partway through is unverifiable from source
+ * rather than merely unlikely to matter. Answering with what was true a moment
+ * ago is the conservative reading, and a card does not usually change slots
+ * during the two seconds a save takes.
+ *
+ * The second is that ::save::busy means "NOT KNOWN YET" and nothing else. A
+ * freshly inserted card reports CARD_ERROR_BUSY until it settles on the bus, so
+ * a poll that has never had a settled answer must say so and be asked again --
+ * and `done` false is how it says it. Once a slot HAS a settled answer, that is
+ * what a refused poll returns, with `done` true: a UI redrawing its rows every
+ * frame keeps the row it had instead of flickering to "checking..." for the
+ * length of a save.
+ *
+ * ::deviceNative is the libogc code behind it, kept for the same reason
+ * ::lastNative is -- these deliberately do NOT write ::lastErr / ::lastNative,
+ * which belong to the in-flight sequence and would be the one thing a status
+ * poll must never disturb.
+ */
+save::eError deviceErr[kDeviceCount]    = { save::no_device, save::no_device };
+s32          deviceNative[kDeviceCount] = { CARD_ERROR_NOCARD, CARD_ERROR_NOCARD };
+bool         deviceKnown[kDeviceCount]  = {};
+
+/**
+ * @brief The free-space sweep: what it is measuring, and what it has found.
+ *
+ * FREE SPACE CANNOT BE PROBED, which is the whole reason this exists as a
+ * sweep rather than as two more EXI transactions beside ::RefreshDevice.
+ * CARD_GetFreeBlocks reads a MOUNTED card's own bookkeeping, so answering "is
+ * there room on slot B" costs a CARD_Mount -- the slowest thing this file ever
+ * does, and the one it is ticked to keep out of a frame.
+ *
+ * So ::save::FreeDevices advances this by one step per call and hands back
+ * ::freeMask, the result of the last sweep that FINISHED. The published answer
+ * is only valid for the size it was measured against and the set of devices
+ * that were accessible at the time -- hence ::freeMaskSize and
+ * ::freeMaskAccess, which are compared on every call. A mismatch is what
+ * silently starts a fresh sweep.
+ *
+ * ::surveySector IS NOT ::sector, deliberately. A sweep mounts cards while no
+ * real operation owns the machine, and latching the save path's sector width
+ * from here would leave a save reading a number a menu wrote.
+ */
+std::size_t surveySize   = 0;   ///< Size the in-flight sweep is measuring for.
+u32         surveySector = 0;   ///< Current slot's sector width, sweep-local.
+u8          surveyMask   = 0;   ///< Bits accumulated so far by the in-flight sweep.
+u8          surveyAccess = 0;   ///< Accessible mask the in-flight sweep began with.
+
+u8          freeMask       = 0;      ///< Last finished sweep's answer.
+std::size_t freeMaskSize   = 0;      ///< The size that answer was measured for.
+u8          freeMaskAccess = 0;      ///< The accessible mask it was measured against.
+bool        freeMaskValid  = false;  ///< False until a sweep has finished.
+
+/**
+ * @brief CARD_Init once, for callers that arrive before any save sequence has.
+ *
+ * ::Begin calls CARD_Init on every sequence it starts, so nothing on the
+ * save/load path needs this. ::save::GetDeviceStatus is the first entry point
+ * in this file that touches the card system WITHOUT starting a sequence, and a
+ * game polling slots on its title screen may well never have saved anything
+ * yet -- so the identity pair has to be registered here too.
+ *
+ * GUARDED RATHER THAN REPEATED, unlike ::Begin's: this one is a poll that runs
+ * for as long as a menu is open, and re-registering the same two strings
+ * several times a second is work with nothing to show for it.
+ */
+void EnsureInit() {
+    static bool initialised = false;
+    if (initialised) return;
+    CARD_Init(kGameCode, kCompany);
+    initialised = true;
+}
 
 /** @brief File name the sequence is acting on, parsed from a path or found. */
 char targetName[CARD_FILENAMELEN] = {};
@@ -358,26 +470,75 @@ void RememberLocation(s32 slot, const char* name) {
 }
 
 /**
- * @brief Checks the current candidate slot and learns that card's sector size.
+ * @brief Is there media in @p slot this backend could actually transfer?
  *
  * CARD_ProbeEx, not CARD_Probe: sect_size is the one quantity this file cannot
  * guess, since this libogc has no CARD_GetSectorSize and the staging buffer is
  * a fixed-size object.
+ *
+ * NO MOUNT, WHICH IS WHY ::save::GetDeviceStatus IS CHEAP. A probe is an EXI
+ * transaction against the slot; CARD_Mount is the slow part of everything else
+ * in this file and the 40 KiB ::workarea belongs to it, and neither is needed
+ * to answer "is a card in there".
+ *
+ * SHARED WITH ::ProbeCurrentSlot ON PURPOSE. The usability test a status query
+ * shows a player and the one a save performs on its way to the card MUST be the
+ * same test: a UI that drew "SLOT B: READY" over a card the next ::save::Save
+ * would refuse is worse than no UI. So the presence check and the sector-width
+ * check live here, once, and ::ProbeCurrentSlot adds only what is about the
+ * in-flight operation rather than about the card.
+ *
+ * IT TOUCHES NO SEQUENCE STATE -- not ::lastErr, not ::lastNative, not ::chn or
+ * ::sector -- which is what makes it safe to call from a status poll while a
+ * save is in flight. The outcome leaves through @p errOut and the return value
+ * instead; the caller decides what to record.
+ *
+ * @param[out] sectorOut The card's sector size, set only on success.
+ * @param[out] errOut    The portable code, set only on failure.
+ * @return CARD_ERROR_READY, or libogc's code for what is wrong.
  */
-bool ProbeCurrentSlot() {
+s32 ProbeMedia(s32 slot, u32& sectorOut, save::eError& errOut) {
     s32 sect = 0;
-    const s32 err = CARD_ProbeEx(kSlots[slotIndex], nullptr, &sect);
+    const s32 err = CARD_ProbeEx(slot, nullptr, &sect);
     if (err != CARD_ERROR_READY) {
-        lastErr = MapError(err); lastNative = err;
-        return false;
+        errOut = MapError(err);
+        return err;
     }
     if (sect <= 0 || static_cast<u32>(sect) > kSectorMax) {
         // A card whose sector is wider than the staging buffer: refused rather
         // than transferred at the wrong width and called a save.
-        lastErr = save::failed; lastNative = CARD_ERROR_FATAL_ERROR;
+        //
+        // save::too_large RATHER THAN save::failed, which is what this branch
+        // reported while it was only ever reached on the way to a save. The
+        // native code is unchanged, and so is the refusal -- what changed is
+        // that a status query now shows this to a player, and "this card is
+        // one this game cannot use" is a sentence a UI can write from
+        // ::too_large and cannot write from ::failed. It is the same quantity
+        // the check below refuses in the other direction: a size against a
+        // sector, mismatched.
+        errOut = save::too_large;
+        return CARD_ERROR_FATAL_ERROR;
+    }
+    sectorOut = static_cast<u32>(sect);
+    return CARD_ERROR_READY;
+}
+
+/**
+ * @brief Checks the current candidate slot and learns that card's sector size.
+ *
+ * The card half is ::ProbeMedia's; what is left here is the one test that is
+ * about the OPERATION rather than the medium -- whether the caller's payload
+ * fits the sector this particular card turned out to have.
+ */
+bool ProbeCurrentSlot() {
+    u32 sect = 0;
+    save::eError portable = save::found;
+    const s32 err = ProbeMedia(kSlots[slotIndex], sect, portable);
+    if (err != CARD_ERROR_READY) {
+        lastErr = portable; lastNative = err;
         return false;
     }
-    if (op != Op::Finding && static_cast<u32>(pending) > static_cast<u32>(sect)) {
+    if (op != Op::Finding && static_cast<u32>(pending) > sect) {
         // What a caller passes must fit ONE sector, because ::Tick's transfer
         // moves exactly `sector` bytes from offset 0 -- anything that spilled
         // past that would be silently truncated and reported as a save.
@@ -388,8 +549,186 @@ bool ProbeCurrentSlot() {
         return false;
     }
     chn    = kSlots[slotIndex];
-    sector = static_cast<u32>(sect);
+    sector = sect;
     return true;
+}
+
+/**
+ * @brief Probes one slot and records what it found.
+ * @return The settled outcome, or save::busy when there is not one yet.
+ *
+ * BOTH PUBLIC DEVICE CALLS GO THROUGH HERE, which is the point:
+ * ::save::AccessibleDevices and ::save::GetDeviceStatus must never disagree
+ * about a slot, and the cheapest way to guarantee that is for the bit and the
+ * code to come out of the same probe and the same cache.
+ *
+ * save::busy IS NOT CACHED. "Not settled yet" is the absence of an answer, not
+ * an answer -- writing it into ::deviceErr would throw away the last true thing
+ * known about the slot and make a UI flicker for the length of an insertion.
+ *
+ * ::sector IS DROPPED ON PURPOSE, even though ::ProbeMedia just learnt it.
+ * ::ProbeCurrentSlot asks again when a real operation starts, and latching it
+ * from a status poll would mean a menu quietly rewriting state the next save
+ * reads.
+ */
+save::eError RefreshDevice(u8 index) {
+    u32 sect = 0;
+    save::eError portable = save::found;
+    const s32 err = ProbeMedia(kSlots[index], sect, portable);
+    if (err == CARD_ERROR_BUSY) return save::busy;
+    deviceErr[index]    = (err == CARD_ERROR_READY) ? save::found : portable;
+    deviceNative[index] = err;
+    deviceKnown[index]  = true;
+    return deviceErr[index];
+}
+
+/**
+ * @brief What is known about @p index without touching the card at all.
+ *
+ * The answer a status poll gets while a sequence owns the card: the last
+ * settled outcome, or save::busy when there has never been one. See
+ * ::deviceErr for why a probe is not attempted underneath an in-flight
+ * operation.
+ */
+save::eError CachedDevice(u8 index) {
+    return deviceKnown[index] ? deviceErr[index] : save::busy;
+}
+
+/**
+ * @brief Could the card mounted on ::chn take a write of ::surveySize bytes?
+ *
+ * TWO WAYS TO SAY YES, and the second is the one a player cares about:
+ *
+ *   - There are enough FREE blocks for a file that size. What a create needs.
+ *   - There is no room, but this game's save is ALREADY THERE and already big
+ *     enough. Overwriting an existing file consumes nothing, so a card with
+ *     zero free blocks is still somewhere the next ::save::Save will succeed.
+ *     A UI that greyed that card out would be refusing the most ordinary save
+ *     there is.
+ *
+ * THE SECOND CHECK COSTS THREE CARD CALLS IN ONE TICK -- find, open, close --
+ * where the rest of this file spends one per tick. They are directory
+ * operations on an already-mounted card, which is the cheap end of what a card
+ * does; the mount that got us here is the expensive part and had its own tick.
+ *
+ * CARD_GetFreeBlocks' RETURN IS AMBIGUOUS in this libogc: the header says
+ * "card error codes or free blocks" (ogc/card.h) while also taking an out
+ * parameter, and there is no card.c in this SDK install to settle which it
+ * does. Both readings are accepted below -- the out parameter when it was
+ * filled, the return value when it was not and is positive -- so a card that
+ * reports its free space either way is read correctly, and only a genuine
+ * negative error code is treated as one.
+ */
+bool SlotHasRoom() {
+    // A create rounds the caller's prefix up to the card's allocation unit, so
+    // that is the unit the free count must be compared in. See ::Resolve.
+    const u32 need = (static_cast<u32>(surveySize) + surveySector - 1) / surveySector;
+
+    u16       blocks = 0;
+    const s32 err    = CARD_GetFreeBlocks(chn, &blocks);
+    if (err >= CARD_ERROR_READY) {
+        const u32 freeBlocks = (blocks != 0)
+            ? static_cast<u32>(blocks)
+            : (err > CARD_ERROR_READY ? static_cast<u32>(err) : 0u);
+        if (freeBlocks >= need) return true;
+    }
+
+    // No room for a NEW file. The existing one, if this game has one here, is
+    // space already paid for -- identity-filtered exactly as ::Resolve's search
+    // is, so a save under any name still counts.
+    card_dir dir;
+    if (CARD_FindFirst(chn, &dir, false) != CARD_ERROR_READY) return false;
+
+    // A LOCAL card_file, not the machine's ::file: nothing about this is the
+    // in-flight operation's business, and open and close happen within this one
+    // tick, so no abandoned sweep can leave it open across a frame.
+    card_file probe;
+    if (CARD_Open(chn, dir.filename, &probe) != CARD_ERROR_READY) return false;
+    const bool fits = static_cast<u32>(probe.len) >= static_cast<u32>(surveySize);
+    CARD_Close(&probe);
+    return fits;
+}
+
+/** @brief Publishes the finished sweep and returns the machine to idle. */
+void SurveyPublish() {
+    freeMask       = surveyMask;
+    freeMaskSize   = surveySize;
+    freeMaskAccess = surveyAccess;
+    freeMaskValid  = true;
+    Abort();
+}
+
+/**
+ * @brief Leaves the current slot and moves to the next, publishing at the end.
+ *
+ * A SLOT THAT FAILED ANYWHERE LEAVES ITS BIT CLEAR and is not retried: an
+ * unprobeable or unmountable card is not one a save would reach either, so the
+ * answer "you cannot write here" is correct however the step failed.
+ */
+void SurveyNextSlot() {
+    if (mounted) { CARD_Unmount(chn); mounted = false; }
+    ++slotIndex;
+    phase = Phase::Probe;
+    if (slotIndex >= kDeviceCount) SurveyPublish();
+}
+
+/** @brief Advances the sweep by exactly one card step. */
+void SurveyTick() {
+    // A card pulled out from under the sweep makes the partial answer a lie
+    // about a machine that has changed. Thrown away rather than published; the
+    // next call starts a fresh one.
+    if (detached) { Abort(); return; }
+
+    switch (phase) {
+        case Phase::Probe: {
+            u32          sect     = 0;
+            save::eError portable = save::found;
+            if (ProbeMedia(kSlots[slotIndex], sect, portable) != CARD_ERROR_READY) {
+                SurveyNextSlot();
+                return;
+            }
+            chn          = kSlots[slotIndex];
+            surveySector = sect;
+            phase        = Phase::Mount;
+            return;
+        }
+
+        case Phase::Mount:
+            if (CARD_Mount(chn, workarea, DetachCallback) != CARD_ERROR_READY) {
+                SurveyNextSlot();
+                return;
+            }
+            mounted = true;
+            phase   = Phase::Resolve;
+            return;
+
+        case Phase::Resolve:
+            if (SlotHasRoom()) surveyMask |= static_cast<u8>(1u << slotIndex);
+            phase = Phase::Finish;
+            return;
+
+        // The unmount is ::SurveyNextSlot's, so that a slot abandoned early and
+        // a slot measured in full leave by the same door.
+        case Phase::Transfer:
+        case Phase::Finish:
+        default:
+            SurveyNextSlot();
+            return;
+    }
+}
+
+/** @brief Starts a sweep for @p size against the devices in @p accessible. */
+void SurveyBegin(std::size_t size, u8 accessible) {
+    op           = Op::Surveying;
+    phase        = Phase::Probe;
+    slotIndex    = 0;
+    slotFixed    = false;
+    surveySize   = size;
+    surveySector = 0;
+    surveyMask   = 0;
+    surveyAccess = accessible;
+    detached     = false;
+    EnsureInit();
 }
 
 /**
@@ -640,6 +979,11 @@ bool Tick(Op want, const u8* src, u8* tar, std::size_t size, const char* path) {
             const s32 unmount = CARD_Unmount(chn);
             mounted = false;
             const bool created = (op == Op::Creating);
+            // A write may have changed what is free -- a create certainly did,
+            // and a save of a size this card had not seen may have too. The
+            // next ::save::FreeDevices re-sweeps rather than answering from a
+            // mask measured before the card changed underneath it.
+            if (op == Op::Saving || op == Op::Creating) freeMaskValid = false;
             const s32 slot = chn;
             Abort();
             if (close != CARD_ERROR_READY)   return Fail(MapError(close), close);
@@ -668,7 +1012,16 @@ namespace {
  * save::busy, and the caller that legitimately owns the card keeps whatever its
  * own last tick recorded.
  */
-bool Busy(Op want) { return op != Op::None && op != want; }
+bool Busy(Op want) {
+    // A SWEEP HAS NO CLAIM ON THE CARD. It is a cache refresh for a menu, and a
+    // save that waited for one would wait forever: nothing advances the sweep
+    // except ::save::FreeDevices, which a caller looping on `while (!done)` is
+    // not calling. So a real operation ABANDONS it and proceeds -- the next
+    // ::save::FreeDevices starts a new one, and the only thing lost is a few
+    // frames of mask.
+    if (op == Op::Surveying && want != Op::Surveying) { Abort(); return false; }
+    return op != Op::None && op != want;
+}
 
 /** @brief Builds the response for a sequence that has just ticked. */
 save::Response Report(bool done) {
@@ -684,19 +1037,30 @@ save::Response Report(bool done) {
 
 namespace save {
 
-Response Save(const u8* src, const std::size_t size) {
+/*
+ * THE ONE PLACE THE PAYLOAD BECOMES BYTES. save.hpp takes `void*` so that a
+ * game can hand over its own save struct without a reinterpret_cast; the
+ * backend works in u8 throughout, because what it does with the payload --
+ * memcpy into ::staging, DMA a sector -- is byte work by nature. Casting here
+ * rather than at every call site is the whole point of the signature: one
+ * conversion, in the file that owns the buffer, instead of one per game.
+ *
+ * static_cast, NOT reinterpret_cast: `void*` to `u8*` is an ordinary pointer
+ * conversion and says nothing more alarming than it means.
+ */
+Response Save(const void* src, const std::size_t size) {
     if (Busy(Op::Saving)) return { .done = false, .err = busy, .path = nullptr };
-    return Report(Tick(Op::Saving, src, nullptr, size, nullptr));
+    return Report(Tick(Op::Saving, static_cast<const u8*>(src), nullptr, size, nullptr));
 }
 
-Response Load(u8* tar, const std::size_t size) {
+Response Load(void* tar, const std::size_t size) {
     if (Busy(Op::Loading)) return { .done = false, .err = busy, .path = nullptr };
-    return Report(Tick(Op::Loading, nullptr, tar, size, nullptr));
+    return Report(Tick(Op::Loading, nullptr, static_cast<u8*>(tar), size, nullptr));
 }
 
-Response Load(u8* tar, const std::size_t size, const Response* response) {
+Response Load(void* tar, const std::size_t size, const Response* response) {
     if (Busy(Op::Loading)) return { .done = false, .err = busy, .path = nullptr };
-    return Report(Tick(Op::Loading, nullptr, tar, size, PathOf(response)));
+    return Report(Tick(Op::Loading, nullptr, static_cast<u8*>(tar), size, PathOf(response)));
 }
 
 /**
@@ -714,10 +1078,10 @@ Response Load(u8* tar, const std::size_t size, const Response* response) {
  * identity-based search worth having: the file can be called anything and
  * ::GetSaveLocation will still find it (see this file's header comment).
  */
-Response CreateSave(const u8* src, const std::size_t size, const Response* response) {
+Response CreateSave(const void* src, const std::size_t size, const Response* response) {
     if (Busy(Op::Creating)) return { .done = false, .err = busy, .path = nullptr };
     const char* const named = PathOf(response);
-    return Report(Tick(Op::Creating, src, nullptr, size, named ? named : kDefaultPath));
+    return Report(Tick(Op::Creating, static_cast<const u8*>(src), nullptr, size, named ? named : kDefaultPath));
 }
 
 /**
@@ -782,6 +1146,152 @@ Response SetMetaData(const void* src) {
     return Report(Tick(Op::SettingMeta, static_cast<const u8*>(src), nullptr, 0, nullptr));
 }
 
+/**
+ * @brief Bit 0 for slot A, bit 1 for slot B, set when the slot holds a card
+ *        this backend can save to.
+ *
+ * ONE PROBE PER SLOT AND NOTHING ELSE -- no mount, no work area, no staging
+ * buffer -- so polling both every few frames costs two EXI transactions. See
+ * ::ProbeMedia for why that is all it takes.
+ *
+ * A BIT IS SET ONLY FOR save::found, which means "settled, and usable". A slot
+ * still settling after an insertion reads as 0 until it has, with no way to
+ * tell it apart from an empty one HERE -- that distinction is what
+ * ::GetDeviceStatus exists to make, and a mask has no room for it. A caller
+ * that needs to say "checking..." rather than "empty" asks about the slot it
+ * cares about; a caller that only needs to know where it can save reads the
+ * mask and is done.
+ *
+ * MID-SEQUENCE IT ANSWERS FROM THE CACHE, same as ::GetDeviceStatus and for
+ * the same unverifiable-locking reason (::deviceErr). A save in progress does
+ * not make slot B's card vanish, so the bits stay as they last settled.
+ */
+u8 AccessibleDevices() {
+    const bool idle = (op == Op::None);
+    if (idle) EnsureInit();
+
+    u8 mask = 0;
+    for (u8 i = 0; i < kDeviceCount; ++i) {
+        const eError err = idle ? RefreshDevice(i) : CachedDevice(i);
+        if (err == found) mask |= static_cast<u8>(1u << i);
+    }
+    return mask;
+}
+
+/**
+ * @brief Whether slot @p index holds media this backend can use, and where a
+ *        save on it would go.
+ *
+ * THE ONLY ENTRY POINT HERE THAT IS NOT A TICK OF THE STATE MACHINE, and
+ * deliberately so. It needs no mount, no work area, no staging buffer and no
+ * file: ::ProbeMedia answers from one EXI transaction, so there is nothing for
+ * a sequence to span frames FOR. It still speaks save::Response, because the
+ * one thing it shares with the rest of the file is that the answer can be "not
+ * yet" -- a card inserted a moment ago reports CARD_ERROR_BUSY until it has
+ * settled, and `done` false is how a caller is told to ask again.
+ *
+ * IT DOES NOT RUN THROUGH ::Busy OR ::Report. Both are about the in-flight
+ * sequence's own recorded outcome, and this call has no business reading or
+ * writing it -- ::Report would hand back ::lastErr, which belongs to whatever
+ * save is in progress, and ::Busy's refusal would be the wrong answer anyway:
+ * "a save is running" is not a fact about what is in slot B. A poll that
+ * arrives mid-sequence answers from ::deviceErr instead, for the reason its
+ * comment gives.
+ *
+ * AN OUT-OF-RANGE @p index IS ::no_device, NOT A REFUSAL. "There is no device
+ * 7" and "there is no card in slot B" are the same answer as far as a caller
+ * can act on it, and a loop written as `for (u8 i = 0; i < 4; ++i)` against a
+ * console with two slots should quietly see two empty ones rather than
+ * something it has to special-case.
+ */
+/**
+ * @brief Devices that could take a write of @p size, as a bitfield.
+ *
+ * ONE STEP OF THE SWEEP PER CALL, and the answer handed back is the last
+ * FINISHED sweep's -- see ::surveySize for why free space cannot simply be
+ * probed the way presence can. Nothing here blocks and nothing mounts more
+ * than one card per call.
+ *
+ * ZERO IS "NOWHERE, OR NOT YET". A first call cannot have an answer, so it
+ * returns 0 while starting the sweep that will have one; so does a pair of
+ * genuinely full cards. The ambiguity is the price of a bitfield, and
+ * ::GetDeviceStatus is where a caller goes to tell the two apart for a slot it
+ * cares about.
+ *
+ * THE CACHE IS KEYED ON THE QUESTION, not just on time: a mask measured for
+ * 2048 bytes says nothing about 4096, and one measured while only slot A held a
+ * card says nothing once a second is inserted. Both are compared on every call,
+ * and either mismatch starts a fresh sweep rather than returning an answer to a
+ * question nobody asked.
+ */
+u8 FreeDevices(const std::size_t size) {
+    // Refused by ::Begin whatever the card says, so no device can take it and
+    // there is nothing to go and measure. Reported as a settled 0 rather than
+    // by starting a sweep that could only agree.
+    if (size == 0 || size > kSectorMax) return 0;
+
+    // Cheap, and it doubles as the invalidation this needs: a card inserted or
+    // removed since the last sweep changes this mask, and a changed mask is a
+    // stale answer. While a sweep or a save is in flight this reads the device
+    // cache rather than probing, which is what keeps it safe to call here.
+    const u8   accessible = AccessibleDevices();
+    const bool fresh      = freeMaskValid && freeMaskSize == size && freeMaskAccess == accessible;
+
+    if (op == Op::Surveying) {
+        if (surveySize == size && surveyAccess == accessible) {
+            SurveyTick();                 // our sweep: advance it
+            return fresh ? freeMask : 0;
+        }
+        // The question changed under the sweep. Abandoned rather than finished,
+        // since its answer would be published against the wrong key.
+        Abort();
+    }
+
+    // A real operation owns the card. No sweep can start and none can run;
+    // whatever was last measured is the best answer available.
+    if (op != Op::None) return fresh ? freeMask : 0;
+
+    if (fresh) return freeMask;
+
+    // Nothing accessible: the answer is 0 and it is SETTLED, not pending --
+    // publishing it here spares a sweep that would mount nothing and find
+    // nothing, and gives ::freeMaskValid something true to say.
+    if (accessible == 0) {
+        freeMask       = 0;
+        freeMaskSize   = size;
+        freeMaskAccess = 0;
+        freeMaskValid  = true;
+        return 0;
+    }
+
+    SurveyBegin(size, accessible);
+    return 0;
+}
+
+Response GetDeviceStatus(const u8 index) {
+    if (index >= kDeviceCount) return { .done = true, .err = no_device, .path = nullptr };
+
+    // A sequence owns the card: answer from what last settled rather than
+    // probing underneath it (::deviceErr). Idle, it is one probe.
+    eError err = busy;
+    if (op != Op::None) {
+        err = CachedDevice(index);
+    } else {
+        EnsureInit();
+        err = RefreshDevice(index);
+    }
+
+    // save::busy IS THE ONE OUTCOME THAT IS NOT `done`: the bus has not decided
+    // yet, so there is nothing to report and the caller is being asked to come
+    // back. Every other code is a finished answer, including the ordinary
+    // ::no_device of an empty slot.
+    if (err == busy) return { .done = false, .err = busy, .path = nullptr };
+
+    return { .done = true,
+             .err  = err,
+             .path = (err == found) ? kDevicePath[index] : nullptr };
+}
+
 } // namespace save
 
 #else // TARGET_WII
@@ -805,19 +1315,19 @@ Response SetMetaData(const void* src) {
  */
 namespace save {
 
-Response Save(const u8*, const std::size_t) {
+Response Save(const void*, const std::size_t) {
     return { .done = true, .err = missing, .path = nullptr };
 }
 
-Response Load(u8*, const std::size_t) {
+Response Load(void*, const std::size_t) {
     return { .done = true, .err = missing, .path = nullptr };
 }
 
-Response Load(u8*, const std::size_t, const Response*) {
+Response Load(void*, const std::size_t, const Response*) {
     return { .done = true, .err = missing, .path = nullptr };
 }
 
-Response CreateSave(const u8*, const std::size_t, const Response*) {
+Response CreateSave(const void*, const std::size_t, const Response*) {
     return { .done = true, .err = missing, .path = nullptr };
 }
 
@@ -834,6 +1344,32 @@ Response GetMetaData(void*) {
 Response SetMetaData(const void*) {
     return { .done = true, .err = missing, .path = nullptr };
 }
+
+/**
+ * @brief No bits: this console has no EXI memory card slot for a card to be in.
+ *
+ * The one place this half of the file can be PRECISE where the rest of it
+ * cannot. Its siblings above answer save::missing because save.hpp gates the
+ * more exact codes behind TARGET_GC -- but an empty mask is not a code, and
+ * what it says here is not in dispute.
+ */
+u8 AccessibleDevices() { return 0; }
+
+/**
+ * @brief No slots, so every index is past the last one.
+ *
+ * save::no_device AND NOT save::missing, breaking this half's own convention on
+ * purpose: ::no_device is declared unconditionally in save.hpp (only the codes
+ * past it are TARGET_GC-only), and it is the whole content of the answer. A
+ * device query reporting "there is somewhere, and your save is not on it" would
+ * be false twice over.
+ */
+Response GetDeviceStatus(u8) {
+    return { .done = true, .err = no_device, .path = nullptr };
+}
+
+/** @brief No devices, so none of them has room, whatever the size. */
+u8 FreeDevices(const std::size_t) { return 0; }
 
 } // namespace save
 

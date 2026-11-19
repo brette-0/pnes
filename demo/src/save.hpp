@@ -2,6 +2,17 @@
 
 #include <pnes/save.hpp>
 
+#ifdef TARGET_GC
+constexpr auto saveFoundText = ::charmap_generic.encode("SAVE LOADED SUCCESSFULLY");
+constexpr auto saveMissingText = ::charmap_generic.encode("YOU MAY CREATE A SAVE FILE");
+constexpr auto saveNoDeviceText = ::charmap_generic.encode("NO MEMORY CARD INSERTED");
+constexpr auto saveBadErrorText = ::charmap_generic.encode("BAD ERROR CODE");
+constexpr auto saveCorruptText = ::charmap_generic.encode("MEMORY CARD CORRUPTED");
+constexpr auto saveFullText = ::charmap_generic.encode("NOT ENOUGH FREE SPACE");
+constexpr auto saveLargeText = ::charmap_generic.encode("SAVE FILE IS TOO LARGE FOR GAME");
+constexpr auto saveCorruptText2 = ::charmap_generic.encode("CONFIRM ERASE FILES");
+#endif
+
 struct SaveHeader {
 #ifdef TARGET_GC
     OGC_COMMENT(gameName);  // name
