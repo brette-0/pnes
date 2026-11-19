@@ -15,18 +15,21 @@ static constexpr void WaitBody() {
 
 static void LoadSave();
 static bool ValidateSave();
-static void AskCreateSave();
+static bool TryCreateSave();
 static void PrintContext(const u8* infoText);
 static eOptions ChoiceWheel(const eOptions* pOptions, const u8 sOptions);
+
+
+constexpr eOptions createOpts[] = { Yes, No };
+constexpr eOptions errorOpts[] = {Retry, Continue};
+constexpr eOptions eraseOpts[] = {Erase, Continue};
+constexpr eOptions confirmOpts[] = { No, Yes };
+constexpr eOptions cardOpts[]  = { Card1, Card2 };
 
 void TryFindSaveAndLoadOrCreate() {
     save::Response response;
     bool ok = true;
 
-    constexpr eOptions createOpts[] = { Yes, No };
-    constexpr eOptions errorOpts[] = {Retry, Continue};
-    constexpr eOptions eraseOpts[] = {Erase, Continue};
-    constexpr eOptions confirmOpts[] = { No, Yes };
     do {
         retry:
         while (response = save::GetSaveLocation(), !response.done) {
@@ -39,13 +42,15 @@ void TryFindSaveAndLoadOrCreate() {
                 break;
             case save::missing:
                 PrintContext(saveMissingText.data());
-                switch (const auto choice = ChoiceWheel(createOpts, sizeof(createOpts))) {
+                switch (ChoiceWheel(createOpts, sizeof(createOpts))) {
                     case Yes:
-                        // todo: try create save file
+                        if (!TryCreateSave()) goto retry;
+                        ok = true;
                         break;
 
                     case No:
                         ok = true;  // no save load
+                        break;
 
                     default:
                         log("unknown choice selected");
@@ -55,12 +60,13 @@ void TryFindSaveAndLoadOrCreate() {
                 break;
             case save::no_device:
                 PrintContext(saveNoDeviceText.data());
-                switch (const auto choice = ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
                     case Retry:
                         goto retry; // re attempt
 
                     case Continue:
                         ok = true;  // no save load
+                        break;
 
                     default:
                         log("unknown choice selected");
@@ -73,12 +79,13 @@ void TryFindSaveAndLoadOrCreate() {
                 // card is reported busy, this should NOT fire under healthy circumstances
                 // should show some message, that the card is busy with 'retry' or 'continue without save'
                 log("card is busy, this is a serious bug that should be solved");
-                switch (const auto choice = ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
                     case Retry:
                         goto retry; // re attempt
 
                     case Continue:
                         ok = true;  // no save load
+                        break;
 
                     default:
                         log("unknown choice selected");
@@ -90,61 +97,32 @@ void TryFindSaveAndLoadOrCreate() {
                 // should only appear on save creation, not save searching, erroneous
                 // should show some message, that the card is erroring with 'retry' or 'continue without save'
                 log("cannot find file because it already exists, bad error");
-                switch (const auto choice = ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
                     case Retry:
                         goto retry; // re attempt
 
                     case Continue:
                         ok = true;  // no save load
+                        break;
 
                     default:
                         log("unknown choice selected");
                         ok = true;  // something bad happened
                 }
                 break;
-            case save::corrupt:
-                PrintContext(saveCorruptText.data());
-                // report memory card is corrupt, provide option to erase it (we need an 'are you sure')
-                log("corrupt file");
-                switch (const auto choice = ChoiceWheel(eraseOpts, sizeof(eraseOpts))) {
-                    case Erase:
-                        break;
 
-                    case Continue:
-                        ok = true;  // no save load
-                        continue;
-
-                    default:
-                        log("unknown choice selected");
-                        ok = true;  // something bad happened
-                }
-                PrintContext(saveCorruptText2.data());
-                switch (const auto choice = ChoiceWheel(confirmOpts, sizeof(confirmOpts))) {
-                    case Yes:
-                        // invoke card erase method, then retry
-                        goto retry;
-                        break;
-
-                    case No:
-                        ok = true;  // no save load
-                        continue;
-
-                    default:
-                        log("unknown choice selected");
-                        ok = true;  // something bad happened
-                }
-                break;
             case save::full:
                 PrintContext(saveBadErrorText.data());
                 // should not fire on try find, if this is being seen its a big error
                 // report that an unusual bug is shown, and should be reported immediately
                 log("cannot find file because out of storage, bad error");
-                switch (const auto choice = ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
                     case Retry:
                         goto retry; // re attempt
 
                     case Continue:
                         ok = true;  // no save load
+                        break;
 
                     default:
                         log("unknown choice selected");
@@ -156,12 +134,13 @@ void TryFindSaveAndLoadOrCreate() {
                 // should not fire on load, if this is being seen its a big error
                 // report that an unusual bug is shown, and should be reported immediately
                 log("cannot find file because it might be too big to be loaded, bad error");
-                switch (const auto choice = ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
                     case Retry:
                         goto retry; // re attempt
 
                     case Continue:
                         ok = true;  // no save load
+                        break;
 
                     default:
                         log("unknown choice selected");
@@ -173,12 +152,13 @@ void TryFindSaveAndLoadOrCreate() {
                 // report operation has been denied, should not occur under typical circumstances
                 // report the operation is denied, and should be reported immediately
                 log("cannot find file, memory card denied operation");
-                switch (const auto choice = ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
                     case Retry:
                         goto retry; // re attempt
 
                     case Continue:
                         ok = true;  // no save load
+                        break;
 
                     default:
                         log("unknown choice selected");
@@ -190,12 +170,13 @@ void TryFindSaveAndLoadOrCreate() {
                 // report operation has bad path, not a user error
                 // report the operation is denied, and should be reported immediately
                 log("cannot find file, path is bad, bad error");
-                switch (const auto choice = ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
                     case Retry:
                         goto retry; // re attempt
 
                     case Continue:
                         ok = true;  // no save load
+                        break;
 
                     default:
                         log("unknown choice selected");
@@ -206,12 +187,13 @@ void TryFindSaveAndLoadOrCreate() {
                 PrintContext(saveBadErrorText.data());
                 // unknown error, just let the user retry or continue without save
                 log("unknown error, bad error normally");
-                switch (const auto choice = ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
                     case Retry:
                         goto retry; // re attempt
 
                     case Continue:
                         ok = true;  // no save load
+                        break;
 
                     default:
                         log("unknown choice selected");
@@ -274,7 +256,195 @@ bool ValidateSave() {
     return true;
 }
 
-void AskCreateSave() {
+bool TryCreateSave() {
+    bool useCard2 = false;
     const u8 saveDevices = save::AccessibleDevices();
+    if (!saveDevices) {
+        PrintContext(saveNoDeviceText.data());
+        switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+            case Retry:
+                return false; // re attempt
+
+            case Continue:
+                break;
+
+            default:
+                log("unknown choice selected");
+                break;  // something bad happened
+        }
+    }
+
+    if (saveDevices == 0b11) {
+        PrintContext(saveChooseCard.data());
+        switch (ChoiceWheel(cardOpts, sizeof(cardOpts))) {
+            case Card1:
+                useCard2 = false;
+                break;
+
+            case Continue:
+                useCard2 = true;
+                break;
+
+            default:
+                log("unknown choice selected");
+                break;  // something bad happened
+        }
+
+        create:
+        save::Response response;
+
+        while (response = save::GetDeviceStatus(useCard2), !response.done) {
+            WaitBody();
+        }
+
+        while (response = save::CreateSave(&saveData, sizeof(saveData), &response), !response.done) {
+            WaitBody();
+        }
+
+        switch (response.err) {
+            case save::found:
+                break;
+            case save::missing:
+                PrintContext(saveBadErrorText.data());
+                log("cannot create file because it does not exist, bad error");
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                    case Retry:
+                        return false; // re attempt
+
+                    case Continue:
+                        break;  // no save load
+
+                    default:
+                        log("unknown choice selected");
+                        break;  // something bad happened
+                }
+                break;
+            case save::no_device:
+                break;
+            case save::busy:
+                PrintContext(saveBadErrorText.data());
+                log("cannot create file, card busy, bad error");
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                    case Retry:
+                        return false; // re attempt
+
+                    case Continue:
+                        break;  // no save load
+
+                    default:
+                        log("unknown choice selected");
+                        break;  // something bad happened
+                }
+                break;
+            case save::exists:
+                PrintContext(saveBadErrorText.data());
+                log("cannot create file because it already exists, should have been verified earlier");
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                    case Retry:
+                        return false; // re attempt
+
+                    case Continue:
+                        break;  // no save load
+
+                    default:
+                        log("unknown choice selected");
+                        break;  // something bad happened
+                }
+                break;
+            case save::
+                full:PrintContext(saveFullText.data());
+                log("Should have known at this point, bad error");
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                    case Retry:
+                        return false; // re attempt
+
+                    case Continue:
+                        break;  // no save load
+
+                    default:
+                        log("unknown choice selected");
+                        break;  // something bad happened
+                }
+                break;
+            case save::too_large:
+                PrintContext(saveBadErrorText.data());
+                log("cannot create file because the file that we haven't confirmed to exist may be too large to load which isn't the operation at hand, bad error");
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                    case Retry:
+                        return false; // re attempt
+
+                    case Continue:
+                        break;  // no save load
+
+                    default:
+                        log("unknown choice selected");
+                        break;  // something bad happened
+                }
+                break;
+            case save::denied:
+                PrintContext(saveBadErrorText.data());
+                log("cannot create file, memory card denied operation");
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                    case Retry:
+                        return false; // re attempt
+
+                    case Continue:
+                        break;  // no save load
+
+                    default:
+                        log("unknown choice selected");
+                        break;  // something bad happened
+                }
+                break;
+            case save::bad_path:
+                PrintContext(saveBadErrorText.data());
+                log("cannot create file, bad path");
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                    case Retry:
+                        return true; // re attempt
+
+                    case Continue:
+                        break;  // no save load
+
+                    default:
+                        log("unknown choice selected");
+                        break;  // something bad happened
+                }
+                break;
+            case save::failed:
+                PrintContext(saveBadErrorText.data());
+                log("cannot create file, unknown reason");
+                switch (ChoiceWheel(errorOpts, sizeof(errorOpts))) {
+                    case Retry:
+                        return false; // re attempt
+
+                    case Continue:
+                        break;  // no save load
+
+                    default:
+                        log("unknown choice selected");
+                        break;  // something bad happened
+                }
+                break;
+        }
+
+    } else {
+        useCard2 = saveDevices - 1;
+        PrintContext(saveUseCard.data());
+        // TODO: string interpolation, emit message 'slot %d is available, wish to save?"
+        switch (ChoiceWheel(createOpts, sizeof(createOpts))) {
+            case Yes:
+                goto create;
+
+            case No:
+                break;  // no save load
+
+            default:
+                log("unknown choice selected");
+                break;  // something bad happened
+        }
+    }
+
+    return true;    //for no retry
     // using this information, we can present what memory cards are accessible, should work on something here nicely
 }

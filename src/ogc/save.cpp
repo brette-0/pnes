@@ -261,6 +261,33 @@ s32          deviceNative[kDeviceCount] = { CARD_ERROR_NOCARD, CARD_ERROR_NOCARD
 bool         deviceKnown[kDeviceCount]  = {};
 
 /**
+ * @brief Slots a mount has found unusable, so the probe-only calls can say so.
+ *
+ * CORRUPTION IS NOT PROBEABLE. CARD_ProbeEx answers "is there a card and how
+ * wide are its sectors"; whether that card's directory structure survives is
+ * only discoverable by CARD_Mount, which is the expensive operation
+ * ::save::GetDeviceStatus exists to avoid. So the verdict is recorded HERE by
+ * whoever paid for the mount -- a save, a load, or a ::save::FreeDevices sweep
+ * -- and the cheap calls honour it afterwards.
+ *
+ * ONLY THE TWO HEALTH CODES SET IT (::IsUnusableCode): a mount that failed with
+ * CARD_ERROR_BUSY or CARD_ERROR_NOCARD says nothing about the card, and marking
+ * those would hide a perfectly good card behind a transient failure.
+ *
+ * IT IS CLEARED BY THE CARD LEAVING, or by a later mount succeeding. A probe
+ * that reports no media means there is nothing in the slot to be broken, so the
+ * flag goes; the limitation is a card swapped between two polls with no
+ * observed gap, which keeps the old verdict until the next removal is seen. At
+ * a UI's polling rate that window is a few frames wide.
+ */
+bool deviceBroken[kDeviceCount] = {};
+
+/** @brief Mount failures that are verdicts about the card, not about timing. */
+constexpr bool IsUnusableCode(s32 err) {
+    return err == CARD_ERROR_BROKEN || err == CARD_ERROR_ENCODING;
+}
+
+/**
  * @brief The free-space sweep: what it is measuring, and what it has found.
  *
  * FREE SPACE CANNOT BE PROBED, which is the whole reason this exists as a
@@ -353,8 +380,16 @@ save::eError MapError(s32 err) {
         case CARD_ERROR_WRONGDEVICE: return save::no_device;
         case CARD_ERROR_NOFILE:      return save::missing;
         case CARD_ERROR_EXIST:       return save::exists;
+        // NO save::corrupt ANY MORE, AND THAT IS A POLICY RATHER THAN A
+        // SHORTCUT. A card whose directory structure is broken, and a card
+        // formatted for the other font encoding, are both media this console
+        // cannot write to and neither is something a game can repair -- the
+        // only repair is a format, which destroys other games' saves and
+        // belongs to the console's card manager. So they join the empty slot
+        // and the SD adapter the game may have booted from: not a device we
+        // can save to. ::lastNative still holds which it was, for a developer.
         case CARD_ERROR_BROKEN:
-        case CARD_ERROR_ENCODING:    return save::corrupt;
+        case CARD_ERROR_ENCODING:    return save::no_device;
         case CARD_ERROR_INSSPACE:
         case CARD_ERROR_NOENT:
         case CARD_ERROR_LIMIT:       return save::full;
@@ -576,8 +611,20 @@ save::eError RefreshDevice(u8 index) {
     save::eError portable = save::found;
     const s32 err = ProbeMedia(kSlots[index], sect, portable);
     if (err == CARD_ERROR_BUSY) return save::busy;
+
+    if (err != CARD_ERROR_READY) {
+        // Nothing in the slot (or nothing that is a card), so there is nothing
+        // left to be broken: the remembered verdict goes with the card.
+        deviceBroken[index] = false;
+    }
+
     deviceErr[index]    = (err == CARD_ERROR_READY) ? save::found : portable;
     deviceNative[index] = err;
+
+    // A card a mount has already found unusable is reported as no device, which
+    // a probe could never have discovered on its own. See ::deviceBroken.
+    if (deviceBroken[index]) deviceErr[index] = save::no_device;
+
     deviceKnown[index]  = true;
     return deviceErr[index];
 }
@@ -693,14 +740,21 @@ void SurveyTick() {
             return;
         }
 
-        case Phase::Mount:
-            if (CARD_Mount(chn, workarea, DetachCallback) != CARD_ERROR_READY) {
+        case Phase::Mount: {
+            const s32 err = CARD_Mount(chn, workarea, DetachCallback);
+            if (err != CARD_ERROR_READY) {
+                // A sweep is the cheapest way to go LOOKING for this verdict,
+                // since it mounts every accessible slot in turn and a game
+                // polling it costs nothing once the answer has settled.
+                if (IsUnusableCode(err)) deviceBroken[slotIndex] = true;
                 SurveyNextSlot();
                 return;
             }
+            deviceBroken[slotIndex] = false;
             mounted = true;
             phase   = Phase::Resolve;
             return;
+        }
 
         case Phase::Resolve:
             if (SlotHasRoom()) surveyMask |= static_cast<u8>(1u << slotIndex);
@@ -900,9 +954,14 @@ bool Tick(Op want, const u8* src, u8* tar, std::size_t size, const char* path) {
         case Phase::Mount: {
             const s32 err = CARD_Mount(chn, workarea, DetachCallback);
             if (err != CARD_ERROR_READY) {
+                // The one place this backend ever learns that a card is
+                // unusable rather than absent. Recorded so the probe-only
+                // device calls stop offering it (::deviceBroken).
+                if (IsUnusableCode(err)) deviceBroken[slotIndex] = true;
                 if (AdvanceSlot()) { phase = Phase::Probe; return false; }
                 return Exhausted(MapError(err), err);
             }
+            deviceBroken[slotIndex] = false;   // it mounted; whatever it was, it is not that now
             mounted = true;
             phase   = Phase::Resolve;
             return false;

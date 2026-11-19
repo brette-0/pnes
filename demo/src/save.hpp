@@ -2,6 +2,18 @@
 
 #include <pnes/save.hpp>
 
+enum eOptions : u8 {
+#ifdef TARGET_GC
+    Continue,
+    Retry,
+    No,
+    Yes,
+    Erase,
+    Card1,
+    Card2
+#endif
+};
+
 #ifdef TARGET_GC
 constexpr auto saveFoundText = ::charmap_generic.encode("SAVE LOADED SUCCESSFULLY");
 constexpr auto saveMissingText = ::charmap_generic.encode("YOU MAY CREATE A SAVE FILE");
@@ -11,6 +23,8 @@ constexpr auto saveCorruptText = ::charmap_generic.encode("MEMORY CARD CORRUPTED
 constexpr auto saveFullText = ::charmap_generic.encode("NOT ENOUGH FREE SPACE");
 constexpr auto saveLargeText = ::charmap_generic.encode("SAVE FILE IS TOO LARGE FOR GAME");
 constexpr auto saveCorruptText2 = ::charmap_generic.encode("CONFIRM ERASE FILES");
+constexpr auto saveChooseCard = ::charmap_generic.encode("CHOOSE CARD");
+constexpr auto saveUseCard = ::charmap_generic.encode("CONFIRM USE CARD");
 #endif
 
 struct SaveHeader {

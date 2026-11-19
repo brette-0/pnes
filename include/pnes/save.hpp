@@ -31,7 +31,6 @@ namespace save {
 #ifdef TARGET_GC
         busy,
         exists,
-        corrupt,
         full,
         too_large,
         denied,
@@ -177,9 +176,12 @@ namespace save {
      *   - `done`, ::found      -- media is present AND this backend can use
      *                             it. `path` names where a save on this device
      *                             goes, ready to hand to ::CreateSave.
-     *   - `done`, ::no_device  -- empty slot, a non-card device in it, or an
-     *                             @p index past the last one.
-     *   - `done`, ::corrupt    -- media is there and unreadable.
+     *   - `done`, ::no_device  -- nothing usable: an empty slot, a non-card
+     *                             device in it (an SD adapter booting the
+     *                             game, say), a card whose directory structure
+     *                             is broken, a card formatted for another
+     *                             font encoding, or an @p index past the last
+     *                             one. See below.
      *   - `done`, ::too_large  -- media is there and this backend cannot
      *                             transfer its sector width.
      *   - NOT `done`, ::busy   -- the answer is not known YET. Ask again next
@@ -204,6 +206,25 @@ namespace save {
      * portable caller can name a device at all, since the file name a save
      * carries is the build's business and not exposed anywhere else. NOT
      * PRESENT ON NES, where save::Response has no `path` member.
+     *
+     * A BROKEN CARD IS REPORTED AS NO DEVICE, DELIBERATELY, and there is no
+     * ::corrupt in this vocabulary to report it with. The reasoning is that
+     * nothing a GAME can do about a damaged card is worth a vocabulary entry:
+     * the only repair is a format, which destroys every other game's saves and
+     * belongs to the console's own card manager, and a game that cannot save is
+     * in the same position whether the slot is empty, holds an SD adapter the
+     * game booted from, or holds a card whose directory is unreadable. All of
+     * them mean "not somewhere I can save", and a player is served better by
+     * "no memory card available" than by a diagnosis they cannot act on.
+     *
+     * TWO CONSEQUENCES WORTH KNOWING. A card formatted by a Japanese console
+     * and read on a US/European one (or the reverse) is also folded in here --
+     * it is undamaged, and it is still not somewhere this console can write. And
+     * a backend cannot learn any of this from a probe: being broken is only
+     * discoverable by MOUNTING, so a slot reads as usable until something
+     * mounts it and finds out, after which this call reports it as no device
+     * until the card is removed. A sweep by ::FreeDevices is the cheapest way
+     * to make that discovery happen on purpose.
      *
      * IT DOES NOT SAY WHETHER THIS GAME'S SAVE IS THERE. ::found means "a
      * card, usable"; whether it already holds a save is ::GetSaveLocation's

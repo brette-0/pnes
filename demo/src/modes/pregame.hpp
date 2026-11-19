@@ -1,16 +1,6 @@
 #pragma once
 
 
-enum eOptions : u8 {
-#ifdef TARGET_GC
-    Continue,
-    Retry,
-    No,
-    Yes,
-    Erase,
-#endif
-};
-
 #ifdef TARGET_GC
 constexpr auto retryText        = ::charmap_generic.encode("RETRY");
 constexpr auto continueText     = ::charmap_generic.encode("CONTINUE");
