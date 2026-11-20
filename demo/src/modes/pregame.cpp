@@ -25,7 +25,18 @@
 #include "pnes/logger.hpp"
 #include "pnes/mappers/mmc3.hpp"
 #include "pnes/video.hpp"
-
+// The options scene itself, for ::ApplyLoadedConfig below: a loaded save is a
+// set of settings that have to be IN FORCE before the game draws anything, and
+// the only reader of ::saveData.config that knows what each bit means is the
+// generated scene. ui/impl/buttons.hpp is the include that brings it (it pulls
+// gen/options/<target>/options.hpp in for its own Draw() bodies), so this one
+// header gives this mode every button's Enabled() and both sliders' amount.
+//
+// THE UI CODE AND NOT A HAND-READ BIT, which is the point: the widescreen bit
+// is `button_state[0] & (1u << 1)` today and is whatever uitk packs it as
+// tomorrow -- scene order decides it, and a button added above it in the
+// editor moves it. Asking the generated accessor cannot drift.
+#include "../../ui/impl/buttons.hpp"
 using namespace br0::intsh;
 
 // TARGET_GC, NOT `#ifndef TARGET_NES`, AND THAT IS NARROWER THAN IT LOOKS.
@@ -99,8 +110,10 @@ static void PrintContext(const u8* infoText);
 static eOptions ChoiceWheel(const eOptions* pOptions, u8 sOptions);
 static void PopulateSaveData();
 static void MakeScene();
+static void ApplyLoadedConfig();
 static void InitPregameScreen();
 static void ClearOptions();
+static void LoadConfig();
 void nmi_handler();
 void irq_handler();
 
@@ -328,8 +341,97 @@ void main() {
     // the player is owed the title screen next, so there is no outcome here
     // that leaves ::gameMode alone and strands the dispatch loop re-entering
     // this mode. main.cpp picks it up as soon as this returns.
+    // What the loaded settings mean for the HARDWARE, applied before the title
+    // screen draws its first tile. See ::ApplyLoadedConfig.
+    ApplyLoadedConfig();
+
     log("pregame::main: handing over to the title screen");
     gameMode = eGameModes::Title;
+}
+
+/**
+ * @brief Puts a loaded save's settings into force, for the ones that are a
+ *        property of the DISPLAY rather than of the options page.
+ *
+ * ONLY WIDESCREEN, AND THAT IS THE WHOLE LIST TODAY. The options scene has
+ * four controls on the GameCube and they divide cleanly:
+ *
+ *   - enableWidescreenButton -- changes ::video::viewport_tx(), so every rect
+ *     in every scene, every nametable address and the camera itself are
+ *     derived from it. It has to be settled before anything is Make()d or
+ *     drawn, which is why it is HERE and not in title mode: this is the last
+ *     moment at which nothing is on screen to be invalidated.
+ *   - musicSlider -- is applied by title mode, because the value it pushes
+ *     into ::audio::TrackVolume is a PROPORTION of the slider's travel, and
+ *     the travel comes from the rect, which is not resolved until
+ *     ::gen::options::Make() has run.
+ *   - enableStereo, reduceFlashesButton -- have no engine side at all yet.
+ *     Nothing outside their own Draw() reads either bit, so there is nothing
+ *     for this function to apply. They are named here rather than left out so
+ *     that wiring one up has an obvious home.
+ *
+ * ::video::ogc::SetWidescreen's @warning says the caller owns rebuilding the
+ * screen around it. That is satisfied by WHERE this is called from rather than
+ * by anything it does: ::main is finished with its own scene, and
+ * ::title::main's next act is a ::ppu::Flush and a full set of Make()s against
+ * whatever the viewport is by then. Calling this any earlier -- right after
+ * the load, say -- would re-stride the plane under this mode's own context
+ * band and error wheels, which is exactly the trap ::title::ApplyWidescreenChange
+ * exists to handle.
+ *
+ * NOTHING HAPPENS WITHOUT A TRUSTED SAVE (::saveLoaded, demo/src/save.hpp).
+ * On a cold boot the bits in ::saveData are BSS zeros, and zero reads as
+ * "4:3" -- the same thing a default-off button means -- so the no-save case
+ * needs no branch of its own here. It gets one anyway, because a config that
+ * failed to load is not the same thing as a config that says no.
+ */
+void ApplyLoadedConfig() {
+    if (!saveLoaded) return;
+
+    const bool wide = gen::options::videoCanvas::enableWidescreenButton::Enabled();
+    log("pregame: restoring widescreen=%d from save", wide);
+    if (wide) video::ogc::SetWidescreen(true);
+}
+
+/**
+ * @brief The plane TILE this scene is anchored at: the BOTTOM RIGHT nametable.
+ *
+ * A quadrant offset, the hand-written form of the one uitk bakes into a
+ * generated scene (emitExprCpp's ntOffX/ntOffY, tools/uitk/main.cpp) -- this
+ * mode has no .uis to carry it, so it is written out here and every rect
+ * ::MakeScene resolves is placed through it.
+ *
+ * X is one page stride in. That stride is ::emu::ComputeNtGeometry's own
+ * tileW -- the NES-native 32 floored against this target's viewport and then
+ * ROUNDED UP to a whole attribute byte -- because it is what
+ * ::ppu::CartesianToAddress divides by to decide which page a coordinate lands
+ * on (xy_to_nt_addr, src/emu/ppu.cpp). The GameCube's two widths are both
+ * already multiples of four (40 at 4:3, 52 at 16:9), so the rounding changes
+ * nothing today; it is here so that an x of 50 on a 50-wide viewport could not
+ * quietly resolve into page 0's last two columns, which is the trap
+ * title.cpp's ::kMenuNT names and dodges by only ever running where the width
+ * is 32.
+ *
+ * Y is one page height down, the 30-row floor against ::video::viewport_ty().
+ * With vertical mirroring -- ::mmc3::SetMirroring(false) in
+ * ::InitPregameScreen -- the plane is two pages WIDE and one page TALL
+ * (::video::nametable_grid_w()/::nametable_grid_h(), video.hpp), so that row
+ * aliases back onto the right-hand page exactly as a real board's wiring would
+ * alias $2C00 onto $2400. Writing it out rather than dropping it is the point:
+ * it is what makes this scene the BOTTOM right quadrant rather than the top
+ * one, in the same vocabulary demo/ui/*.uis and ::ppu::SetScroll's own
+ * `y >= 240` fold use, and the camera below is pointed at the same address.
+ */
+static vec2<u16> SceneOriginTiles() {
+    const u16 tw = video::viewport_tx() < 32 ? 32 : video::viewport_tx();
+    const u16 th = video::viewport_ty() < 30 ? 30 : video::viewport_ty();
+    return {static_cast<u16>((tw + 3) & ~3u), th};
+}
+
+/** @brief ::SceneOriginTiles in pixels: the scroll this mode parks the camera at. */
+static vec2<u16> SceneOriginPixels() {
+    const vec2<u16> o = SceneOriginTiles();
+    return {static_cast<u16>(o.x << 3), static_cast<u16>(o.y << 3)};
 }
 
 /**
@@ -341,18 +443,26 @@ void main() {
  * the half-width taken off each anchor. Three quarters is a half plus a
  * quarter so the arithmetic needs no multiply -- the same habit the .uis
  * expressions in this project keep.
+ *
+ * Every anchor is then offset by ::SceneOriginTiles, so all three rects are in
+ * the bottom-right quadrant's own rows and columns. The layout arithmetic
+ * stays written against the bare viewport -- "four tiles in", "the quarter
+ * point" -- because that is what it means; the quadrant is added once, at the
+ * end, exactly as a generated scene adds it.
  */
 void MakeScene() {
     const u16 tx = video::viewport_tx();
     const u16 ty = video::viewport_ty();
+    const vec2<u16> origin = SceneOriginTiles();
 
-    contextRect = Rect{{4, static_cast<u16>((ty >> 1) - 2)},
+    contextRect = Rect{{static_cast<u16>(origin.x + 4),
+                        static_cast<u16>(origin.y + (ty >> 1) - 2)},
                        {static_cast<u8>(tx - 8), kContextRows}};
 
-    const u16 optionY = static_cast<u16>((ty >> 1) + 2);
-    optionRect[0] = Rect{{static_cast<u16>((tx >> 2) - (kOptionCols >> 1)), optionY},
+    const u16 optionY = static_cast<u16>(origin.y + (ty >> 1) + 2);
+    optionRect[0] = Rect{{static_cast<u16>(origin.x + (tx >> 2) - (kOptionCols >> 1)), optionY},
                          {kOptionCols, 1}};
-    optionRect[1] = Rect{{static_cast<u16>((tx >> 1) + (tx >> 2) - (kOptionCols >> 1)), optionY},
+    optionRect[1] = Rect{{static_cast<u16>(origin.x + (tx >> 1) + (tx >> 2) - (kOptionCols >> 1)), optionY},
                          {kOptionCols, 1}};
 }
 
@@ -406,6 +516,19 @@ void InitPregameScreen() {
 
     MakeScene();
 
+    // The camera, onto the quadrant ::SceneOriginTiles just placed the scene
+    // in. Set ONCE, here, and never touched again: this mode has no raster
+    // split and no moving viewpoint (see ::nmi_handler), so the frame's own
+    // scroll is the whole of its camera, and ::ppu::SetScroll's value persists
+    // until something writes another one -- which, inside this mode, nothing
+    // does. It is set BEFORE rendering is enabled below so no frame is ever
+    // presented looking at the blank top-left page.
+    //
+    // Note the scroll and the scene's origin are the SAME number by
+    // construction, which is what makes plane tiles screen tiles again for
+    // ::PlaceArrow: the quadrant offset cancels.
+    ppu::SetScroll(SceneOriginPixels());
+
     ppu::EnableRendering(ppu::ctrl::SPRITE_ADDR | ppu::ctrl::GEN_NMI,
                          ppu::mask::BG_L | ppu::mask::SPRITE_L);
     irq::EnableInterrupts();
@@ -416,7 +539,11 @@ void InitPregameScreen() {
  *
  * A STUB, DELIBERATELY. Title mode's handler re-scrolls, re-banks and re-arms
  * a raster split every frame because its screen is two bands of different art;
- * this one is a flat page of text. The nametable writes it does make are
+ * this one is a flat page of text. Its own scroll IS off the origin -- the
+ * scene sits in the bottom-right quadrant (::SceneOriginTiles) -- but that is
+ * a camera parked once in ::InitPregameScreen, not a camera that moves, so
+ * there is still nothing for a per-frame handler to re-assert. The nametable
+ * writes it does make are
  * ::PrintContext's and ::DrawOptions', from the MAINLINE -- which is safe here
  * and would not be on the NES, where a write outside vblank is a glitch rather
  * than a slower write. That is the whole reason this mode can afford to be
@@ -450,8 +577,14 @@ void irq_handler() {
  * NOT ::ui::impl::PlaceSelector, THOUGH IT IS ALMOST THE SAME FIVE STORES.
  * That one subtracts ::ui::impl::SelectorScroll(), which title.cpp defines as
  * its own menu band's scroll -- the right transform for a menu sitting on a
- * scrolled-to nametable below a raster split, and the wrong one here, where
- * the page is unscrolled and plane tiles ARE screen tiles. Everything else
+ * scrolled-to nametable below a raster split, and the wrong one here. This
+ * mode's own camera is ::SceneOriginPixels (::InitPregameScreen), the one
+ * scroll the frame is read under, so that is what comes off a plane
+ * coordinate to leave a screen one -- and since the scene is anchored at the
+ * same origin, the two cancel and the arrow lands where it always did.
+ * Subtracted rather than dropped because the two are only equal by
+ * construction: moving either the quadrant or the camera alone is exactly the
+ * mistake this undoes. Everything else
  * about the arrow is shared: the tile, the palette, the two-tile gap, the sway
  * table, and the OAM slot ::ui::impl::SelectorSlot() names, so
  * ::ui::impl::AnimateSelector sways this mode's arrow with no change at all.
@@ -463,8 +596,9 @@ void irq_handler() {
 static void PlaceArrow(const Rect& option) {
     const u8 slot = ui::impl::SelectorSlot();
 
-    const i16 x = static_cast<i16>(option.pos.x * 8 - ui::impl::kSelectorGap);
-    const i16 y = static_cast<i16>(option.pos.y * 8);
+    const vec2<u16> scroll = SceneOriginPixels();
+    const i16 x = static_cast<i16>(option.pos.x * 8 - ui::impl::kSelectorGap - scroll.x);
+    const i16 y = static_cast<i16>(option.pos.y * 8 - scroll.y);
     if (x < 0 || y < 0) {
         // Signed, and parked rather than clamped, same guard as PlaceSelector:
         // a u16 would wrap an off-screen arrow into somewhere visible.
@@ -504,6 +638,12 @@ void ClearOptions() {
         const Rect r = optionRect[i];
         ui::text::Clear(optionRows[i], ppu::CartesianToAddress(r.pos), r.size,
                         ui::text::Centre, kBlankTile);
+        // Freed, not just forgotten: ::ui::text::Make allocates a row table per
+        // call (`new textBuffer[box.y]`, src/all/extras/ui/text.cpp) and hands
+        // ownership to whoever asked. Once at boot that hardly mattered; the
+        // save screen runs a wheel every time the player leaves the options
+        // page, so the ones it opens have to go back.
+        delete[] optionRows[i];
         optionRows[i] = nullptr;
     }
     OAMBuffer[ui::impl::SelectorSlot()].y = ParkedSpriteY();
@@ -521,6 +661,11 @@ void PrintContext(const u8* infoText) {
 
     if (contextRows) {
         ui::text::Clear(contextRows, addr, r.size, ui::text::Centre, kBlankTile);
+        // Same ownership as ::ClearOptions frees -- and the same reason it is
+        // worth freeing here: the save screen prints into this band once per
+        // attempt, so a message replaced is a row table nothing can reach.
+        delete[] contextRows;
+        contextRows = nullptr;
     }
 
     contextRows = ui::text::Make<charmap_generic, ' '>(infoText, r.size);
@@ -639,6 +784,132 @@ eOptions ChoiceWheel(const eOptions* const pOptions, const u8 sOptionsIn) {
     return pOptions[opt];
 }
 
+/** @brief Blanks the context band and gives its row table back. */
+static void ClearContext() {
+    if (!contextRows) return;
+    const Rect r = contextRect;
+    ui::text::Clear(contextRows, ppu::CartesianToAddress(r.pos), r.size,
+                    ui::text::Centre, kBlankTile);
+    delete[] contextRows;
+    contextRows = nullptr;
+}
+
+/**
+ * @brief The message a failed write is explained with.
+ *
+ * The same mapping ::main makes for the same codes, and the same judgement
+ * behind it: a player is told what they can act on (no card, a full card, a
+ * card with no save on it) and everything else is one "could not save",
+ * because nothing a player does differs between a busy card, a denied
+ * operation and a bad path. ::save::LastNativeError is where the difference
+ * goes -- into the log, for whoever is reading it.
+ */
+static const u8* SaveErrorText(const save::eError err) {
+    switch (err) {
+        case save::no_device: return saveNoDeviceText.data();
+        case save::missing:   return saveNoFileText.data();
+        case save::full:      return saveFullText.data();
+        case save::too_large: return saveLargeText.data();
+        default:              return saveWriteFailedText.data();
+    }
+}
+
+/**
+ * @brief Shows SAVING in this mode's own quadrant, writes ::saveData, and
+ *        offers RETRY / CONTINUE if the write fails.
+ *
+ * REACHED FROM TITLE MODE, not from ::main -- the options page's settings ARE
+ * the save file (demo/src/save.hpp's SaveFile::config is what uitk writes the
+ * page's buttons and sliders straight into), so the moment the player leaves
+ * that page is the moment there is something new to write. ::title::main calls
+ * this on the B that backs out of the page, before the page animates away.
+ *
+ * IT BORROWS THIS MODE'S SCENE RATHER THAN DEFINING ONE. ::MakeScene's three
+ * boxes are already anchored in the bottom-right quadrant
+ * (::SceneOriginTiles), already sized against the live viewport, and
+ * ::PrintContext/::ChoiceWheel already draw a message with a two-option wheel
+ * under it -- which is the whole of this screen. So this is the save flow
+ * written once and shown twice, which is also why the layout is re-Made here:
+ * the GameCube's viewport may have changed width since boot (the options page
+ * has a widescreen button on it, ::title::ApplyWidescreenChange), and every
+ * anchor is derived from that width.
+ *
+ * WHY THAT QUADRANT IS FREE TO BORROW. The title screen's menu band is the
+ * right-hand page's rows 0-5 and nothing else (::title::kMenuBandRows, and
+ * demo/ui/title.uis' own quadrant), while this scene sits on the middle rows of
+ * the same page -- row 13 for the message, 17 for the wheel. So pointing the
+ * camera at the page shows the title text still sitting across the top with
+ * SAVING under it, and not one tile of either scene is written over the other.
+ *
+ * THE CAMERA IS NOT PUT BACK, and the caller must not expect it to be: there
+ * is no way to read a scroll back out of the PPU, so what the frame looked at
+ * before this is not something this function can know. It is not a gap --
+ * ::title::nmi_handler_lockAnimReverse, which is where the B that got here
+ * hands over next, writes the scroll on every single frame it runs, so the
+ * first vblank after this returns re-points the camera on its own. The NMI
+ * VECTOR is restored, because that one can be read.
+ *
+ * @return true when ::saveData reached the medium; false when the player chose
+ *         CONTINUE over a failure. Nothing acts on it yet -- the title screen
+ *         comes back either way -- but a caller that wanted to refuse to leave
+ *         until the save landed has the answer here rather than in a log line.
+ */
+bool SaveScreen() {
+    // The vectors, for the span of this screen only. ::nmi_handler is this
+    // mode's own stub -- one frame of the arrow's sway and the OAM upload --
+    // which is exactly what a wheel needs and all it needs; title mode's
+    // handler would re-scroll the frame back onto the options page every
+    // vblank and undo the camera below.
+    void (* const callerNMI)() = pNMI;
+    pNMI = nmi_handler;
+
+    // Nothing may fire a raster split under this screen. Title mode arms one
+    // for its menu band and would re-point the scroll mid-frame if it landed;
+    // the locked options state leaves none armed, so this is the belt to that
+    // brace and costs one register write. The IRQ VECTOR is left alone: it is
+    // the caller's, and with nothing armed it is never reached.
+    mmc3::AcknowledgeScanlineIRQ();
+
+    MakeScene();
+    ppu::SetScroll(SceneOriginPixels());
+
+    bool saved = false;
+    while (true) {
+        PrintContext(saveSavingText.data());
+        // One frame BEFORE the write starts, so SAVING is actually on screen
+        // for it: a memory card write that succeeds immediately would
+        // otherwise draw the word and take it away again inside the same
+        // frame, and the player would see nothing at all.
+        WaitBody();
+
+        const save::Response response = SaveGame(WaitBody);
+        if (response.err == save::found) {
+            saved = true;
+            break;
+        }
+
+        log("pregame::SaveScreen: save failed err=%d native=%d",
+            response.err, save::LastNativeError());
+
+        PrintContext(SaveErrorText(response.err));
+        // RETRY re-runs the whole attempt, which is why the loop encloses the
+        // message as well as the write: a card inserted in answer to NO MEMORY
+        // CARD INSERTED has to be probed again, and ::SaveGame's next call is
+        // what does that. CONTINUE leaves without a save, exactly as it does
+        // everywhere else in this mode.
+        if (ChoiceWheel(errorOpts, sizeof(errorOpts)) != Retry) break;
+    }
+
+    // The band goes back to blank tiles. Nothing on screen depends on it --
+    // the rows this borrowed are ones the title screen never shows -- but a
+    // screen that cleans up after itself is what lets the next visit draw into
+    // the same rows without knowing what the last one left.
+    ClearContext();
+
+    pNMI = callerNMI;
+    return saved;
+}
+
 bool LoadSave() {
     save::Response response { };
     while (response = save::Load(&saveData, sizeof(saveData), &response), !response.done) {
@@ -661,6 +932,28 @@ bool LoadSave() {
         }
 
         PopulateSaveData(); // restore defaults
+
+        // ::saveLoaded deliberately NOT set on this path. CONTINUE means the
+        // player chose to carry on with a save this build cannot read, so
+        // ::saveData.config holds that file's bytes laid out to some other
+        // version's shape -- a slider amount that was a button bitfield, or
+        // the reverse. ::PopulateSaveData above restores the HEADER and the
+        // version; the config's defaults belong to the scene that declares
+        // them, so leaving the flag false is what hands that job to
+        // ::gen::options::Make() where it already lives.
+        return true;
+    }
+
+    // THE LOAD IS ONLY TRUSTED WHEN BOTH HALVES AGREE. ::ValidateSave above
+    // reads ::saveData.version -- but a transfer that never happened leaves
+    // whatever was in the struct, and ::PopulateSaveData stamped a valid
+    // version into it before this mode ever touched the card, so a failed load
+    // validates perfectly well. `err == found` is the other half: it says the
+    // bytes on screen came off the medium rather than out of our own BSS.
+    saveLoaded = response.err == save::found;
+    if (!saveLoaded) {
+        log("pregame: load did not complete (err=%d native=%d) -- keeping scene defaults",
+            response.err, save::LastNativeError());
     }
 
     return true;
@@ -897,7 +1190,15 @@ bool TryCreateSave() {
 }
 
 // populate saved data with its basic information for creation
+//
+// THE VERSION IS PART OF THAT INFORMATION, and it was missing: every field
+// below is metadata the card shows, and ::saveVersion is what ::ValidateSave
+// reads back to decide the file is this build's. Without it a save created here
+// went to the card with the zero its BSS started on and came back "SAVE FILE
+// CORRUPTED" on the very next boot. ::SaveGame stamps it for the same reason on
+// the write-back path (demo/src/save.cpp).
 void PopulateSaveData() {
+    saveData.version = saveVersion;
 #ifdef TARGET_GC
     memcpy(saveData.header.banner,      banner,     sizeof(banner));
     memcpy(saveData.header.icon,        icon,       sizeof(icon));
@@ -925,6 +1226,10 @@ const char gameDesc[32] = "It has Mary in it.\x00";   // ASCII
 #endif
 
 } // namespace pregame
+
+static void LoadConfig() {
+
+}
 
 // GLOBAL, NOT pregame::savePath, because that is where it is DECLARED --
 // demo/src/save.hpp, beside ::saveData, which is the save data this path

@@ -20,6 +20,10 @@
 #include "../../animations/gen/mary_standing.hpp"
 #include "level.hpp"
 #include "level/levels.hpp"
+// ::pregame::SaveScreen -- the save flow this page's B press runs. The header
+// compiles to nothing off the GameCube (its own TARGET_GC guard), which is why
+// there is no #ifdef around the include itself.
+#include "pregame.hpp"
 #include "pnes/mappers/mmc3.hpp"
 #include "pnes/extras/ui/text.hpp"
 
@@ -380,20 +384,57 @@ namespace title {
         return PreviewScrollYFor(SplitRow());
     }
 
+    // The ABSOLUTE plane Y the menu band begins at, and so the Y ::ApplySplit
+    // writes at the raster split: ::ppu::SetScroll's Y names the plane row
+    // sourced AT the scanline the write lands on -- on NES because the
+    // four-write sequence copies t into v there and then, and on the emulated
+    // backends because ::emu::GenerateBands re-anchors its own row counter to
+    // it (`ys_base = scrollY - py`, src/emu/ppu.cpp) -- so there is nothing to
+    // add for the scanlines already behind it.
+    //
+    // ZERO, because demo/ui/title.uis and demo/ui/gameOptions.uis sit in
+    // nametable quadrant 1 (UR): its Y offset is 0 and its X offset is the one
+    // ::kMenuNT supplies, so the band IS plane rows 0..kMenuBandRows - 1 of the
+    // right-hand page.
+    //
+    // Both scenes were quadrant 3 (BR) before, where the band was plane rows
+    // 30.. and this was the plane's own height (240 on a full-height target),
+    // reached as `PreviewScrollYForPixels(split) + split` and wrapped back down
+    // to a page row by ::SetScroll's own `y >= 240` fold. The tiles have not
+    // moved: vertical mirroring (::mmc3::SetMirroring(false), ::main) aliases
+    // the lower pages onto the SAME physical nametables as the upper ones, so
+    // quadrant 3 row 0 and quadrant 1 row 0 were always the same memory. Only
+    // the row the scroll names, and the one uitk bakes into the generated
+    // addresses, have changed -- which is the whole of this move.
+    constexpr u16 kMenuBandOriginPy = 0;
+
     // The scroll ui/impl/singleChoice.hpp places the arrow by -- see its
     // ::SelectorScroll declaration for why it has to ask the mode at all.
     //
     // This is the scroll the menu band is drawn under, not the frame's
     // top-of-screen scroll: on a single-screen target ::ApplySplit switches to
-    // it at the raster split (X to ::kMenuNT's nametable, Y to the menu
-    // plane), and the arrow is a sprite sitting over THOSE rows. On a
-    // dual-screen one there is no switch -- the UI is plane rows 30+ of
+    // it at the raster split (X to ::kMenuNT's nametable, Y to
+    // ::kMenuBandOriginPy), and the arrow is a sprite sitting over THOSE rows.
+    // On a dual-screen one there is no switch -- the UI is plane rows 30+ of
     // nametable 0, read under the frame's own bottom-anchored scroll -- so the
     // X term is zero and the Y term is the scroll already in force. Either way
     // this is the scroll that plane coordinates below the split are seen
     // through, which is exactly what converts one to a screen position.
+    //
+    // The single-screen Y is NEGATIVE now that the band sits in a TOP quadrant:
+    // its plane rows start at 0 but its scanlines start at the split, so the
+    // offset between the two is -(split) -- plane row 1 under a split at 192 is
+    // screen row 200, not row -40. Returned as the u16 that wraps to it, which
+    // is what ::ui::impl::PlaceSelector's own `pos.y * 8 - scroll.y` undoes
+    // when it narrows the difference to i16: the modular arithmetic is exact in
+    // both 16- and 32-bit `int`, so the arrow lands on the band on NES and off
+    // it alike. It is also why the term cannot simply be folded into the plane
+    // height the way ::SetScroll folds its own -- 48 (= -192 mod 240) is a real
+    // scroll of the PREVIEW, and PlaceSelector does no such fold.
     static vec2<u16> MenuBandScroll() {
-        return {static_cast<u16>(kUiOnOwnPanel ? 0 : (kMenuNT << 3)), PreviewScrollY()};
+        if constexpr (kUiOnOwnPanel) return {0, PreviewScrollY()};
+        return {static_cast<u16>(kMenuNT << 3),
+                static_cast<u16>(kMenuBandOriginPy - (static_cast<u16>(SplitRow()) << 3))};
     }
 
     AI inline u8 SplitDelay()   { return ::video::Is50Hz() ? 58 : 88; }
@@ -424,32 +465,6 @@ namespace title {
 
     static void ArmSplitIRQFor(const u8 splitRow) {
         ArmSplitIRQForPixels(static_cast<u16>(splitRow) << 3);
-    }
-
-    // Same row->absolute-Y math ::ApplySplit uses, parametrized for the same
-    // reason as ::ArmSplitIRQFor above.
-    // The ABSOLUTE Y the split band starts at: the frame's own preview scroll
-    // plus the split's scanline, because the PPU's Y counter has free-run that
-    // far by the time the handler fires. On a 240-row plane scrolled to
-    // ::PreviewScrollYForPixels (48 on a full-height target, = 240 - 192) a
-    // split at scanline 192 therefore wants 48 + 192 = 240, which wraps to row
-    // 0 of the next plane -- where the menu lives.
-    //
-    // This used to return a bare splitPixelRow unless the panel was short
-    // (DS/GBA). That was only ever safe because a mid-frame Y write did not
-    // land: on NES ::ppu::SetScroll wrote the plain $2005 pair, whose vertical
-    // half never reaches v within the frame, and the emulated backends
-    // defaulted to ignoring a handler's Y too -- so on every target but the DS
-    // the value was discarded and v simply wrapped to the menu plane on its
-    // own. Now that SetScroll latches Y mid-frame (the four-write sequence),
-    // the shortcut landed the band on row 24 of the preview plane instead,
-    // which is blank, and the title UI vanished.
-    static u16 SplitYForPixels(const u16 splitPixelRow) {
-        return static_cast<u16>(PreviewScrollYForPixels(splitPixelRow) + splitPixelRow);
-    }
-
-    static u16 SplitYFor(const u8 splitRow) {
-        return SplitYForPixels(static_cast<u16>(splitRow) << 3);
     }
 
     // Draws the options panel's own content. Called once at startup and, on a
@@ -930,23 +945,89 @@ namespace title {
         // It stays here, not in ::DrawOptionsPanel: it resolves anchors and
         // zeroes running state, which must happen once, not on every mode
         // entry.
+#ifndef TARGET_NES
+        // THE LOADED SETTINGS, LIFTED OUT FROM UNDER Make(). Every control on
+        // the options page IS a field of ::saveData.config -- uitk's
+        // bss_prefix/Symbol Prefix arrangement, see demo/src/save.hpp -- and
+        // every component's Make() writes its AUTHORED DEFAULT into that same
+        // field (`button_state[0] |= 1 << n`, `amount = 0`; see any
+        // demo/gen/options/<target>/options.hpp). The two cannot both be in
+        // one byte, so the file's copy comes out first and goes back after.
+        //
+        // A COPY AND NOT A POINTER, and not a re-read either: there is nowhere
+        // else the config exists. ::save::Load wrote it into this struct and
+        // Make() is about to overwrite it in place, so the only thing standing
+        // between a loaded setting and the default is this local.
+        const SaveFile::Config loadedConfig = saveData.config;
+#endif
         gen::options::Make();
 
 #ifndef TARGET_NES
-        // Both mix sliders open at FULL, and the audio backend is told so.
-        //
-        // `amount` is uitk's own byte and starts at 0, which under
-        // audio::TrackVolume's mapping (0 = silence, 100 = full output) would
-        // boot the game muted with a handle parked at the left end claiming
-        // exactly that. Seeded here, which is what sliders.hpp's Draw() means
-        // by "a caller wanting a non-zero default writes `amount` before the
-        // first Draw()" -- after Make() has resolved the rect this reads, and
-        // before ::DrawOptionsPanel paints the handle.
-        //
-        // The SFX slider is seeded too even though nothing reads it yet: the
-        // two are one control surface, and opening with one at full and the
-        // other at zero would read as a bug rather than as an unwired feature.
-        {
+        if (saveLoaded) {
+            // The file wins over the authored defaults -- which is the whole
+            // of "a saved option reflects in the UI": every Draw() below
+            // dispatches on these same bytes (ui/impl/buttons.hpp's
+            // `Enabled() ? Enabled : Disabled`, sliders.hpp's handle
+            // position), so putting them back before ::DrawOptionsPanel is
+            // what paints the page the way the player left it.
+            saveData.config = loadedConfig;
+
+            namespace ac = gen::options::audioCanvas;
+            const Rect mr = ac::musicSlider::rect;
+            const Rect sr = ac::SFXSlider::rect;
+
+            // A STORED HANDLE POSITION IS NOT PORTABLE BETWEEN TRACK WIDTHS,
+            // and the save holds the position rather than the proportion: a
+            // track is ::SliderTravel(rect width) cells wide, the rect comes
+            // from ::video::viewport_tx(), and that moves with the GameCube's
+            // aspect (6 cells at 4:3, 9 at 16:9) and with a desktop window.
+            // Normally the two agree -- ::pregame::ApplyLoadedConfig has
+            // already restored the aspect this save was written at, which is
+            // exactly why it runs before any of this -- but a save carried
+            // over from a build whose scene was a different shape would
+            // otherwise park a handle past the end of its own track and draw
+            // it outside the widget.
+            //
+            // Clamped rather than rescaled, because the position is all the
+            // file has: with no record of what travel it meant, the nearest
+            // legal cell is the most this can honestly recover.
+            const u8 mTravel = ui::impl::SliderTravel(mr.size.x);
+            const u8 sTravel = ui::impl::SliderTravel(sr.size.x);
+            if (mTravel && ac::musicSlider::amount >= mTravel) {
+                ac::musicSlider::amount = static_cast<u8>(mTravel - 1);
+            }
+            if (sTravel && ac::SFXSlider::amount >= sTravel) {
+                ac::SFXSlider::amount = static_cast<u8>(sTravel - 1);
+            }
+
+            // The engine told what the restored handle says, for the same
+            // reason the seed below tells it what full scale says: nothing
+            // else ever does. ::TrackVolume is only otherwise reached from the
+            // slider's own DrawChange (ui/impl/sliders.hpp), i.e. from a MOVE
+            // -- so a volume that was merely loaded, never moved, would leave
+            // the mix wherever the backend booted while the handle claimed
+            // otherwise.
+            audio::TrackVolume(ui::impl::SliderPercent(mr.size.x, ac::musicSlider::amount));
+        } else {
+            // Both mix sliders open at FULL, and the audio backend is told so.
+            //
+            // `amount` is uitk's own byte and starts at 0, which under
+            // audio::TrackVolume's mapping (0 = silence, 100 = full output) would
+            // boot the game muted with a handle parked at the left end claiming
+            // exactly that. Seeded here, which is what sliders.hpp's Draw() means
+            // by "a caller wanting a non-zero default writes `amount` before the
+            // first Draw()" -- after Make() has resolved the rect this reads, and
+            // before ::DrawOptionsPanel paints the handle.
+            //
+            // The SFX slider is seeded too even though nothing reads it yet: the
+            // two are one control surface, and opening with one at full and the
+            // other at zero would read as a bug rather than as an unwired feature.
+            //
+            // THE no-save BRANCH NOW, not the only path: a cold boot, a card
+            // error, a version this build cannot read. The authored defaults
+            // Make() just wrote are what the rest of the page keeps in that
+            // case, and this is the one control whose authored default (0) is
+            // not the one the page wants to open on.
             namespace ac = gen::options::audioCanvas;
             const Rect mr = ac::musicSlider::rect;
             const Rect sr = ac::SFXSlider::rect;
@@ -1154,6 +1235,42 @@ namespace title {
                         // it backed out of is not something a player needs
                         // told in a different sound.
                         ui::impl::PostSfx(sfx::deselect);
+#ifdef TARGET_GC
+                        // ...and the one place the page's settings are written
+                        // out. Every control on it writes straight into
+                        // saveData.config (demo/src/save.hpp's SaveFile), so
+                        // leaving the page is the moment the file and the
+                        // screen stop agreeing, and the moment there is
+                        // something to save. ::pregame::SaveScreen blocks with
+                        // SAVING up until the card answers, and runs its own
+                        // RETRY / CONTINUE wheel if it will not.
+                        //
+                        // THE CORNERS GO FIRST, because the save screen is
+                        // drawn in a different quadrant and these sprites are
+                        // in screen space: left where they are they would
+                        // bracket a column that is no longer on screen. The
+                        // unwind parks them again on its own first frame
+                        // (::nmi_handler_lockAnimReverse), so this is only
+                        // about the frames in between.
+                        //
+                        // The posted deselection survives it: ::pregame's own
+                        // frame pump spends the same mailbox this does, so the
+                        // sound plays over the save screen rather than being
+                        // dropped.
+                        //
+                        // The return value is deliberately unused. A card that
+                        // cannot be written is the player's answer to make --
+                        // they have already chosen CONTINUE in that wheel --
+                        // and refusing to leave the page would trap them in it
+                        // with no card in the console.
+                        ParkOptionsCorners();
+                        (void)pregame::SaveScreen();
+#endif
+                        // AFTER the save screen, not before: that call hands
+                        // the NMI vector back to whatever it found here, so an
+                        // assignment made first would be handed straight back
+                        // to ::nmi_handler_locked and the page would never
+                        // unwind.
                         pNMI = nmi_handler_lockAnimReverse;
                     }
                 } else if (pressed & input::B) {
@@ -1369,9 +1486,29 @@ namespace title {
         const u8 audioIndex  = gen::options::audioCanvas::index;
         const u8 titleOption = gen::title::TitleOptions::option;
         const u8 playOption  = gen::gameOptions::gameOptions::option;
+
+        // EVERY BUTTON'S BIT, and this was the bug that made this button a
+        // one-way door. The four restores around it are of state that lives
+        // OUTSIDE the save file (a Canvas's focus index, a menu's option); the
+        // three buttons live INSIDE it, in ::saveData.config, and every
+        // component's Make() below rewrites its own field with the default the
+        // scene was authored with. enableWidescreenButton's default is OFF --
+        // so the press that got here set the bit, this re-Make cleared it, and
+        // the player was left looking at a 16:9 screen whose button said
+        // ENABLE WIDESCREEN and whose next press re-applied the aspect it was
+        // already in. 4:3 was unreachable for the rest of the session.
+        //
+        // The whole config in one copy rather than the one bit that caused it:
+        // the same reasoning holds for every field uitk puts in there, and a
+        // list maintained by hand here is a list that goes stale the next time
+        // a control is added to the scene.
+        const SaveFile::Config cfg = saveData.config;
+
         gen::options::Make();
         gen::title::Make();
         gen::gameOptions::Make();
+
+        saveData.config = cfg;
         gen::options::videoCanvas::index  = videoIndex;
         gen::options::audioCanvas::index  = audioIndex;
         gen::title::TitleOptions::option  = titleOption;
@@ -1677,7 +1814,7 @@ namespace title {
             BankMenuTiles();
             return;
         }
-        ppu::SetScroll({static_cast<u16>(kMenuNT << 3), SplitYFor(SplitRow())});
+        ppu::SetScroll({static_cast<u16>(kMenuNT << 3), kMenuBandOriginPy});
 
         // After the scroll write, not before: that one is the raster-critical
         // half of this handler, and two register writes ahead of it would push
@@ -1854,7 +1991,7 @@ namespace ui::impl {
     //
     // No X term, unlike ::SelectorScroll: options.uis sits in nametable
     // quadrant 2, whose X offset is 0, and the locked frame scrolls X to 0 --
-    // the title menu's quadrant 3 is what that scroll's X is for.
+    // the title menu's quadrant 1 is what that scroll's X is for.
     vec2<u16> CanvasScroll() { return {0, title::PreviewScrollYForPixels(0)}; }
 
     // The SFX on/off button, NES only -- and the bit reads as "the feature is

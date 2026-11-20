@@ -123,7 +123,7 @@
             "vertical": true
         }
     ],
-    "quadrant": 3,
+    "quadrant": 1,
     "region": "NTSC",
     "showTileGrid": false,
     "target": "NES",

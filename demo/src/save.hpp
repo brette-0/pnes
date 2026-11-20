@@ -31,6 +31,13 @@ constexpr auto saveFullText        = ::charmap_generic.encode("NOT ENOUGH FREE S
 constexpr auto saveLargeText       = ::charmap_generic.encode("SAVE FILE IS TOO LARGE FOR GAME");
 constexpr auto saveChooseCard       = ::charmap_generic.encode("CHOOSE CARD");
 constexpr auto saveUseCard          = ::charmap_generic.encode("CONFIRM USE CARD");
+// The write-back flow's own three, which ::pregame::SaveScreen shows in the
+// same context band pregame's messages use. Short enough for one row of the
+// narrowest band this scene has (the 4:3 GameCube's 40 - 8 = 32 tiles), so
+// none of them depends on the wrapper to be readable.
+constexpr auto saveSavingText       = ::charmap_generic.encode("SAVING");
+constexpr auto saveWriteFailedText  = ::charmap_generic.encode("COULD NOT SAVE GAME");
+constexpr auto saveNoFileText       = ::charmap_generic.encode("NO SAVE FILE TO WRITE TO");
 #endif
 
 struct SaveHeader {
@@ -79,6 +86,68 @@ extern CARTMEM SaveFile saveData;
 
 #ifdef TARGET_GC
 extern char* savePath;
+#endif
+
+#ifndef TARGET_NES
+/**
+ * @brief Whether ::saveData.config came off a real, validated save this boot.
+ *
+ * THE ONE THING A LOAD CANNOT SAY FOR ITSELF, because the loaded config and the
+ * authored defaults live in the SAME BYTES: every uitk-generated control is a
+ * reference into ::SaveFile::config (demo/gen/options/<target>/bss.hpp), so a
+ * component's Make() -- which writes its default into its own field -- is
+ * indistinguishable from a load afterwards by looking at the field. This flag
+ * is what tells ::title::main which of the two it is holding, and so whether to
+ * put the file's bytes back over the defaults Make() just wrote.
+ *
+ * SET IN EXACTLY ONE PLACE: ::pregame::LoadSave, when the transfer reported
+ * ::save::found AND ::pregame::ValidateSave accepted the version. A card error,
+ * a version mismatch, or the corrupt-save CONTINUE path all leave it false,
+ * which is the honest answer -- those leave ::saveData holding either junk or
+ * nothing, and the options page is better served by its own defaults than by
+ * either.
+ *
+ * FALSE FOREVER ON A TARGET WITH NO PREGAME MODE (everything but the
+ * GameCube), which is correct rather than unimplemented: nothing there loads a
+ * save at all, so there is never a file to prefer over the defaults.
+ */
+extern bool saveLoaded;
+#endif
+
+#ifndef TARGET_NES
+/**
+ * @brief Writes ::saveData back to wherever it already lives.
+ *
+ * THE WHOLE OF SAVING, from a caller's point of view: it stamps the version,
+ * runs ::save::Save to completion and hands back the ::save::Response it
+ * finished with. What that response MEANS on screen is not this function's
+ * business -- ::pregame::SaveScreen is what turns an error into a message and
+ * a retry/continue wheel -- so this neither draws nor decides anything.
+ *
+ * @p pump IS CALLED ONCE PER WAITED FRAME, and it is the reason this is a
+ * function at all rather than a line at the call site. Every save call in this
+ * library is TICKED: it reports `done` when the operation is over, and until
+ * then the game is expected to keep presenting frames (pnes/save.hpp). So the
+ * loop needs the caller's own "one frame of my mode" -- ::pregame::WaitBody,
+ * which drives audio, spends the sound-effect mailbox and waits for present --
+ * and a save that blocked without it would freeze the screen it is drawn on
+ * and silence the music. A null @p pump falls back to a bare
+ * ::video::WaitForPresent so a caller that has nothing of its own to tick
+ * still cannot hang.
+ *
+ * THE VERSION IS STAMPED HERE, not left to the caller: ::saveVersion describes
+ * the layout of the struct this call is about to write, so the only moment it
+ * can be known to be right is the moment the bytes go out. ::pregame's
+ * ValidateSave is what reads it back, and a save written without it comes back
+ * as version 0 and is judged corrupt on the next boot.
+ *
+ * NOT COMPILED ON NES, where nothing calls it: the options page it is reached
+ * from is not shipped there (see ::title::main's own B handling), and a battery
+ * cart's RAM is the save -- ::saveData is already in it, so there is no
+ * transfer for this to run. Ungating is this one guard, since every call below
+ * is declared on every target.
+ */
+save::Response SaveGame(void (*pump)());
 #endif
 
 constexpr void UpdateTextForSave(const char* buff, void* target, std::size_t sName);

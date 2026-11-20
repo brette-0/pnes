@@ -3,7 +3,6 @@
     "charmap": "generic",
     "data_prefix": "TITLE_DATA",
     "linker_prefix": "TITLE",
-    "nametable": 3,
     "nodes": [
         {
             "children": [
@@ -98,6 +97,7 @@
             "name": "[SC] gameOptions"
         }
     ],
+    "quadrant": 1,
     "region": "NTSC",
     "target": "NES",
     "version": 1

@@ -32,6 +32,24 @@ namespace pregame {
      */
     void main();
 
+    /**
+     * @brief Shows SAVING, writes ::saveData, and offers RETRY / CONTINUE if
+     *        the write fails.
+     *
+     * The other half of this mode, for the other end of the session: ::main
+     * finds or creates the save before anything has been played, and this
+     * writes it back when the player has changed something worth keeping. It
+     * is a FUNCTION AND NOT A MODE because it is drawn over whatever mode
+     * called it -- it borrows this mode's scene, its frame pump and its NMI
+     * handler, points the camera at the bottom-right quadrant the scene lives
+     * in, and gives the NMI vector back on the way out.
+     *
+     * Blocks until the player is done with it, so it must be called from a
+     * MAINLINE and never from a handler. See its definition in pregame.cpp for
+     * what it does and does not restore.
+     */
+    bool SaveScreen();
+
 #ifdef TARGET_GC
     extern const OGC_BANNER_CI(banner);
     extern const OGC_ICON_CI(icon);
