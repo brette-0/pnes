@@ -68,6 +68,24 @@ template <> struct mmc3::bank_layout<actor_tag> {
 #define CARTMEM CREATE_SEGMENT_KEYWORD(".cartmem")
 
 /**
+ * @brief Pins a variable to the SAVE reservation: a fixed 256 bytes at the top
+ *        of MMC3's PRG-RAM window ($7F00-$7FFF).
+ *
+ * ::CARTMEM with an address that cannot move. Both land in the same
+ * battery-backed 8 KiB and both are outside the range crt0 zeroes, but
+ * `.cartmem` is placed sequentially after .data/.bss, so its address depends on
+ * how much static state the build has -- add a global and it slides. For
+ * anything whose contents OUTLIVE THE BUILD that is a bug waiting for a
+ * firmware update: the new ROM reads the old cart at offsets nothing wrote.
+ * `.savemem` is at an absolute address in demo/link.ld, which also ASSERTs the
+ * reservation is big enough for whatever lands here.
+ *
+ * Use ::CARTMEM for cart RAM you just want; use this for the save. Expands to
+ * nothing off-NES, same as ::CARTMEM.
+ */
+#define SAVEMEM CREATE_SEGMENT_KEYWORD(".savemem")
+
+/**
  * @brief Pins a variable into the NES's own onboard system RAM, explicitly.
  *
  * Ordinary globals already land in system RAM via .bss/.data's default

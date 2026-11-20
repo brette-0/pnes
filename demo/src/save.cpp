@@ -9,7 +9,7 @@
 #include "pnes/video.hpp"   // the ::SaveGame fallback pump
 #endif
 
-CARTMEM SaveFile saveData;
+SAVEMEM SaveFile saveData;
 
 #ifndef TARGET_NES
 save::Response SaveGame(void (* const pump)()) {

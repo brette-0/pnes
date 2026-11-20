@@ -318,11 +318,50 @@ __stack = ORIGIN(prg_ram) + LENGTH(prg_ram) - 1;
  * link time) and the stack can't grow into it either (it starts one byte
  * below __heap_start, same top-of-region convention as __stack itself). */
 __static_writeable_end = __heap_start;
+
+/* THE SAVE, PINNED TO THE TOP OF THE WINDOW -- 256 bytes at $7F00, above the
+ * heap and the softstack and below nothing.
+ *
+ * WHY A FIXED ADDRESS AND NOT ::cartmem. mmc3-helper.ld places `.cartmem`
+ * sequentially out of prg_ram, immediately after .data/.bss/.noinit, so its
+ * address is a function of HOW MUCH STATIC STATE THIS BUILD HAPPENS TO HAVE.
+ * Add one global and every byte of the save moves -- which matters because the
+ * battery OUTLIVES THE BUILD: the next ROM reads an existing cart's save at
+ * offsets the previous one never wrote, and the bytes the old save occupied
+ * are now ordinary .bss for unrelated globals to scribble. Nothing detects
+ * either (there is no version check on NES), so it presents as settings
+ * randomly changing after a firmware update.
+ *
+ * `.savemem` AND NOT A SECOND prg_ram REGION, because a region split would
+ * also have to re-point REGION_ALIAS(c_writeable) and every default placement
+ * that rides on it. One output section at an absolute address pins the save
+ * and leaves the rest of the layout exactly as it was.
+ *
+ * SIZEOF(.savemem) IS WHAT GUARDS THE RESERVATION, and it is the reason this
+ * is worth doing in the linker rather than mirroring a number into a C++
+ * static_assert: the linker knows how big the section it just laid out is, so
+ * outgrowing 256 bytes is a build error naming the section instead of a silent
+ * overlap with the heap. ::SaveFile is 4 bytes today (a u16 version, the
+ * empty-on-NES SaveHeader, and the options scene's config byte), so this is
+ * 252 bytes of headroom carved out of a window with ~5 KiB idle.
+ *
+ * NOLOAD, same as `.cartmem`: runtime storage, nothing is loaded into it from
+ * the ROM file, and -- the point of the whole exercise -- it sits outside
+ * __bss_start/__bss_end so crt0's memset never reaches it. */
+__save_reserve = 256;
+__save_base = ORIGIN(prg_ram) + LENGTH(prg_ram) - __save_reserve;
+SECTIONS {
+  .savemem __save_base (NOLOAD) : { *(.savemem .savemem.*) } >prg_ram
+}
+
+/* Heap and softstack keep their shapes and move down under the save. */
 __heap_default_limit = 128;
-__heap_start = ORIGIN(prg_ram) + LENGTH(prg_ram) - 128;
+__heap_start = __save_base - 128;
 __stack = __heap_start - 1;
 ASSERT(__static_writeable_end <= __heap_start,
        "prg_ram's .data/.bss/.noinit grew into the reserved 128-byte heap at the top of prg_ram -- shrink static writeable usage or grow prg_ram/__prg_ram_size.")
+ASSERT(__save_base + SIZEOF(.savemem) <= ORIGIN(prg_ram) + LENGTH(prg_ram),
+       "saveData overflows its 256-byte reservation at the top of prg_ram -- grow __save_reserve (and move __heap_start with it) or shrink SaveFile.")
 
 /* Regression guard: the audio engine's code really did land in its bank. A
  * typo in FAMISTUDIO_CA65_CODE_SEGMENT (demo/famistudio_config.s) is

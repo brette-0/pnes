@@ -72,7 +72,8 @@ struct SaveHeader {
 #endif
 
 // ANY MEMBER ADDED HERE THAT THE NES SIDE READS MUST BE `atomic`. This struct
-// lives in battery-backed SRAM nothing initialises, but C++ still calls it
+// lives at a pinned address in battery-backed SRAM (::SAVEMEM) that nothing
+// initialises, but C++ still calls it
 // zero-initialised and LLVM acts on that: at LTO, a member with no store before
 // its first read is folded to zero and its storage dropped. The uitk fields in
 // `config` are already `atomic` (tools/uitk's BssSplit::decl), and `version` is
@@ -87,7 +88,7 @@ struct SaveFile {
 };
 
 
-extern CARTMEM SaveFile saveData;
+extern SAVEMEM SaveFile saveData;
 
 #ifdef TARGET_GC
 extern char* savePath;
