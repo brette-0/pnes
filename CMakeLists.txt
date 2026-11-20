@@ -2635,6 +2635,63 @@ transcoded into the .3dsx's RomFS as sfx/<name>.raw.")
         endif()
         target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
+        # ------------------------------------------------------------------
+        # Where a Switch save lives on the SD card.
+        #
+        # TWO NAMES AND NOT A PATH, for the Wii's reason (see WII_SAVE_DIR
+        # above): src/switch/save.cpp assembles "sdmc:/switch/<dir>/<file>"
+        # from them itself and static_asserts that neither contains a
+        # separator, because an NX_SAVE_DIR with a slash in it would silently
+        # point the save somewhere else -- possibly into another homebrew app's
+        # directory under sdmc:/switch.
+        #
+        # "switch" IS NOT A KNOB. It is the fixed parent the backend adds:
+        # hbmenu lists .nro files from sdmc:/switch and homebrew keeps its data
+        # under it by convention, so NX_SAVE_DIR names one directory inside
+        # that and nothing a project sets can put a save in the card's root.
+        #
+        # NX_SAVE_DIR IS THE ONE THAT CANNOT MOVE LATER, exactly as the Wii's
+        # cannot: this backend's search is PATH-based (there is no equivalent of
+        # CARD_FindFirst's gamecode filter on a filesystem), so a build that
+        # renames either knob stops finding every save written by every earlier
+        # build. The data is still on the card and the game simply reports that
+        # there is no save -- which looks like a bug in the card, so it is worth
+        # saying here and not only in the backend.
+        #
+        # NO SAVEDATA KNOBS (title id, account, NACP save-data sizes),
+        # deliberately: this backend saves to the SD card because an .nro has no
+        # savedata image of its own. See src/switch/save.cpp's header comment
+        # for the three things an installed title would change.
+        # ------------------------------------------------------------------
+        set(NX_SAVE_DIR      "super_mary_sisters" CACHE STRING "Switch save directory under sdmc:/switch")
+        set(NX_SAVE_FILENAME "save.dat"           CACHE STRING "Switch save file name inside NX_SAVE_DIR")
+
+        # Checked here as well as by save.cpp's own static_asserts, so that a
+        # bad value set in local.cmake names itself at configure time rather
+        # than as a static_assert in a backend the setter may never have opened.
+        foreach(_nx_knob NX_SAVE_DIR NX_SAVE_FILENAME)
+            string(LENGTH "${${_nx_knob}}" _nx_knob_len)
+            if(_nx_knob_len EQUAL 0 OR _nx_knob_len GREATER 255)
+                message(FATAL_ERROR
+                    "${_nx_knob} must be 1-255 characters, got \"${${_nx_knob}}\" (${_nx_knob_len}) "
+                    "-- it is one FAT long-name component, not a path")
+            endif()
+            if("${${_nx_knob}}" MATCHES "[/\\:]")
+                message(FATAL_ERROR
+                    "${_nx_knob} must be a single name with no '/', '\\' or ':', got \"${${_nx_knob}}\" "
+                    "-- src/switch/save.cpp adds the separators and the sdmc:/switch prefix itself")
+            endif()
+        endforeach()
+
+        # PRIVATE for the reason the OGC backend's own location knobs are: the
+        # save's location is the backend's business, and nothing a game includes
+        # reads it. A game that wants to show a player where its save went asks
+        # ::save::GetDeviceStatus, which answers with the complete path.
+        target_compile_definitions(pnes PRIVATE
+                "NX_SAVE_DIR=\"${NX_SAVE_DIR}\""
+                "NX_SAVE_FILENAME=\"${NX_SAVE_FILENAME}\"")
+
+
         file(GLOB_RECURSE DEMO_SOURCES CONFIGURE_DEPENDS demo/*.cpp)
         list(FILTER DEMO_SOURCES EXCLUDE REGEX "/demo/gen/(title|gameOptions)/")
         file(GLOB DEMO_TITLE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/demo/gen/title/${DEMO_TITLE_DIR}/*.cpp")

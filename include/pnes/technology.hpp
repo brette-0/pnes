@@ -8,6 +8,10 @@
  *
  * - ::PEEK / ::POKE / ::SPACESHIP — portable memory and compare ops.
  * - ::atomic — maps to `volatile` on NES and `_Atomic` elsewhere.
+ * - ::SAVE_DEVICE — whether this target's save lives on a device that can be
+ *   absent, which is what a save UI is gated on (pnes/save.hpp), and
+ *   ::SAVE_DEVICE_CHOICE — whether the player picks which device it goes to,
+ *   and ::SAVE_DEVICE_WAIT — whether a write is slow enough to announce.
  * - ::AI — force a function to be copied into every caller.
  * - ::NI — force a function to never be inlined into its caller(s).
  * - ::MINSIZE — Clang-only size-optimisation hint (silently dropped
@@ -28,6 +32,137 @@
 constexpr bool is_nes = true;
 #else
 constexpr bool is_nes = false;
+#endif
+
+/**
+ * @def SAVE_DEVICE
+ * @brief Defined on a target whose save lives on a DEVICE THAT CAN BE ABSENT.
+ *
+ * THE ONE LIST OF SUCH TARGETS, and the reason it exists is that there were
+ * three of them and they had drifted apart. Every gate on it -- the widened
+ * ::save::eError vocabulary in save.hpp, the demo's save-discovery mode, its
+ * device wheel, its boot mode, the write-back on leaving the options page -- was
+ * spelt `#ifdef TARGET_OGC`, which started out true (the GameCube's memory
+ * card was the only such device the library could reach) and then had to be
+ * widened by hand everywhere when the Wii's FAT backend arrived. The Switch is
+ * the third, and widening by hand a second time is how one of those gates gets
+ * missed: the Wii shipped once with the write-back in title.cpp still
+ * GameCube-only, so a Wii player could change a setting, see it saved, and
+ * boot to the defaults.
+ *
+ * WHAT IT MEANS, PRECISELY, because the two targets it excludes are excluded
+ * for opposite reasons:
+ *   - THE NES IS NOT IN IT even though its saves work. A battery cart's save IS
+ *     the cart (src/nes/mappers/mmc3.cpp): there is no device to find, nothing
+ *     to choose between, no file to create, and the backend answers every call
+ *     ::save::found. A game offered a device picker there would be picking
+ *     between one thing and itself.
+ *   - A TARGET ON THE WEAK BACKEND IS NOT IN IT either (src/all/save.cpp),
+ *     because it can only ever answer ::save::no_device -- a flow whose every
+ *     branch ends "there is nowhere to save" is not worth booting into.
+ *
+ * SO IT IS NOT "DOES SAVING WORK", which is ::SAVE_FILE's question and a
+ * project's to answer, and it is not "is there a backend at all". It is
+ * "is there a device to look for, choose, and fail to find", which is what a
+ * save UI is made of.
+ *
+ * A FOURTH BACKEND ADDS ITSELF HERE AND NOWHERE ELSE. Defined with no value
+ * and consumed with `#ifdef`, like ::SAVE_FILE and the TARGET_* family.
+ *
+ * IT LIVES IN THIS HEADER RATHER THAN IN save.hpp, WHERE IT BELONGS BY
+ * SUBJECT, for one hard reason: demo/src/main.hpp gates a GAME MODE on it, and
+ * including save.hpp to reach it breaks a GameCube build. save.hpp pulls in
+ * <ogc/card.h> under TARGET_GC (it has to -- a GameCube application declares a
+ * card_stat), libogc's own headers define a macro called FIXED, and the demo
+ * uses FIXED as a section attribute on its own functions:
+ *
+ *   error: expected initializer before '*' token
+ *     FIXED const u8* ColMapColumn(const u16 col) {
+ *
+ * ...in a translation unit that never mentions saving. This header is already
+ * reached by everything (pnes.hpp includes it, and so does save.hpp, so a
+ * save.hpp consumer still gets the macro), and it carries nothing a platform
+ * SDK could collide with.
+ */
+#if defined(TARGET_OGC) || defined(TARGET_NX)
+#define SAVE_DEVICE
+#endif
+
+/**
+ * @def SAVE_DEVICE_CHOICE
+ * @brief Defined when a save goes somewhere THE PLAYER PICKS, rather than to
+ *        the one place this platform has for it.
+ *
+ * ::SAVE_DEVICE SAYS THERE IS A DEVICE TO FIND; THIS SAYS THE PLAYER OWNS THE
+ * DECISION. They are not the same question, and conflating them is what put two
+ * prompts in front of a Switch player who had no choice to make. A GameCube
+ * save goes on one of two memory cards: removable, shared with every other
+ * game, finite in blocks, and possibly not the card the player meant -- so
+ * "YOU MAY CREATE A SAVE FILE" and "CONFIRM USE CARD" are asking something
+ * real, and the answer may be no. A Switch save goes to
+ * sdmc:/switch/<game>/<file> on the SD card the homebrew is already running
+ * from: one device, always present, the game's own directory, gigabytes spare.
+ * There is nothing to choose and nothing to consent to, so the demo creates it
+ * and says nothing (demo/src/modes/pregame.cpp).
+ *
+ * BOTH PROMPTS HANG OFF THE SAME MACRO, deliberately, because the two
+ * questions have the same precondition. "Shall I create one?" is only worth
+ * asking where the medium is the player's to spend, and that is exactly the
+ * situation in which "on which one?" also arises. A platform that wanted one
+ * prompt without the other would be a third capability, and none exists yet.
+ *
+ * WHAT IS NOT GATED ON IT: every FAILURE. "NO SD CARD FOUND", a full card, a
+ * denied write and the RETRY / CONTINUE wheel that follows each one are drawn
+ * on every ::SAVE_DEVICE target, because a save that cannot be written is
+ * something a player has to be told about wherever they are -- silence is only
+ * right for the ordinary case.
+ *
+ * SO THIS IS THE WII'S TOO, not the GameCube's alone: its two devices are the
+ * front SD slot and a USB disk, and which of them a save lands on is a
+ * decision a player may well have an opinion about. One device is what makes a
+ * target silent, not which console it is -- a future one-slot backend gets the
+ * Switch's behaviour by leaving itself out of this macro.
+ */
+#if defined(TARGET_OGC)
+#define SAVE_DEVICE_CHOICE
+#endif
+
+/**
+ * @def SAVE_DEVICE_WAIT
+ * @brief Defined when writing a save takes long enough that the player has to
+ *        be TOLD it is happening.
+ *
+ * THE THIRD OF THESE, AND IT IS ABOUT TIME RATHER THAN ABOUT OWNERSHIP.
+ * ::SAVE_DEVICE says there is a device to find; ::SAVE_DEVICE_CHOICE says the
+ * player picks it; this says the write is slow enough to need a screen in front
+ * of it. A GameCube memory card write is a ticked CARD_* sequence spread over
+ * many frames -- the game MUST keep presenting frames through it, so there is
+ * going to be something on screen and "SAVING" is the honest thing for it to
+ * be. A Switch write is one blocking stdio call to a filesystem the system has
+ * already mounted: it finishes inside the frame that started it.
+ *
+ * SO THE SCREEN IS NOT WORTH DRAWING THERE, and drawing it is actively worse
+ * than not. ::pregame::SaveScreen points the camera at another quadrant, draws
+ * a word, and points it back one frame later -- which on a console that saves
+ * in milliseconds is a flicker rather than a notification. The player asked to
+ * leave the options page; the save is a detail of that, and a detail that
+ * cannot be waited for should not be announced.
+ *
+ * WHAT HAPPENS INSTEAD, rather than nothing: the write is attempted BEFORE
+ * anything is drawn, and the screen is built only if it FAILED (see
+ * ::pregame::SaveScreen). So a successful save costs no frames and no camera
+ * move, and a failed one gets exactly the message and the RETRY / CONTINUE
+ * wheel it gets everywhere else. Nothing is traded away except the word
+ * SAVING on a console nobody could read it on.
+ *
+ * NOT MERGED WITH ::SAVE_DEVICE_CHOICE even though both are currently
+ * TARGET_OGC and nothing else. They answer unrelated questions, and the first
+ * backend that splits them tells them apart cleanly: a one-slot console with a
+ * genuinely slow medium wants this macro and not that one, which is a save
+ * created without asking and then written behind a SAVING screen.
+ */
+#if defined(TARGET_OGC)
+#define SAVE_DEVICE_WAIT
 #endif
 
 #include <intsh>

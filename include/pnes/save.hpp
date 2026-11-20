@@ -27,37 +27,39 @@ namespace save {
     /**
      * @brief What a finished operation has to say about itself.
      *
-     * TARGET_OGC AND NOT TARGET_GC, WHICH IS A STATEMENT ABOUT THE WII. The
-     * seven codes past ::no_device used to be gated on the GameCube alone,
-     * because the memory-card backend was the only one that could produce
-     * them -- and src/ogc/save.cpp's Wii half said so, answering ::missing
-     * where it meant ::no_device because the precise code was not declared on
-     * its own target. The Wii now saves to a FAT volume (the front SD slot or
-     * USB mass storage) and reaches every one of these honestly: a file that
-     * is already there is ::exists, a full card is ::full, a read-only volume
-     * is ::denied.
+     * ::SAVE_DEVICE AND NOT TARGET_GC, WHICH IS A STATEMENT ABOUT THE WII AND
+     * NOW ABOUT THE SWITCH TOO. The seven codes past ::no_device used to be
+     * gated on the GameCube alone, because the memory-card backend was the only
+     * one that could produce them -- and src/ogc/save.cpp's Wii half said so,
+     * answering ::missing where it meant ::no_device because the precise code
+     * was not declared on its own target. The Wii now saves to a FAT volume
+     * (the front SD slot or USB mass storage) and reaches every one of these
+     * honestly: a file that is already there is ::exists, a full card is
+     * ::full, a read-only volume is ::denied. The Switch's SD-card backend (src/switch/save.cpp) reaches
+     * the same ones through the same errno, which is the whole reason the gate
+     * is now a capability and not a platform: see ::SAVE_DEVICE.
      *
      * STILL GATED AT ALL, rather than declared everywhere, for the NES's sake:
      * a battery cart has one failure mode and a game that compiles for it
-     * should not be offered six codes it can never see. TARGET_OGC is defined
-     * on both consoles in the libogc family (CMakeLists.txt sets it alongside
-     * TARGET_GC / TARGET_WII), so this widens the vocabulary to the Wii
-     * WITHOUT touching the NES, the desktop, or any target still on the weak
-     * backend in src/all/save.cpp. A future backend widens it again, in the
-     * same shape and for the same reason.
+     * should not be offered six codes it can never see. ::SAVE_DEVICE is
+     * defined for every target with a save device that can be absent, so this
+     * widens the vocabulary to the Wii and the Switch WITHOUT touching the NES,
+     * the desktop, or any target still on the weak backend in
+     * src/all/save.cpp. A future backend widens it by adding itself to that
+     * one macro.
      *
-     * ::busy IS DECLARED ON THE WII AND NEVER RETURNED THERE, deliberately. A
-     * FAT transfer is a blocking libfat call rather than a ticked card
-     * sequence, so no Wii operation is ever in flight across two calls and
-     * nothing can collide with one -- but a game that handles ::busy for the
-     * GameCube must still COMPILE on the Wii, and a dead branch costs it
-     * nothing.
+     * ::busy IS DECLARED ON THE WII AND THE SWITCH AND NEVER RETURNED THERE,
+     * deliberately. A FAT transfer is a blocking libfat call, and a Switch
+     * transfer a blocking stdio one, rather than a ticked card sequence -- so
+     * no operation on either is ever in flight across two calls and nothing can
+     * collide with one. But a game that handles ::busy for the GameCube must
+     * still COMPILE on them, and a dead branch costs it nothing.
      */
     enum eError : u8 {
         found,
         missing,
         no_device,
-#ifdef TARGET_OGC
+#ifdef SAVE_DEVICE
         busy,
         exists,
         full,
@@ -162,7 +164,9 @@ namespace save {
      * Bit `n` is set when device `n` holds media this platform can save to --
      * the same index ::GetDeviceStatus takes, so bit 0 is the GameCube's slot A
      * and bit 1 its slot B, and on the Wii bit 0 is the front SD slot and bit 1
-     * USB mass storage. Zero means there is nowhere to save at this
+     * USB mass storage. A BACKEND MAY HAVE ONLY ONE: on the Switch bit 0 is the
+     * SD card and no other bit is ever set, which is why a caller reads bits
+     * rather than counting devices. Zero means there is nowhere to save at this
      * instant, which is also the permanent answer on every target still on the
      * weak backend in src/all/save.cpp.
      *
@@ -199,7 +203,9 @@ namespace save {
      *
      * @p index is 0-based and names the same device ::AccessibleDevices sets bit
      * `index` for: 0 and 1 are slots A and B on the GameCube and the SD slot
-     * and USB storage on the Wii, and anything else reports ::no_device rather
+     * and USB storage on the Wii, 0 is the SD card on the Switch and 1 is
+     * already past the last one there, and anything else reports ::no_device
+     * rather
      * than being refused as a mistake -- which is what lets a caller walk
      * indices until it sees one, with no slot count to ask for. The outcomes:
      *

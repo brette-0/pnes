@@ -28,12 +28,12 @@ enum class eGameModes : u8 {
     Title,  // title screen
     World,  // world map, level select
     Level,  // gameplay, platforming in level
-#ifdef TARGET_OGC
+#ifdef SAVE_DEVICE
     // Save discovery: find, load or create the save before any mode that
-    // assumes it exists runs. The mode main.cpp BOOTS into on the GameCube and
-    // the Wii, even though it is last in this list -- the order here is just
-    // the numbering, and appending keeps Title at 0 on every target rather
-    // than renumbering the three modes that existed before it for one
+    // assumes it exists runs. The mode main.cpp BOOTS into on the GameCube, the
+    // Wii and the Switch, even though it is last in this list -- the order here
+    // is just the numbering, and appending keeps Title at 0 on every target
+    // rather than renumbering the three modes that existed before it for one
     // platform's benefit.
     //
     // NOT ON NES, where there is no device to find and nothing to choose
@@ -41,9 +41,9 @@ enum class eGameModes : u8 {
     // because the save IS the cart, so an NES build boots straight to the
     // title and this mode is not compiled at all -- nor is it on a target
     // still linking the weak backend in src/all/save.cpp, which can only ever
-    // answer ::save::no_device. TARGET_OGC and not TARGET_GC because the Wii
-    // reaches a real save through libfat; see the guard in
-    // demo/src/modes/pregame.cpp.
+    // answer ::save::no_device. ::SAVE_DEVICE and not TARGET_GC because the
+    // Wii reaches a real save through libfat and the Switch through the SD
+    // card; see the guard in demo/src/modes/pregame.cpp.
     Pregame,
 #endif
 };

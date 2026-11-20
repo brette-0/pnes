@@ -29,21 +29,30 @@
 using namespace br0::intsh;
 
 /*
- * TARGET_OGC AND NOT TARGET_GC, AND THE DISTINCTION IS WHAT THIS MODE IS FOR.
- * This gate used to be the GameCube alone because the memory card was the only
- * save device the library could reach; the Wii now saves to the front SD slot
- * or a USB disk through libfat (src/ogc/save.cpp's Wii half), so everything
- * below applies to it unchanged -- a device that may be absent, two of them to
- * choose between, a file that may not exist yet, and every save::eError in the
+ * ::SAVE_DEVICE AND NOT TARGET_GC, AND THE DISTINCTION IS WHAT THIS MODE IS
+ * FOR. This gate used to be the GameCube alone because the memory card was the
+ * only save device the library could reach, then TARGET_OGC when the Wii's FAT
+ * backend arrived; it is now the capability macro in pnes/save.hpp, which is
+ * the one list of the targets whose save lives on a device that may be absent.
+ * Everything below applies to each of them unchanged -- a device that may not
+ * be there, a file that may not exist yet, and every save::eError in the
  * switches below reachable for real.
+ *
+ * ONE DEVICE OR TWO IS NOT A DIFFERENCE THIS MODE HAS TO KNOW ABOUT, which is
+ * what makes the Switch cost nothing here. ::TryCreateSave asks
+ * ::save::AccessibleDevices for a MASK and acts on what is in it: two bits
+ * means "which one", one bit means "this one, shall I?", no bits means "there
+ * is nowhere". The Switch's backend can only ever set bit 0
+ * (src/switch/save.cpp), so the choice wheel is simply never reached there --
+ * no branch was added for it.
  *
  * WHAT IS STILL GAMECUBE-ONLY IS NESTED INSIDE, not gated out here, and it is
  * two things: the card's directory-entry metadata (::banner, ::icon,
  * ::gameName, ::gameDesc and the ::PopulateSaveData that copies them, which
  * describe a card_stat nothing else has) and ::ApplyLoadedConfig's widescreen
- * restore (video::ogc::SetWidescreen is a GameCube call, and the Wii's options
- * scene has no widescreen button to restore from). Both carry their own
- * #ifdef TARGET_GC.
+ * restore (video::ogc::SetWidescreen is a GameCube call, and neither the Wii's
+ * nor the Switch's options scene has a widescreen button to restore from).
+ * Both carry their own #ifdef TARGET_GC.
  *
  * STILL NOT `#ifndef TARGET_NES`. A battery cart's save IS the cart: there is
  * no device to find, nothing to choose and no file to create, and the MMC3
@@ -52,7 +61,7 @@ using namespace br0::intsh;
  * save::no_device -- and a mode whose every branch ends "there is nowhere to
  * save" is not worth booting into either.
  */
-#ifdef TARGET_OGC
+#ifdef SAVE_DEVICE
 
 namespace pregame {
 
@@ -86,9 +95,9 @@ static u8 SfxLevel() { return ui::impl::SfxLevel(); }
  * THE MAILBOX IS SPENT HERE, which is the arrangement title mode has for the
  * same reason (::ui::impl::pendingSfx, and ::DriveAudio in title.cpp): a hook
  * that knows a sound is wanted stores a byte, and the mainline plays it. No
- * mmc3::CallPairedBlock around it, unlike title's -- this mode exists only on
- * the GameCube, where the audio engine is not a banked blob that has to be
- * mapped over $8000 before it can be called.
+ * mmc3::CallPairedBlock around it, unlike title's -- this mode is not compiled
+ * on the one platform that banks, so the audio engine it calls is not a banked
+ * blob that has to be mapped over $8000 first.
  */
 static void WaitBody() {
     audio::Update();
@@ -206,6 +215,20 @@ void main() {
             break;
         }
         case save::missing:
+            // THE ORDINARY FIRST BOOT, and whether it is a QUESTION depends on
+            // whose medium the save is going on (::SAVE_DEVICE_CHOICE,
+            // pnes/technology.hpp). On a memory card the player is being asked
+            // to spend blocks of their own on this game and may say no; on a
+            // one-device console the save goes to the game's own directory on
+            // the card the game booted from, where there is nothing to consent
+            // to and no second place it could go -- so it is simply created.
+            //
+            // ::TryCreateSave IS THE SAME CALL EITHER WAY, including all of its
+            // failure reporting: a card that is absent, full or read-only still
+            // puts a message and a RETRY / CONTINUE wheel on screen. What the
+            // gate removes is the prompt before the attempt, not the news
+            // afterwards.
+#ifdef SAVE_DEVICE_CHOICE
             PrintContext(saveMissingText.data());
             switch (ChoiceWheel(createOpts, sizeof(createOpts))) {
                 case Yes:
@@ -218,6 +241,9 @@ void main() {
                 default:
                     log("unknown choice selected");
             }
+#else
+            if (!TryCreateSave()) goto retry;
+#endif
 
             break;
         case save::no_device:
@@ -843,8 +869,16 @@ static const u8* SaveErrorText(const save::eError err) {
 }
 
 /**
- * @brief Shows SAVING in this mode's own quadrant, writes ::saveData, and
- *        offers RETRY / CONTINUE if the write fails.
+ * @brief Writes ::saveData, shows SAVING in this mode's own quadrant where that
+ *        is worth showing, and offers RETRY / CONTINUE if the write fails.
+ *
+ * WHETHER THERE IS A SCREEN AT ALL IS ::SAVE_DEVICE_WAIT'S ANSWER
+ * (pnes/technology.hpp). Where a write spans frames -- a GameCube memory card's
+ * ticked CARD_* sequence -- the game has to present frames through it anyway,
+ * and SAVING is what they say. Where it finishes inside the frame that started
+ * it, the write runs FIRST and this function returns having drawn nothing, so a
+ * save costs no camera move and no flicker. Everything from the scene down is
+ * then the FAILURE path, which both kinds of platform reach identically.
  *
  * REACHED FROM TITLE MODE, not from ::main -- the options page's settings ARE
  * the save file (demo/src/save.hpp's SaveFile::config is what uitk writes the
@@ -883,6 +917,35 @@ static const u8* SaveErrorText(const save::eError err) {
  *         until the save landed has the answer here rather than in a log line.
  */
 bool SaveScreen() {
+    // THE OUTCOME THIS SCREEN IS ABOUT TO REPORT, when the write has already
+    // been attempted. `pending` is what says whether `response` holds one yet.
+    bool           pending  = false;
+    save::Response response { };
+
+#ifndef SAVE_DEVICE_WAIT
+    // THE WRITE FIRST, BEFORE ONE TILE IS DRAWN, on a platform whose save
+    // finishes inside the frame that starts it (::SAVE_DEVICE_WAIT,
+    // pnes/technology.hpp). A screen announcing a write that is already over
+    // is a flicker: the camera moves to another quadrant, a word appears, and
+    // both are undone a frame later.
+    //
+    // nullptr AND NOT ::WaitBody AS THE PUMP, which is not a detail: ::SaveGame
+    // calls the pump once per WAITED frame, and a blocking backend reports
+    // `done` on its first tick -- so the loop body never runs and NO frame is
+    // presented by this path at all. Handing it ::WaitBody would be harmless
+    // and would also be a promise about ticking that this arm is here because
+    // the platform does not need.
+    //
+    // A SUCCESS RETURNS BEFORE ANYTHING IS BORROWED: no NMI vector swapped, no
+    // scene re-Made, no camera moved, so there is nothing to put back and the
+    // options page's own unwind runs exactly as it would have. A FAILURE falls
+    // through with `pending` set, and everything below happens as it always
+    // did -- the message it shows is this response, not a second attempt.
+    response = SaveGame(nullptr);
+    if (response.err == save::found) return true;
+    pending = true;
+#endif
+
     // The vectors, for the span of this screen only. ::nmi_handler is this
     // mode's own stub -- one frame of the arrow's sway and the OAM upload --
     // which is exactly what a wheel needs and all it needs; title mode's
@@ -903,14 +966,24 @@ bool SaveScreen() {
 
     bool saved = false;
     while (true) {
-        PrintContext(saveSavingText.data());
-        // One frame BEFORE the write starts, so SAVING is actually on screen
-        // for it: a memory card write that succeeds immediately would
-        // otherwise draw the word and take it away again inside the same
-        // frame, and the player would see nothing at all.
-        WaitBody();
+        // SKIPPED ON THE FIRST PASS WHEN THE WRITE HAS ALREADY RUN, which is
+        // the whole of what the fast path above costs this loop: `pending`
+        // means `response` is an outcome to report rather than an attempt to
+        // make. It is cleared immediately, so RETRY goes through the write --
+        // and through SAVING, which by then is a screen the player is already
+        // looking at.
+        if (!pending) {
+            PrintContext(saveSavingText.data());
+            // One frame BEFORE the write starts, so SAVING is actually on
+            // screen for it: a memory card write that succeeds immediately
+            // would otherwise draw the word and take it away again inside the
+            // same frame, and the player would see nothing at all.
+            WaitBody();
 
-        const save::Response response = SaveGame(WaitBody);
+            response = SaveGame(WaitBody);
+        }
+        pending = false;
+
         if (response.err == save::found) {
             saved = true;
             break;
@@ -1198,6 +1271,7 @@ bool TryCreateSave() {
         }
 
     } else {
+#ifdef SAVE_DEVICE_CHOICE
         useCard2 = saveDevices - 1;
         PrintContext(saveUseCard.data());
         // TODO: string interpolation, emit message 'slot %d is available, wish to save?"
@@ -1212,6 +1286,21 @@ bool TryCreateSave() {
                 log("unknown choice selected");
                 break;  // something bad happened
         }
+#else
+        // ONE DEVICE, SO THERE IS NOTHING TO CONFIRM: the wheel above asks
+        // which of the player's cards to commit a save to, and a console with a
+        // single fixed location has already answered. ::useCard2 stays false
+        // rather than being derived from the mask, which is also what keeps
+        // this honest when the mask is EMPTY -- `saveDevices - 1` would wrap to
+        // device 1 and probe a slot this platform does not have.
+        //
+        // THE EMPTY MASK FALLS THROUGH INSTEAD OF CREATING. It has already been
+        // reported above (the ::saveNoDeviceText wheel) and the player answered
+        // CONTINUE, which means "carry on without a save" -- so there is
+        // nothing left to attempt, and attempting it anyway would show them the
+        // same "NO SD CARD FOUND" message a second time.
+        if (saveDevices) goto create;
+#endif
     }
 
     return true;    //for no retry
@@ -1294,4 +1383,4 @@ static void LoadConfig() {
 // the mode's.
 char* savePath;
 
-#endif // TARGET_OGC
+#endif // SAVE_DEVICE

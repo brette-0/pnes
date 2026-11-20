@@ -9,21 +9,28 @@
 // read back as though it didn't.
 constexpr u16 saveVersion = 1;
 
-// TARGET_OGC AND NOT TARGET_GC, WHICH IS WHAT MAKES THE SAVE FLOW THE WII'S
-// TOO. None of these is memory-card-shaped: they are the words a wheel of
-// choices is drawn with and the names of the two device slots every
+// ::SAVE_DEVICE AND NOT TARGET_OGC, WHICH IS WHAT MAKES THE SAVE FLOW THE
+// SWITCH'S TOO. None of these is memory-card-shaped: they are the words a wheel
+// of choices is drawn with and the names of the device slots every
 // ::save::AccessibleDevices mask has. The Wii's devices are the front SD slot
-// and USB mass storage where the GameCube's are card slots A and B, which
-// changes the TEXT below and nothing about the flow -- so the gate is the
-// console family and the wording is what varies inside it.
+// and USB mass storage where the GameCube's are card slots A and B, and the
+// Switch has one SD card -- which changes the TEXT below and nothing about the
+// flow, so the gate is the capability (pnes/save.hpp) and the wording is what
+// varies inside it.
 //
-// ::Card1 / ::Card2 KEEP THEIR NAMES on both consoles, deliberately. They are
+// ::Card1 / ::Card2 KEEP THEIR NAMES on every console, deliberately. They are
 // the labels the choice wheel returns, indexed the way save.hpp's device
 // indices are (0 then 1), and renaming them to ::Device1 / ::Device2 would
 // touch every arm of pregame's wheels to say the same thing. What they MEAN
 // per console is in ::card1Text / ::card2Text (demo/src/modes/pregame.hpp).
+//
+// ::Card2 IS DECLARED ON A ONE-DEVICE CONSOLE AND NEVER RETURNED THERE, which
+// is the same trade save.hpp makes with ::save::busy: the wheel it labels is
+// only ever drawn when TWO devices are accessible at once (::TryCreateSave's
+// `saveDevices == 0b11`), and on the Switch that mask cannot happen. The arm
+// still has to COMPILE, and a dead one costs nothing.
 enum eOptions : u8 {
-#ifdef TARGET_OGC
+#ifdef SAVE_DEVICE
     Continue,
     Retry,
     No,
@@ -34,12 +41,32 @@ enum eOptions : u8 {
 #endif
 };
 
-#ifdef TARGET_OGC
+#ifdef SAVE_DEVICE
 constexpr auto saveMissingText      = ::charmap_generic.encode("YOU MAY CREATE A SAVE FILE");
 #ifdef TARGET_GC
 constexpr auto saveNoDeviceText    = ::charmap_generic.encode("NO MEMORY CARD INSERTED");
 constexpr auto saveChooseCard       = ::charmap_generic.encode("CHOOSE CARD");
 constexpr auto saveUseCard          = ::charmap_generic.encode("CONFIRM USE CARD");
+#elif defined(TARGET_NX)
+// THE SWITCH'S THREE, AND ONLY THE FIRST IS EVER DRAWN. There is one SD card
+// and no second device to choose between (src/switch/save.cpp's
+// ::kDeviceCount), and the save goes to the game's own directory on the card
+// the game booted from -- so this console asks the player NOTHING about where a
+// save goes or whether to make one (::SAVE_DEVICE_CHOICE, pnes/technology.hpp).
+//
+// ::saveNoDeviceText IS REAL HERE: a failure is reported on every platform, and
+// an SD card the system has taken away is the one thing that can stop a save on
+// this one.
+//
+// THE OTHER TWO ARE THE WORDING A ONE-DEVICE CONSOLE WOULD USE IF IT EVER
+// ASKED, kept rather than deleted so that the strings and the flow stay in step
+// if a project chooses to ask -- which it does by defining
+// ::SAVE_DEVICE_CHOICE. ::saveChooseCard is still REFERENCED (the two-device
+// wheel compiles on every ::SAVE_DEVICE target, it just cannot be reached with
+// one bit in the mask); ::saveUseCard is referenced only inside the gate.
+constexpr auto saveNoDeviceText    = ::charmap_generic.encode("NO SD CARD FOUND");
+constexpr auto saveChooseCard       = ::charmap_generic.encode("CHOOSE DEVICE");
+constexpr auto saveUseCard          = ::charmap_generic.encode("CONFIRM USE SD CARD");
 #else
 // THE WII'S THREE, AND ONLY THE WORDING DIFFERS. "MEMORY CARD" is a thing this
 // console does not have: its devices are the front SD slot and a USB disk, so
@@ -116,10 +143,11 @@ struct SaveFile {
 extern SAVEMEM SaveFile saveData;
 
 // WIDENED WITH THE FLOW: a path is not a memory-card concept. On the GameCube
-// it is "a:super_mary_sisters" and on the Wii "sd:/super_mary_sisters/save.dat",
-// and ::pregame::main fills it from whatever ::save::GetSaveLocation answered
-// either way.
-#ifdef TARGET_OGC
+// it is "a:super_mary_sisters", on the Wii "sd:/super_mary_sisters/save.dat"
+// and on the Switch "sdmc:/switch/super_mary_sisters/save.dat", and
+// ::pregame::main fills it from whatever ::save::GetSaveLocation answered in
+// every case.
+#ifdef SAVE_DEVICE
 extern char* savePath;
 #endif
 

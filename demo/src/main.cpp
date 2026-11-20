@@ -6,7 +6,7 @@
 #include "main.hpp"
 
 #include "modes/level.hpp"
-#ifdef TARGET_OGC
+#ifdef SAVE_DEVICE
 #include "modes/pregame.hpp"
 #endif
 #include "modes/title.hpp"
@@ -22,14 +22,14 @@ atomic u16 frameCounter = 0;
 
 // THE BOOT MODE, AND IT DIFFERS BY TARGET. On a console whose save lives on a
 // device that has to be found -- a GameCube memory card in either slot or in
-// neither, a Wii's SD card or USB disk -- eGameModes::Pregame runs first and
-// hands over to the title itself once ::saveData means something. On the NES
-// there is nothing to find: the save is the cart, so the title screen is the
-// boot mode as it always was, and the same goes for a target whose backend
-// cannot save at all.
+// neither, a Wii's SD card or USB disk, a Switch's SD card -- eGameModes::
+// Pregame runs first and hands over to the title itself once ::saveData means
+// something. On the NES there is nothing to find: the save is the cart, so the
+// title screen is the boot mode as it always was, and the same goes for a
+// target whose backend cannot save at all.
 //
 // ReSharper disable once CppUseAuto
-#ifdef TARGET_OGC
+#ifdef SAVE_DEVICE
 atomic eGameModes gameMode = eGameModes::Pregame;
 #else
 atomic eGameModes gameMode = eGameModes::Title;
@@ -123,7 +123,7 @@ RESET {
                 world::main();
                 continue;
 
-#ifdef TARGET_OGC
+#ifdef SAVE_DEVICE
             // No mmc3::CallInBlock and no bank tag: this mode does not exist on
             // the one platform that banks. No pNMI/pIRQ either -- it drives its
             // own frames through video::WaitForPresent and asks nothing of the

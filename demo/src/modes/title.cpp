@@ -1257,24 +1257,32 @@ namespace title {
                         // it backed out of is not something a player needs
                         // told in a different sound.
                         ui::impl::PostSfx(sfx::deselect);
-#ifdef TARGET_OGC
+#ifdef SAVE_DEVICE
                         // ...and the one place the page's settings are written
                         // out. Every control on it writes straight into
                         // saveData.config (demo/src/save.hpp's SaveFile), so
                         // leaving the page is the moment the file and the
                         // screen stop agreeing, and the moment there is
-                        // something to save. ::pregame::SaveScreen blocks with
-                        // SAVING up until the device answers, and runs its own
-                        // RETRY / CONTINUE wheel if it will not.
+                        // something to save. ::pregame::SaveScreen writes it
+                        // and runs its own RETRY / CONTINUE wheel if the device
+                        // will not take it -- blocking with SAVING on screen
+                        // only where a write is slow enough to be worth saying
+                        // so (::SAVE_DEVICE_WAIT), and drawing nothing at all
+                        // where it is not.
                         //
-                        // TARGET_OGC AND NOT TARGET_GC, which is what makes a
-                        // Wii remember its settings. With this gated to the
-                        // GameCube, a Wii player could change anything on this
-                        // page and nothing was ever written: the save existed,
+                        // ::SAVE_DEVICE AND NOT TARGET_GC, which is what
+                        // makes a Wii -- and now a Switch -- remember its
+                        // settings. With this gated to the GameCube, a Wii
+                        // player could change anything on this page and
+                        // nothing was ever written: the save existed,
                         // ::pregame had loaded it, and the one call that writes
                         // it back was compiled out -- so every boot came up on
-                        // the scene's defaults. Both consoles have somewhere to
-                        // write and the same wheel to offer when they do not.
+                        // the scene's defaults. THAT IS THE BUG THE CAPABILITY
+                        // MACRO EXISTS TO STOP HAPPENING A THIRD TIME: every
+                        // target with somewhere to write reaches this line
+                        // because the gate is the list, rather than a platform
+                        // that has to be remembered here. All of them have the
+                        // same wheel to offer when the write will not go.
                         //
                         // THE CORNERS GO FIRST, because the save screen is
                         // drawn in a different quadrant and these sprites are
