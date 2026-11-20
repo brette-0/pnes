@@ -945,7 +945,6 @@ namespace title {
         // It stays here, not in ::DrawOptionsPanel: it resolves anchors and
         // zeroes running state, which must happen once, not on every mode
         // entry.
-#ifndef TARGET_NES
         // THE LOADED SETTINGS, LIFTED OUT FROM UNDER Make(). Every control on
         // the options page IS a field of ::saveData.config -- uitk's
         // bss_prefix/Symbol Prefix arrangement, see demo/src/save.hpp -- and
@@ -959,11 +958,31 @@ namespace title {
         // Make() is about to overwrite it in place, so the only thing standing
         // between a loaded setting and the default is this local.
         const SaveFile::Config loadedConfig = saveData.config;
+
+        // ON EVERY TARGET NOW, INCLUDING THE NES, and the NES is the one that
+        // was wrong. Nothing there CLEARS the save -- `.cartmem` sits outside
+        // the range crt0's memset covers -- but `gen::options::Make()` below
+        // overwrites it a few hundred cycles later, with six `ora`s that force
+        // every authored default back on. The symptom was a cart that forgets
+        // its settings on every power cycle, and the cause was this restore
+        // being compiled out of the one platform whose storage survives.
+        //
+        // WHETHER TO PUT IT BACK IS A QUESTION ONLY OFF THE NES, because only
+        // there does a save arrive by TRANSFER: ::pregame::LoadSave's
+        // ::saveLoaded says whether one happened and was accepted, and the
+        // authored defaults are the honest answer when it did not. On the NES
+        // ::saveData IS the cart's battery-backed SRAM, so the byte stashed a
+        // line ago is the saved setting by hardware -- nothing to consult,
+        // nothing that can have failed. The copy always goes back.
+#ifdef TARGET_NES
+        constexpr bool restoreConfig = true;
+#else
+        const bool restoreConfig = saveLoaded;
 #endif
+
         gen::options::Make();
 
-#ifndef TARGET_NES
-        if (saveLoaded) {
+        if (restoreConfig) {
             // The file wins over the authored defaults -- which is the whole
             // of "a saved option reflects in the UI": every Draw() below
             // dispatches on these same bytes (ui/impl/buttons.hpp's
@@ -972,6 +991,12 @@ namespace title {
             // what paints the page the way the player left it.
             saveData.config = loadedConfig;
 
+            // EVERYTHING BELOW IS ABOUT SLIDERS, which is why it stops at the
+            // NES: that target's scene has none (options.uis hides both,
+            // leaving the two DISABLE buttons as its whole audio control), so
+            // the namespaces these name do not exist there. The config copy
+            // above is the entire restore on NES.
+#ifndef TARGET_NES
             namespace ac = gen::options::audioCanvas;
             const Rect mr = ac::musicSlider::rect;
             const Rect sr = ac::SFXSlider::rect;
@@ -1008,7 +1033,9 @@ namespace title {
             // the mix wherever the backend booted while the handle claimed
             // otherwise.
             audio::TrackVolume(ui::impl::SliderPercent(mr.size.x, ac::musicSlider::amount));
+#endif
         } else {
+#ifndef TARGET_NES
             // Both mix sliders open at FULL, and the audio backend is told so.
             //
             // `amount` is uitk's own byte and starts at 0, which under
@@ -1034,8 +1061,9 @@ namespace title {
             ac::musicSlider::amount = static_cast<u8>(ui::impl::SliderTravel(mr.size.x) - 1);
             ac::SFXSlider::amount   = static_cast<u8>(ui::impl::SliderTravel(sr.size.x) - 1);
             audio::TrackVolume(ui::impl::SliderPercent(mr.size.x, ac::musicSlider::amount));
-        }
 #endif
+        }
+
         // Dual-screen: left unloaded until OPTIONS is picked (::ClearUiBand).
         if constexpr (!kUiOnOwnPanel) DrawOptionsPanel();
 
