@@ -967,102 +967,76 @@ namespace title {
         // its settings on every power cycle, and the cause was this restore
         // being compiled out of the one platform whose storage survives.
         //
-        // WHETHER TO PUT IT BACK IS A QUESTION ONLY OFF THE NES, because only
-        // there does a save arrive by TRANSFER: ::pregame::LoadSave's
-        // ::saveLoaded says whether one happened and was accepted, and the
-        // authored defaults are the honest answer when it did not. On the NES
-        // ::saveData IS the cart's battery-backed SRAM, so the byte stashed a
-        // line ago is the saved setting by hardware -- nothing to consult,
-        // nothing that can have failed. The copy always goes back.
-#ifdef TARGET_NES
-        constexpr bool restoreConfig = true;
-#else
-        const bool restoreConfig = saveLoaded;
-#endif
-
+        // WHERE THE STATE CAME FROM IS NOT THIS CODE'S CONCERN: a card
+        // transfer off NES, the cart's own battery-backed SRAM on it, or the
+        // defaults ::pregame::main seeded before it went looking. By the time
+        // this runs they are all just the contents of ::saveData.config --
+        // nothing to consult,
+        // nothing that can have failed. The copy always goes back -- on every
+        // target, unconditionally. There is nothing left to ask: whatever is in
+        // ::saveData.config when this runs is the state, whether it came off a
+        // card, out of BSS, or out of the cart's SRAM, and the defaults the
+        // sliders need are seeded by ::pregame::main BEFORE its load rather
+        // than chosen here afterwards.
         gen::options::Make();
 
-        if (restoreConfig) {
-            // The file wins over the authored defaults -- which is the whole
-            // of "a saved option reflects in the UI": every Draw() below
-            // dispatches on these same bytes (ui/impl/buttons.hpp's
-            // `Enabled() ? Enabled : Disabled`, sliders.hpp's handle
-            // position), so putting them back before ::DrawOptionsPanel is
-            // what paints the page the way the player left it.
-            saveData.config = loadedConfig;
+        // The file wins over the authored defaults -- which is the whole of "a
+        // saved option reflects in the UI": every Draw() below dispatches on
+        // these same bytes (ui/impl/buttons.hpp's `Enabled() ? Enabled :
+        // Disabled`, sliders.hpp's handle position), so putting them back
+        // before ::DrawOptionsPanel is what paints the page the way the player
+        // left it.
+        saveData.config = loadedConfig;
 
-            // EVERYTHING BELOW IS ABOUT SLIDERS, which is why it stops at the
-            // NES: that target's scene has none (options.uis hides both,
-            // leaving the two DISABLE buttons as its whole audio control), so
-            // the namespaces these name do not exist there. The config copy
-            // above is the entire restore on NES.
+        // EVERYTHING BELOW IS ABOUT SLIDERS, which is why it stops at the NES:
+        // that target's scene has none (options.uis hides both, leaving the two
+        // DISABLE buttons as its whole audio control), so the namespaces these
+        // name do not exist there. The config copy above is the entire restore
+        // on NES.
 #ifndef TARGET_NES
-            namespace ac = gen::options::audioCanvas;
-            const Rect mr = ac::musicSlider::rect;
-            const Rect sr = ac::SFXSlider::rect;
+        namespace ac = gen::options::audioCanvas;
+        const Rect mr = ac::musicSlider::rect;
+        const Rect sr = ac::SFXSlider::rect;
 
-            // A STORED HANDLE POSITION IS NOT PORTABLE BETWEEN TRACK WIDTHS,
-            // and the save holds the position rather than the proportion: a
-            // track is ::SliderTravel(rect width) cells wide, the rect comes
-            // from ::video::viewport_tx(), and that moves with the GameCube's
-            // aspect (6 cells at 4:3, 9 at 16:9) and with a desktop window.
-            // Normally the two agree -- ::pregame::ApplyLoadedConfig has
-            // already restored the aspect this save was written at, which is
-            // exactly why it runs before any of this -- but a save carried
-            // over from a build whose scene was a different shape would
-            // otherwise park a handle past the end of its own track and draw
-            // it outside the widget.
-            //
-            // Clamped rather than rescaled, because the position is all the
-            // file has: with no record of what travel it meant, the nearest
-            // legal cell is the most this can honestly recover.
-            const u8 mTravel = ui::impl::SliderTravel(mr.size.x);
-            const u8 sTravel = ui::impl::SliderTravel(sr.size.x);
-            if (mTravel && ac::musicSlider::amount >= mTravel) {
-                ac::musicSlider::amount = static_cast<u8>(mTravel - 1);
-            }
-            if (sTravel && ac::SFXSlider::amount >= sTravel) {
-                ac::SFXSlider::amount = static_cast<u8>(sTravel - 1);
-            }
-
-            // The engine told what the restored handle says, for the same
-            // reason the seed below tells it what full scale says: nothing
-            // else ever does. ::TrackVolume is only otherwise reached from the
-            // slider's own DrawChange (ui/impl/sliders.hpp), i.e. from a MOVE
-            // -- so a volume that was merely loaded, never moved, would leave
-            // the mix wherever the backend booted while the handle claimed
-            // otherwise.
-            audio::TrackVolume(ui::impl::SliderPercent(mr.size.x, ac::musicSlider::amount));
-#endif
-        } else {
-#ifndef TARGET_NES
-            // Both mix sliders open at FULL, and the audio backend is told so.
-            //
-            // `amount` is uitk's own byte and starts at 0, which under
-            // audio::TrackVolume's mapping (0 = silence, 100 = full output) would
-            // boot the game muted with a handle parked at the left end claiming
-            // exactly that. Seeded here, which is what sliders.hpp's Draw() means
-            // by "a caller wanting a non-zero default writes `amount` before the
-            // first Draw()" -- after Make() has resolved the rect this reads, and
-            // before ::DrawOptionsPanel paints the handle.
-            //
-            // The SFX slider is seeded too even though nothing reads it yet: the
-            // two are one control surface, and opening with one at full and the
-            // other at zero would read as a bug rather than as an unwired feature.
-            //
-            // THE no-save BRANCH NOW, not the only path: a cold boot, a card
-            // error, a version this build cannot read. The authored defaults
-            // Make() just wrote are what the rest of the page keeps in that
-            // case, and this is the one control whose authored default (0) is
-            // not the one the page wants to open on.
-            namespace ac = gen::options::audioCanvas;
-            const Rect mr = ac::musicSlider::rect;
-            const Rect sr = ac::SFXSlider::rect;
-            ac::musicSlider::amount = static_cast<u8>(ui::impl::SliderTravel(mr.size.x) - 1);
-            ac::SFXSlider::amount   = static_cast<u8>(ui::impl::SliderTravel(sr.size.x) - 1);
-            audio::TrackVolume(ui::impl::SliderPercent(mr.size.x, ac::musicSlider::amount));
-#endif
+        // A STORED HANDLE POSITION IS NOT PORTABLE BETWEEN TRACK WIDTHS, and
+        // the save holds the position rather than the proportion: a track is
+        // ::SliderTravel(rect width) cells wide, the rect comes from
+        // ::video::viewport_tx(), and that moves with the GameCube's aspect
+        // (6 cells at 4:3, 9 at 16:9) and with a desktop window. Normally the
+        // two agree -- ::pregame::ApplyLoadedConfig has already restored the
+        // aspect this save was written at, which is exactly why it runs before
+        // any of this -- but a save carried over from a build whose scene was a
+        // different shape would otherwise park a handle past the end of its own
+        // track and draw it outside the widget.
+        //
+        // Clamped rather than rescaled, because the position is all the file
+        // has: with no record of what travel it meant, the nearest legal cell
+        // is the most this can honestly recover.
+        //
+        // IT IS ALSO WHAT RESOLVES "FULL VOLUME" ON A COLD BOOT, and that is
+        // why this runs unconditionally now rather than only for a loaded save.
+        // ::pregame::main parks both amounts at 0xFF before it goes looking for
+        // a card -- "the right-hand end, whatever that turns out to be" -- which
+        // no code there could compute, since the track's width comes from a rect
+        // that ::gen::options::Make() above has only just resolved. A real save
+        // overwrites that 0xFF during the load; nothing overwrites it when
+        // there is no save; either way the clamp below lands it on a legal cell.
+        const u8 mTravel = ui::impl::SliderTravel(mr.size.x);
+        const u8 sTravel = ui::impl::SliderTravel(sr.size.x);
+        if (mTravel && ac::musicSlider::amount >= mTravel) {
+            ac::musicSlider::amount = static_cast<u8>(mTravel - 1);
         }
+        if (sTravel && ac::SFXSlider::amount >= sTravel) {
+            ac::SFXSlider::amount = static_cast<u8>(sTravel - 1);
+        }
+
+        // The engine told what the handle says: nothing else ever does.
+        // ::TrackVolume is only otherwise reached from the slider's own
+        // DrawChange (ui/impl/sliders.hpp), i.e. from a MOVE -- so a volume
+        // that was merely loaded, or merely defaulted, would leave the mix
+        // wherever the backend booted while the handle claimed otherwise.
+        audio::TrackVolume(ui::impl::SliderPercent(mr.size.x, ac::musicSlider::amount));
+#endif
 
         // Dual-screen: left unloaded until OPTIONS is picked (::ClearUiBand).
         if constexpr (!kUiOnOwnPanel) DrawOptionsPanel();

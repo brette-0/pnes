@@ -25,30 +25,9 @@
 #include "pnes/logger.hpp"
 #include "pnes/mappers/mmc3.hpp"
 #include "pnes/video.hpp"
-// The options scene itself, for ::ApplyLoadedConfig below: a loaded save is a
-// set of settings that have to be IN FORCE before the game draws anything, and
-// the only reader of ::saveData.config that knows what each bit means is the
-// generated scene. ui/impl/buttons.hpp is the include that brings it (it pulls
-// gen/options/<target>/options.hpp in for its own Draw() bodies), so this one
-// header gives this mode every button's Enabled() and both sliders' amount.
-//
-// THE UI CODE AND NOT A HAND-READ BIT, which is the point: the widescreen bit
-// is `button_state[0] & (1u << 1)` today and is whatever uitk packs it as
-// tomorrow -- scene order decides it, and a button added above it in the
-// editor moves it. Asking the generated accessor cannot drift.
 #include "../../ui/impl/buttons.hpp"
 using namespace br0::intsh;
 
-// TARGET_GC, NOT `#ifndef TARGET_NES`, AND THAT IS NARROWER THAN IT LOOKS.
-// This mode is skipped on the NES because a battery cart has nothing to find --
-// but it is compiled ONLY on the GameCube because that is as far as its
-// vocabulary reaches: eOptions' enumerators, every save*Text and ::savePath are
-// all inside `#ifdef TARGET_GC` in demo/src/save.hpp, since the memory card is
-// the one medium with slots to choose between and metadata to lay out.
-//
-// Widening this to every non-NES target is a one-line change HERE and a
-// decision THERE: ungate the enum and the strings in demo/src/save.hpp, and
-// flip this guard along with the three in main.hpp/main.cpp that match it.
 #ifdef TARGET_GC
 
 namespace pregame {
@@ -109,6 +88,7 @@ static bool TryCreateSave();
 static void PrintContext(const u8* infoText);
 static eOptions ChoiceWheel(const eOptions* pOptions, u8 sOptions);
 static void PopulateSaveData();
+static void SeedConfigDefaults();
 static void MakeScene();
 static void ApplyLoadedConfig();
 static void InitPregameScreen();
@@ -167,6 +147,7 @@ void main() {
     InitPregameScreen();
 
     PopulateSaveData();
+    SeedConfigDefaults();
     save::Response response = { };
 
     retry:
@@ -379,15 +360,14 @@ void main() {
  * band and error wheels, which is exactly the trap ::title::ApplyWidescreenChange
  * exists to handle.
  *
- * NOTHING HAPPENS WITHOUT A TRUSTED SAVE (::saveLoaded, demo/src/save.hpp).
- * On a cold boot the bits in ::saveData are BSS zeros, and zero reads as
- * "4:3" -- the same thing a default-off button means -- so the no-save case
- * needs no branch of its own here. It gets one anyway, because a config that
- * failed to load is not the same thing as a config that says no.
+ * NO "WAS THERE A SAVE" TEST, and none is needed: by the time this runs
+ * ::saveData.config is the state whatever its provenance -- a loaded file, or
+ * the defaults ::SeedConfigDefaults wrote before the load went looking. On a
+ * cold boot the widescreen bit is zero, which reads as "4:3", which is exactly
+ * what a default-off button means, so the no-save case needs no branch of its
+ * own.
  */
 void ApplyLoadedConfig() {
-    if (!saveLoaded) return;
-
     const bool wide = gen::options::videoCanvas::enableWidescreenButton::Enabled();
     log("pregame: restoring widescreen=%d from save", wide);
     if (wide) video::ogc::SetWidescreen(true);
@@ -931,16 +911,18 @@ bool LoadSave() {
                 log("unknown choice selected");
         }
 
-        PopulateSaveData(); // restore defaults
-
-        // ::saveLoaded deliberately NOT set on this path. CONTINUE means the
-        // player chose to carry on with a save this build cannot read, so
-        // ::saveData.config holds that file's bytes laid out to some other
-        // version's shape -- a slider amount that was a button bitfield, or
-        // the reverse. ::PopulateSaveData above restores the HEADER and the
-        // version; the config's defaults belong to the scene that declares
-        // them, so leaving the flag false is what hands that job to
-        // ::gen::options::Make() where it already lives.
+        // RESTORE BOTH HALVES. CONTINUE means the player chose to carry on
+        // with a save this build cannot read, so ::saveData.config holds that
+        // file's bytes laid out to some other version's shape -- a slider
+        // amount that was a button bitfield, or the reverse.
+        // ::PopulateSaveData puts the header and the version back;
+        // ::SeedConfigDefaults overwrites the config those foreign bytes
+        // landed in, which is what stops them being read as settings. Nothing
+        // downstream filters them for us any more -- ::title::main applies
+        // whatever is in ::saveData.config unconditionally -- so the
+        // correction has to happen here, before it is handed over.
+        PopulateSaveData();
+        SeedConfigDefaults();
         return true;
     }
 
@@ -950,10 +932,9 @@ bool LoadSave() {
     // version into it before this mode ever touched the card, so a failed load
     // validates perfectly well. `err == found` is the other half: it says the
     // bytes on screen came off the medium rather than out of our own BSS.
-    saveLoaded = response.err == save::found;
-    if (!saveLoaded) {
-        log("pregame: load did not complete (err=%d native=%d) -- keeping scene defaults",
-            response.err, save::LastNativeError());
+    if (response.err != save::found) {
+        log("pregame: load did not complete (err=%d native=%d) -- keeping the defaults "
+            "seeded before it", response.err, save::LastNativeError());
     }
 
     return true;
@@ -1197,6 +1178,34 @@ bool TryCreateSave() {
 // went to the card with the zero its BSS started on and came back "SAVE FILE
 // CORRUPTED" on the very next boot. ::SaveGame stamps it for the same reason on
 // the write-back path (demo/src/save.cpp).
+/**
+ * @brief Writes the scene's own defaults into ::saveData.config.
+ *
+ * RUN BEFORE THE LOAD, NOT AFTER, which is the whole trick: a real save simply
+ * overwrites what this wrote, so nothing downstream has to know whether one
+ * arrived. The old arrangement seeded defaults AFTER the load in
+ * ::title::main, which is why it needed a ::saveLoaded flag to say when
+ * seeding was allowed -- and why a build that forgot the flag on one platform
+ * overwrote that platform's save every boot.
+ *
+ * ZERO IS THE DEFAULT FOR EVERYTHING EXCEPT THE SLIDERS. Every button's
+ * cleared bit and every menu's option 0 are already what the scene wants, so
+ * the memset is the bulk of the work.
+ *
+ * 0xFF AND NOT A REAL HANDLE POSITION, because a real one cannot be computed
+ * here: `amount` is a cell index into a track whose width comes from the
+ * slider's rect, and that rect is resolved by ::gen::options::Make() in title
+ * mode, long after this mode has handed over. 0xFF means "the right-hand end,
+ * whatever it turns out to be", and title's clamp -- the same one every loaded
+ * save already goes through -- lands it on the last legal cell once the track
+ * exists.
+ */
+void SeedConfigDefaults() {
+    memset(&saveData.config, 0, sizeof(saveData.config));
+    gen::options::audioCanvas::musicSlider::amount = 0xFF;
+    gen::options::audioCanvas::SFXSlider::amount   = 0xFF;
+}
+
 void PopulateSaveData() {
     saveData.version = saveVersion;
 #ifdef TARGET_GC

@@ -12,13 +12,6 @@
 CARTMEM SaveFile saveData;
 
 #ifndef TARGET_NES
-// NOT in CARTMEM, deliberately: this describes THIS BOOT's load, not the save.
-// Parked in the save file it would be written to the card and read back as
-// "already loaded" by a later boot that had not loaded anything.
-bool saveLoaded = false;
-#endif
-
-#ifndef TARGET_NES
 save::Response SaveGame(void (* const pump)()) {
     // Before the bytes, not after: this is what makes the file readable next
     // boot (see this function's declaration, save.hpp).

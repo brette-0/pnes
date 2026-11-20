@@ -22,7 +22,6 @@ enum eOptions : u8 {
 };
 
 #ifdef TARGET_GC
-constexpr auto saveFoundText       = ::charmap_generic.encode("SAVE LOADED SUCCESSFULLY");
 constexpr auto saveMissingText      = ::charmap_generic.encode("YOU MAY CREATE A SAVE FILE");
 constexpr auto saveNoDeviceText    = ::charmap_generic.encode("NO MEMORY CARD INSERTED");
 constexpr auto saveBadErrorText     = ::charmap_generic.encode("BAD ERROR CODE");
@@ -72,6 +71,12 @@ struct SaveHeader {
 #error "GEN_TARGET_DIR is not set -- add it to this target's CMakeLists.txt branch."
 #endif
 
+// ANY MEMBER ADDED HERE THAT THE NES SIDE READS MUST BE `atomic`. This struct
+// lives in battery-backed SRAM nothing initialises, but C++ still calls it
+// zero-initialised and LLVM acts on that: at LTO, a member with no store before
+// its first read is folded to zero and its storage dropped. The uitk fields in
+// `config` are already `atomic` (tools/uitk's BssSplit::decl), and `version` is
+// safe only because nothing on NES ever reads it.
 struct SaveFile {
     u16 version;
     SaveHeader header;
@@ -86,32 +91,6 @@ extern CARTMEM SaveFile saveData;
 
 #ifdef TARGET_GC
 extern char* savePath;
-#endif
-
-#ifndef TARGET_NES
-/**
- * @brief Whether ::saveData.config came off a real, validated save this boot.
- *
- * THE ONE THING A LOAD CANNOT SAY FOR ITSELF, because the loaded config and the
- * authored defaults live in the SAME BYTES: every uitk-generated control is a
- * reference into ::SaveFile::config (demo/gen/options/<target>/bss.hpp), so a
- * component's Make() -- which writes its default into its own field -- is
- * indistinguishable from a load afterwards by looking at the field. This flag
- * is what tells ::title::main which of the two it is holding, and so whether to
- * put the file's bytes back over the defaults Make() just wrote.
- *
- * SET IN EXACTLY ONE PLACE: ::pregame::LoadSave, when the transfer reported
- * ::save::found AND ::pregame::ValidateSave accepted the version. A card error,
- * a version mismatch, or the corrupt-save CONTINUE path all leave it false,
- * which is the honest answer -- those leave ::saveData holding either junk or
- * nothing, and the options page is better served by its own defaults than by
- * either.
- *
- * FALSE FOREVER ON A TARGET WITH NO PREGAME MODE (everything but the
- * GameCube), which is correct rather than unimplemented: nothing there loads a
- * save at all, so there is never a file to prefer over the defaults.
- */
-extern bool saveLoaded;
 #endif
 
 #ifndef TARGET_NES
