@@ -50,6 +50,12 @@ constexpr bool is_nes = false;
  * GameCube-only, so a Wii player could change a setting, see it saved, and
  * boot to the defaults.
  *
+ * THE 3DS IS THE FOURTH (src/3ds/save.cpp), and it is in here for the Switch's
+ * reasons exactly: one SD card, which can be absent. It adds itself to this
+ * macro and to nothing else, which is what this macro is for -- and not to
+ * ::SAVE_DEVICE_CHOICE or ::SAVE_DEVICE_WAIT below, there being one device to
+ * choose from and a write that finishes inside the frame that started it.
+ *
  * WHAT IT MEANS, PRECISELY, because the two targets it excludes are excluded
  * for opposite reasons:
  *   - THE NES IS NOT IN IT even though its saves work. A battery cart's save IS
@@ -84,7 +90,7 @@ constexpr bool is_nes = false;
  * save.hpp consumer still gets the macro), and it carries nothing a platform
  * SDK could collide with.
  */
-#if defined(TARGET_OGC) || defined(TARGET_NX)
+#if defined(TARGET_OGC) || defined(TARGET_NX) || defined(TARGET_CTR)
 #define SAVE_DEVICE
 #endif
 

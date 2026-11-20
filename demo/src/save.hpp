@@ -67,6 +67,24 @@ constexpr auto saveUseCard          = ::charmap_generic.encode("CONFIRM USE CARD
 constexpr auto saveNoDeviceText    = ::charmap_generic.encode("NO SD CARD FOUND");
 constexpr auto saveChooseCard       = ::charmap_generic.encode("CHOOSE DEVICE");
 constexpr auto saveUseCard          = ::charmap_generic.encode("CONFIRM USE SD CARD");
+#elif defined(TARGET_CTR)
+// THE 3DS'S THREE, WHICH ARE THE SWITCH'S WORD FOR WORD and are kept separate
+// rather than folded into that branch with a ||. The reason is that the two
+// consoles agree by accident and not by nature: both have one SD card, so both
+// say "NO SD CARD FOUND" and ask nothing -- but this one's card is REMOVABLE
+// while a game is running (src/3ds/save.cpp's ::Detected is the only backend
+// that can see that happen), so this is the console where that message is
+// actually read, and it is the console whose wording would change first if the
+// flow ever had anything more to say about a card that went away mid-game.
+//
+// THE OTHER TWO ARE THE WORDING A ONE-DEVICE CONSOLE WOULD USE IF IT EVER
+// ASKED, for the Switch's reason exactly: a project that defines
+// ::SAVE_DEVICE_CHOICE gets the prompts, and ::saveChooseCard is referenced on
+// every ::SAVE_DEVICE target regardless (the two-device wheel compiles
+// everywhere, it just cannot be reached with one bit in the mask).
+constexpr auto saveNoDeviceText    = ::charmap_generic.encode("NO SD CARD FOUND");
+constexpr auto saveChooseCard       = ::charmap_generic.encode("CHOOSE DEVICE");
+constexpr auto saveUseCard          = ::charmap_generic.encode("CONFIRM USE SD CARD");
 #else
 // THE WII'S THREE, AND ONLY THE WORDING DIFFERS. "MEMORY CARD" is a thing this
 // console does not have: its devices are the front SD slot and a USB disk, so
@@ -144,7 +162,8 @@ extern SAVEMEM SaveFile saveData;
 
 // WIDENED WITH THE FLOW: a path is not a memory-card concept. On the GameCube
 // it is "a:super_mary_sisters", on the Wii "sd:/super_mary_sisters/save.dat"
-// and on the Switch "sdmc:/switch/super_mary_sisters/save.dat", and
+// on the Switch "sdmc:/switch/super_mary_sisters/save.dat" and on the 3DS
+// "sdmc:/3ds/super_mary_sisters/save.dat", and
 // ::pregame::main fills it from whatever ::save::GetSaveLocation answered in
 // every case.
 #ifdef SAVE_DEVICE

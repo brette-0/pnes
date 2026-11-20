@@ -2429,6 +2429,64 @@ elseif(TARGET_PLATFORM STREQUAL "ctr")
     endif()
     target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh)
 
+    # ------------------------------------------------------------------
+    # Where a 3DS save lives on the SD card.
+    #
+    # TWO NAMES AND NOT A PATH, for the Wii's and the Switch's reason (see
+    # WII_SAVE_DIR and NX_SAVE_DIR above): src/3ds/save.cpp assembles
+    # "sdmc:/3ds/<dir>/<file>" from them itself and static_asserts that neither
+    # contains a separator, because a CTR_SAVE_DIR with a slash in it would
+    # silently point the save somewhere else -- possibly into another homebrew
+    # app's directory under sdmc:/3ds.
+    #
+    # "3ds" IS NOT A KNOB. It is the fixed parent the backend adds: the Homebrew
+    # Launcher lists .3dsx files from sdmc:/3ds and homebrew keeps its data
+    # under it by convention, so CTR_SAVE_DIR names one directory inside that
+    # and nothing a project sets can put a save in the card's root -- which on
+    # this console is shared with the system's own Nintendo 3DS directory.
+    #
+    # CTR_SAVE_DIR IS THE ONE THAT CANNOT MOVE LATER, exactly as the Wii's and
+    # the Switch's cannot: this backend's search is PATH-based (there is no
+    # equivalent of CARD_FindFirst's gamecode filter on a filesystem), so a
+    # build that renames either knob stops finding every save written by every
+    # earlier build. The data is still on the card and the game simply reports
+    # that there is no save -- which looks like a bug in the card, so it is
+    # worth saying here and not only in the backend.
+    #
+    # NO SAVEDATA OR EXTDATA KNOBS (title id, extdata id, save partition size),
+    # deliberately: this backend saves to the SD card because a .3dsx has no
+    # title of its own to address either archive by. See src/3ds/save.cpp's
+    # header comment for the three things a CIA-installed build would change.
+    # ------------------------------------------------------------------
+    set(CTR_SAVE_DIR      "super_mary_sisters" CACHE STRING "3DS save directory under sdmc:/3ds")
+    set(CTR_SAVE_FILENAME "save.dat"           CACHE STRING "3DS save file name inside CTR_SAVE_DIR")
+
+    # Checked here as well as by save.cpp's own static_asserts, so that a bad
+    # value set in local.cmake names itself at configure time rather than as a
+    # static_assert in a backend the setter may never have opened.
+    foreach(_ctr_knob CTR_SAVE_DIR CTR_SAVE_FILENAME)
+        string(LENGTH "${${_ctr_knob}}" _ctr_knob_len)
+        if(_ctr_knob_len EQUAL 0 OR _ctr_knob_len GREATER 255)
+            message(FATAL_ERROR
+                "${_ctr_knob} must be 1-255 characters, got \"${${_ctr_knob}}\" (${_ctr_knob_len}) "
+                "-- it is one FAT long-name component, not a path")
+        endif()
+        if("${${_ctr_knob}}" MATCHES "[/\\:]")
+            message(FATAL_ERROR
+                "${_ctr_knob} must be a single name with no '/', '\\' or ':', got \"${${_ctr_knob}}\" "
+                "-- src/3ds/save.cpp adds the separators and the sdmc:/3ds prefix itself")
+        endif()
+    endforeach()
+
+    # PRIVATE for the reason the OGC and Switch backends' own location knobs
+    # are: the save's location is the backend's business, and nothing a game
+    # includes reads it. A game that wants to show a player where its save went
+    # asks ::save::GetDeviceStatus, which answers with the complete path.
+    target_compile_definitions(pnes PRIVATE
+            "CTR_SAVE_DIR=\"${CTR_SAVE_DIR}\""
+            "CTR_SAVE_FILENAME=\"${CTR_SAVE_FILENAME}\"")
+
+
     # AUDIO ASSETS, BOTH KINDS, INTO THE .3dsx's RomFS -- which is why this
     # branch has a RomFS at all now: everything else the 3DS build needs is
     # #embedded (CHR art) or generated, so src/3ds/audio.cpp is its first and

@@ -5,7 +5,7 @@
 // See the matching guard in pregame.cpp for why this is ::SAVE_DEVICE and not
 // `#ifndef TARGET_NES`: the mode needs a save device that can be absent, and
 // the macro (pnes/save.hpp) is the one list of the targets that have one --
-// the GameCube, the Wii and the Switch.
+// the GameCube, the Wii, the Switch and the 3DS.
 #ifdef SAVE_DEVICE
 
 constexpr auto retryText        = ::charmap_generic.encode("RETRY");
@@ -16,20 +16,26 @@ constexpr auto eraseText        = ::charmap_generic.encode("ERASE ALL");
 // THE TWO DEVICE LABELS, AND THE ONLY PART OF THIS WHEEL THAT IS PER CONSOLE.
 // ::Card1 / ::Card2 are device indices 0 and 1 (demo/src/save.hpp), and what
 // sits at those indices is what changes: slots A and B on the GameCube, the
-// front SD slot and USB mass storage on the Wii, and on the Switch index 0
-// alone. Same wheel, same indices, the player's own words for what they are
-// putting their save on.
+// front SD slot and USB mass storage on the Wii, and on the Switch and the 3DS
+// index 0 alone. Same wheel, same indices, the player's own words for what they
+// are putting their save on.
 #ifdef TARGET_GC
 constexpr auto card1Text        = ::charmap_generic.encode("CARD 1");
 constexpr auto card2Text        = ::charmap_generic.encode("CARD 2");
-#elif defined(TARGET_NX)
+#elif defined(TARGET_NX) || defined(TARGET_CTR)
 // ONE DEVICE, AND ::card2Text LABELS AN INDEX THAT DOES NOT EXIST HERE. The
 // wheel these label is only drawn where the player picks a device
 // (::SAVE_DEVICE_CHOICE) and two are accessible at once, neither of which is
-// true on this console -- so these are the words a Switch player would see if
-// it ever did, and saying "SD CARD" twice is a less wrong thing to show than
-// naming hardware the console has no port for. See demo/src/save.hpp's note on
-// ::Card2.
+// true on either of these consoles -- so these are the words a Switch or 3DS
+// player would see if it ever did, and saying "SD CARD" twice is a less wrong
+// thing to show than naming hardware neither console has a port for. See
+// demo/src/save.hpp's note on ::Card2.
+//
+// THE TWO SHARE A BRANCH HERE AND NOT IN demo/src/save.hpp, which is not an
+// inconsistency: the device LABEL is a fact about the hardware -- both consoles
+// save to one SD card and there is nothing else to call it -- while the
+// MESSAGES over there differ in which console actually shows them. See that
+// file's TARGET_CTR branch.
 constexpr auto card1Text        = ::charmap_generic.encode("SD CARD");
 constexpr auto card2Text        = ::charmap_generic.encode("SD CARD");
 #else
@@ -55,7 +61,9 @@ namespace pregame {
      * The Wii runs all of it: it has two devices that may each be absent, which
      * is the situation this mode exists for. So does the Switch, with one
      * device that may be absent -- which is the same situation minus the
-     * choice, and the flow handles it by never drawing the wheel.
+     * choice, and the flow handles it by never drawing the wheel. The 3DS is
+     * that case again, and the one where "may be absent" is literal: its card
+     * can leave the slot mid-game (src/3ds/save.cpp).
      */
     void main();
 
