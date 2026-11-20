@@ -1064,7 +1064,27 @@ namespace title {
         irq::EnableInterrupts();
         log("title::main: entering input loop");
 
-        u8 prevInputs = 0;
+        // SEEDED FROM THE PAD, NOT FROM ZERO, AND THAT IS A BUG FIX RATHER THAN
+        // A TIDY-UP. `pressed` below is an edge -- `inputs & ~prevInputs` -- so
+        // a seed of 0 declares every button CURRENTLY HELD to have gone down on
+        // this loop's first frame. Nothing in this mode presses its own buttons,
+        // but the mode that hands over to it does: ::pregame::ChoiceWheel breaks
+        // out of its wheel on the A edge WITHOUT waiting for the release, so A
+        // is still down when ::pregame::main sets ::gameMode and returns. This
+        // loop's first frame then read that held A as a fresh press and
+        // confirmed whatever the title menu had highlighted -- so answering
+        // "CONFIRM USE DEVICE" (or any other wheel) at boot dropped the player
+        // straight past NEW GAME / CONTINUE / OPTIONS into the player-count
+        // screen, having never seen the menu.
+        //
+        // One poll, discarded, is the whole fix: a button held when this loop
+        // starts is not a press, which is the same rule ::pregame::ChoiceWheel
+        // already seeds itself by. It fixes the hand-off from every predecessor
+        // at once -- world and level mode also return here with buttons down --
+        // rather than making each one drain its own confirm on the way out.
+        u8 seed1 = 0, seed2 = 0;
+        input::PollControllers(&seed1, &seed2);
+        u8 prevInputs = static_cast<u8>(seed1 | seed2);
         while (true) {
             u8 port1, port2;
             input::PollControllers(&port1, &port2);
@@ -1237,15 +1257,24 @@ namespace title {
                         // it backed out of is not something a player needs
                         // told in a different sound.
                         ui::impl::PostSfx(sfx::deselect);
-#ifdef TARGET_GC
+#ifdef TARGET_OGC
                         // ...and the one place the page's settings are written
                         // out. Every control on it writes straight into
                         // saveData.config (demo/src/save.hpp's SaveFile), so
                         // leaving the page is the moment the file and the
                         // screen stop agreeing, and the moment there is
                         // something to save. ::pregame::SaveScreen blocks with
-                        // SAVING up until the card answers, and runs its own
+                        // SAVING up until the device answers, and runs its own
                         // RETRY / CONTINUE wheel if it will not.
+                        //
+                        // TARGET_OGC AND NOT TARGET_GC, which is what makes a
+                        // Wii remember its settings. With this gated to the
+                        // GameCube, a Wii player could change anything on this
+                        // page and nothing was ever written: the save existed,
+                        // ::pregame had loaded it, and the one call that writes
+                        // it back was compiled out -- so every boot came up on
+                        // the scene's defaults. Both consoles have somewhere to
+                        // write and the same wheel to offer when they do not.
                         //
                         // THE CORNERS GO FIRST, because the save screen is
                         // drawn in a different quadrant and these sprites are
@@ -1260,13 +1289,29 @@ namespace title {
                         // sound plays over the save screen rather than being
                         // dropped.
                         //
-                        // The return value is deliberately unused. A card that
-                        // cannot be written is the player's answer to make --
-                        // they have already chosen CONTINUE in that wheel --
+                        // The return value is deliberately unused. A device
+                        // that cannot be written is the player's answer to make
+                        // -- they have already chosen CONTINUE in that wheel --
                         // and refusing to leave the page would trap them in it
-                        // with no card in the console.
+                        // with nothing in the console to save to.
                         ParkOptionsCorners();
                         (void)pregame::SaveScreen();
+
+                        // THE SAME STROBE SEED THIS LOOP OPENS WITH, for the
+                        // same reason, at the other hand-off. ::SaveScreen runs
+                        // its own frames and its own RETRY / CONTINUE wheel,
+                        // which answers on an A edge and returns WITHOUT
+                        // waiting for the release -- so this loop's
+                        // ::prevInputs is whatever was held before the save
+                        // screen, and a button the wheel consumed would read as
+                        // a fresh press on the frame after it returns.
+                        // Re-seeding is how the frames it spent are accounted
+                        // for; nothing held across it counts as new.
+                        {
+                            u8 back1 = 0, back2 = 0;
+                            input::PollControllers(&back1, &back2);
+                            prevInputs = static_cast<u8>(back1 | back2);
+                        }
 #endif
                         // AFTER the save screen, not before: that call hands
                         // the NMI vector back to whatever it found here, so an
@@ -2035,6 +2080,24 @@ namespace ui::impl {
 #else
         namespace ac = gen::options::audioCanvas;
         const Rect r = ac::SFXSlider::rect;
+        // AN UNRESOLVED TRACK IS NOT A SETTING, and this is the branch that
+        // lets ::pregame ask this question at all. `rect` is zero until
+        // gen::options::Make() has run in this mode, and a cell index cannot
+        // become a proportion without a width: ::SliderTravel(0) underflows to
+        // 254, so a mid-handle save read against it comes back as 1% -- near
+        // silence for a player who set nothing of the kind. pregame used to
+        // dodge that by playing its own effects at a hard-coded 255 and never
+        // consulting this, which is exactly what made MUTE leak -- its frame
+        // pump also spends the mailbox for ::pregame::SaveScreen, so backing
+        // out of this page with the slider at zero played the deselect at full
+        // volume on the way to the title screen.
+        //
+        // WHAT IS KNOWABLE WITHOUT THE TRACK IS THE END STOPS. Amount 0 is the
+        // left cap at every width -- ::SliderPercent maps it to 0 whatever the
+        // travel -- so mute is honoured before the scene exists; anything else
+        // reads as full scale, which is the value pregame was using outright
+        // and the right answer for the boot-time effects it was chosen for.
+        if (!r.size.x) return ac::SFXSlider::amount ? 255 : 0;
         return SliderCoefficient(r.size.x, ac::SFXSlider::amount);
 #endif
     }

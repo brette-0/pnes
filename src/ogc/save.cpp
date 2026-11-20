@@ -1,7 +1,17 @@
 /**
  * @file save.cpp
  * @brief Memory-card save/load/create/locate for the GameCube (libogc CARD_*),
- *        and the honest refusal that stands in for it on Wii.
+ *        and the FAT-volume backend that does the same job on the Wii.
+ *
+ * TWO CONSOLES, TWO HALVES, ONE FILE, because they share nothing but this
+ * header comment: the GameCube's save is an EXI memory card reached through
+ * CARD_*, the Wii's is a file on the SD card or a USB disk reached through
+ * libfat, and a console has exactly one of those. The split is the
+ * #ifdef TARGET_GC below, and the Wii half opens with its own header comment
+ * covering what differs -- it is blocking where this half is ticked, and its
+ * search is path-based where this half's is identity-based.
+ *
+ * WHAT FOLLOWS, UNTIL THE #else, IS THE GAMECUBE.
  *
  * EVERY ENTRY POINT IS A TICKED STATE MACHINE, not a blocking call: each call
  * advances the sequence by exactly one libogc step and returns `false`, until
@@ -59,6 +69,68 @@
  */
 #include "internal.hpp"
 #include <pnes/save.hpp>
+
+/*
+ * THE TWO HELPERS BOTH CONSOLES SHARE, and the only code in this file that is
+ * not one console's or the other's.
+ *
+ * WHY SO LITTLE IS SHARED, given the two halves do the same job: nearly every
+ * helper in the GameCube half is a piece of a CARD_* state machine -- ::Begin,
+ * ::Tick, ::Resolve, ::ProbeMedia, the ::Survey* sweep, ::AdvanceSlot,
+ * ::Abort, ::Busy -- and a FAT volume has no asynchronous step to advance, so
+ * there is nothing on the Wii side for them to be extended INTO. The parts
+ * that could be shared are the ones that touch neither medium: a judgement
+ * about a save::eError, and a question about a caller's save::Response.
+ *
+ * THEY LIVE HERE RATHER THAN IN EACH HALF because they had already drifted
+ * once. Both halves ranked outcomes identically (one as ::Rank, one as
+ * ::RankErr) and both unwrapped a Response's path, except that the
+ * GameCube's rejected an EMPTY path and the Wii's did not -- so a
+ * save::Response carrying "" meant "use the default location" on one console
+ * and save::bad_path on the other, for the same portable call. One definition
+ * is how that stops happening.
+ */
+namespace {
+
+/**
+ * @brief How much an outcome is worth saying, when several devices answer.
+ *
+ * Three tiers only, because that is all the distinction a caller can act on:
+ * nothing was there, something was there but silent, or something answered.
+ * Used by the GameCube's ::NoteSlotOutcome and by the Wii's searches, which
+ * both keep the best answer any device gave and report it when none of them
+ * held the save.
+ *
+ * save::busy IS UNREACHABLE ON THE WII (nothing there is ticked, so nothing can
+ * report "not yet"), which costs the middle tier nothing: it simply never wins
+ * a comparison on that console.
+ */
+constexpr u8 Rank(const save::eError err) {
+    switch (err) {
+        case save::no_device: return 0;   // nothing in this slot
+        case save::busy:      return 1;   // something, but it did not answer
+        default:              return 2;   // a real verdict about a real device
+    }
+}
+
+/**
+ * @brief The `path` a caller's save::Response names, or nullptr for none.
+ *
+ * AN EMPTY STRING IS NOT A PATH, and that is the half the Wii was missing.
+ * save.hpp's flows hand a Response straight back from ::save::GetSaveLocation
+ * or ::save::GetDeviceStatus, and a Response that found nothing carries a null
+ * `path` -- but a caller that built one by hand, or zeroed a buffer and passed
+ * that, carries "". Both mean "I am not naming a location", so both have to
+ * reach the backend as nullptr: the GameCube then uses ::kDefaultPath (or the
+ * remembered location), and the Wii uses ::kDefaultDevice. Treating "" as a
+ * location instead meant the Wii refused it as save::bad_path -- a different
+ * answer to the same call, which is exactly what a portable API cannot do.
+ */
+const char* PathOf(const save::Response* const response) {
+    return (response && response->path && response->path[0]) ? response->path : nullptr;
+}
+
+} // namespace
 
 #ifdef TARGET_GC
 
@@ -442,20 +514,6 @@ save::eError MapError(s32 err) {
         case CARD_ERROR_NOPERM:      return save::denied;
         case CARD_ERROR_NAMETOOLONG: return save::bad_path;
         default:                     return save::failed;
-    }
-}
-
-/**
- * @brief How much an outcome is worth saying, for ::sweepErr's comparison.
- *
- * Three tiers only, because that is all the distinction a caller can act on:
- * nothing was there, something was there but silent, or something answered.
- */
-constexpr u8 Rank(const save::eError err) {
-    switch (err) {
-        case save::no_device: return 0;   // nothing in this slot
-        case save::busy:      return 1;   // something, but it did not answer
-        default:              return 2;   // a real verdict about a real card
     }
 }
 
@@ -917,9 +975,6 @@ bool AdvanceSlot() {
  * `Load(tar, size, &loc)` safe to write before checking `loc`, which is the
  * whole point of taking the response rather than a bare string.
  */
-const char* PathOf(const save::Response* response) {
-    return (response && response->path && response->path[0]) ? response->path : nullptr;
-}
 
 /** @brief Starts a sequence, latching everything it will need. */
 bool Begin(Op want, const u8* src, u8* tar, std::size_t size, const char* path) {
@@ -1509,82 +1564,879 @@ Response GetDeviceStatus(const u8 index) {
 #else // TARGET_WII
 
 /*
- * THE WII HAS NO EXI MEMORY CARD SLOT, so there is nothing here to port: the
- * CARD_* API above addresses hardware this console does not have. Its
- * persistent storage is the front SD slot (libfat) or NAND (ISFS), both a
- * different medium with a different failure set, and neither is implemented.
+ * THE WII SAVES TO A FAT VOLUME, AND THAT CHANGES THE SHAPE OF THE BACKEND
+ * RATHER THAN JUST ITS CALLS. There is no EXI memory card slot on this console
+ * -- the CARD_* API above addresses hardware it does not have -- so persistent
+ * storage here is the front SD slot or USB mass storage, both reached as
+ * ordinary FAT volumes through libfat. What that medium costs and what it
+ * refuses are different from a memory card's, and three things follow:
  *
- * EVERY CALL IS `done` WITH save::missing, never a silent success and never an
- * endless `!done`: a Wii build links, runs, and tells a call site on its first
- * tick that there is no save here. The two answers a game cannot recover from
- * are "succeeded" (its data is gone) and "not finished yet" (its loop never
- * ends).
+ * NOTHING IS TICKED, BECAUSE NOTHING CAN BE. libfat is a blocking API: there is
+ * no "advance this transfer by one step" entry point to build a state machine
+ * out of, the way CARD_Read's completion callback let the GameCube half keep
+ * video and audio running between steps. So every call here finishes the whole
+ * operation and reports `done` on its first tick, and a caller's
  *
- * save::missing AND NOT save::no_device, which would be the more precise
- * answer: save.hpp gates every code past ::missing behind TARGET_GC, so this
- * half of the file cannot name one. Widening that gate -- to TARGET_OGC, or
- * dropping it -- is what a real Wii backend would need first.
+ *     while (!response.done) { ...one frame... }
+ *
+ * loop runs exactly once -- the same loop, with the same meaning, running
+ * through in one pass as it does on a battery cart. The cost lands inside one
+ * frame instead of being spread over several, and the honest summary is that a
+ * save on this console drops frames where a save on the GameCube does not. The
+ * expensive parts are named where they happen (::Mount, ::save::FreeDevices).
+ *
+ * save::busy IS THEREFORE NEVER RETURNED. It is declared on this target --
+ * save.hpp gates the vocabulary on TARGET_OGC now, for the Wii's sake -- so a
+ * game written against the GameCube still compiles, but no operation here is
+ * ever in flight across two calls and nothing can collide with one.
+ *
+ * THE SEARCH IS PATH-BASED, NOT IDENTITY-BASED, which is the one place this
+ * backend is STRICTER than the GameCube's. CARD_FindFirst filters the card's
+ * directory by gamecode and company, so the GameCube half can let a caller name
+ * the file anything and still find it afterwards. A FAT volume has no such
+ * filter: a save is found by looking where it was put. So the location is fixed
+ * by the build (WII_SAVE_DIR / WII_SAVE_FILENAME below) and ::ParseDevice
+ * accepts ONLY the two complete paths this file publishes -- the ones
+ * ::save::GetDeviceStatus and ::save::GetSaveLocation hand out. A path with any
+ * other spelling is save::bad_path rather than a file created where nothing
+ * will ever look for it again.
+ *
+ * @p size IS A PREFIX LENGTH HERE TOO, AND THAT IS A DELIBERATE COST. A FAT
+ * file could be exactly @p size bytes long, which is what a filesystem makes
+ * easy -- but then a game that grew its save struct by one member would find
+ * every existing save too short for the next ::save::Load, on a console where
+ * the medium has gigabytes to spare. The GameCube's contract exists because
+ * CARD_Create fixes a file's length at a multiple of the card's sector; this
+ * file reproduces it with ::kAllocUnit, so a save written here is rounded up
+ * the same way, a prefix shorter than the file reads back the same way, and the
+ * one failure a portable caller has to handle is the same failure in the same
+ * place. A few unused KiB on an SD card is the whole price.
+ *
+ * NO LOGGING, for the reason the GameCube half gives: log() resolves on this
+ * platform to the generic debug branch of logger.hpp, which writes through
+ * std::cout and depends on a console src/ogc/video.cpp's GX framebuffer owns.
+ * The failing call's own errno lands in ::lastNative instead, which is what
+ * ::save::LastNativeError reports.
  */
+
+#include <fat.h>
+#include <ogc/lwp_watchdog.h>
+#include <ogc/usbstorage.h>
+#include <sdcard/wiisd_io.h>
+
+#include <cerrno>
+#include <cstddef>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
+
+namespace {
+
+/**
+ * @brief Where this game's save lives on a volume, as the build spells it.
+ *
+ * TWO NAMES AND NOT ONE PATH, because the directory has to be created before
+ * the file can be and a mkdir needs it on its own. Compile definitions rather
+ * than a CMake-generated header, matching OGC_GAME_CODE and friends above: a
+ * project sets them once in its own build and nothing here grows an option for
+ * it.
+ *
+ * THE DIRECTORY IS NOT OPTIONAL. Writing to a volume root is what every other
+ * piece of Wii homebrew also declines to do -- an SD card's root belongs to the
+ * player and to the Homebrew Channel, and a bare save file dropped in it is
+ * indistinguishable from litter. One directory per game, named after the game.
+ */
+#ifndef WII_SAVE_DIR
+#define WII_SAVE_DIR "pnes"
+#endif
+#ifndef WII_SAVE_FILENAME
+#define WII_SAVE_FILENAME "pnes_save"
+#endif
+
+/**
+ * @brief Rejects a name that would be a path rather than a name.
+ *
+ * CHECKED AT COMPILE TIME because the alternative is discovering it on a
+ * player's console: "sd:/" WII_SAVE_DIR "/" WII_SAVE_FILENAME is assembled by
+ * the preprocessor, so a WII_SAVE_DIR containing a slash, a colon or a
+ * backslash silently builds a path pointing somewhere else entirely -- possibly
+ * at another game's directory. A name is one component, and the separators are
+ * this file's to add.
+ */
+constexpr bool IsPlainName(const char* s) {
+    if (!*s) return false;
+    for (; *s; ++s) {
+        if (*s == '/' || *s == '\\' || *s == ':') return false;
+    }
+    return true;
+}
+static_assert(IsPlainName(WII_SAVE_DIR),
+    "WII_SAVE_DIR must be a single non-empty name with no '/', '\\' or ':'");
+static_assert(IsPlainName(WII_SAVE_FILENAME),
+    "WII_SAVE_FILENAME must be a single non-empty name with no '/', '\\' or ':'");
+// 255 is FAT's long-name limit per component; the whole path is well under
+// newlib's PATH_MAX either way.
+static_assert(sizeof(WII_SAVE_DIR) <= 256, "WII_SAVE_DIR must be at most 255 characters");
+static_assert(sizeof(WII_SAVE_FILENAME) <= 256, "WII_SAVE_FILENAME must be at most 255 characters");
+
+constexpr char kSdDir[]   = "sd:/"  WII_SAVE_DIR;
+constexpr char kUsbDir[]  = "usb:/" WII_SAVE_DIR;
+constexpr char kSdFile[]  = "sd:/"  WII_SAVE_DIR "/" WII_SAVE_FILENAME;
+constexpr char kUsbFile[] = "usb:/" WII_SAVE_DIR "/" WII_SAVE_FILENAME;
+
+/**
+ * @brief How far ::save::AccessibleDevices and friends count.
+ *
+ * TWO, AND THE ORDER IS THE POLICY. Device 0 is the front SD slot and device 1
+ * is USB mass storage, which is the order a search tries them in and therefore
+ * the order a save lands in when the caller names nowhere: SD first, because it
+ * is the slot every Wii has and the one a player who has a save already has it
+ * in. The indices are what save.hpp documents, so they cannot be reordered to
+ * change that preference -- ::kDefaultDevice says it separately instead.
+ */
+constexpr u8 kDeviceCount = 2;
+static_assert(kDeviceCount <= 8, "::save::AccessibleDevices returns the mask in a u8");
+
+constexpr const char* kDevicePath[kDeviceCount] = { kSdFile, kUsbFile };
+constexpr const char* kDeviceDir[kDeviceCount]  = { kSdDir,  kUsbDir  };
+constexpr const char* kVolume[kDeviceCount]     = { "sd",    "usb"    };
+constexpr const char* kVolumeRoot[kDeviceCount] = { "sd:/",  "usb:/"  };
+
+/** @brief Where ::save::CreateSave puts a save when the caller names nowhere. */
+constexpr u8 kDefaultDevice = 0;
+
+/** @brief Not a device; what ::ParseDevice answers for a path it will not take. */
+constexpr u8 kNoDevice = 0xFF;
+
+/**
+ * @brief The two drivers, indexed as everything else here is.
+ *
+ * NOT A POINTER TO const DISC_INTERFACE BY ACCIDENT: libogc declares
+ * `__io_wiisd` const and `__io_usbstorage` non-const, so a table of
+ * `const DISC_INTERFACE*` is the one type both fit without casting either.
+ * Nothing here writes through them -- startup() and isInserted() are reached
+ * through the vtable-ish function pointers, which are const members.
+ */
+const DISC_INTERFACE* const kIface[kDeviceCount] = { &__io_wiisd, &__io_usbstorage };
+
+/**
+ * @brief The unit a save file's length is rounded up to.
+ *
+ * 8192 BECAUSE THAT IS THE GAMECUBE'S SECTOR, which is the only reason this
+ * quantity exists at all: it is what makes @p size mean the same thing on both
+ * consoles (see this half's header comment). A FAT volume has no sector this
+ * backend must respect -- libfat handles clusters -- so nothing here is
+ * hardware, and a build that changed it would change only how much slack a
+ * save file carries.
+ *
+ * IT IS NOT A LIMIT, UNLIKE THE GAMECUBE'S. ::kSectorMax bounds a transfer up
+ * there because the card's sector is as much as one CARD_Read can move; here a
+ * larger save simply occupies more units, so a @p size above 8192 is ordinary
+ * rather than save::too_large. A game sized for the GameCube is a strict subset
+ * of what works here.
+ */
+constexpr std::size_t kAllocUnit = 8192;
+
+/**
+ * @brief The zero-fill source, in .rodata rather than as an 8 KiB staging copy.
+ *
+ * THE GAMECUBE HALF NEEDS A WHOLE SECTOR IN RAM because CARD_Write moves a
+ * sector at a time and the payload has to be assembled before the transfer
+ * starts. A write() takes a length, so the caller's own bytes go out directly
+ * from where they already are and the padding is this block, written as many
+ * times as it takes (::PadTo). 256 bytes of .dol, and no snapshot of the
+ * caller's save struct -- which is the other difference: there are no frames
+ * between the snapshot and the write for the game to mutate its state in.
+ */
+const u8 kZeros[256] = { };
+
+/** @brief True once this device's driver has come up. */
+bool started[kDeviceCount] = { };
+/** @brief True while the mount under ::kVolume is one THIS file made. */
+bool mountedByUs[kDeviceCount] = { };
+
+/**
+ * @brief When a failed startup() was last attempted, and whether one ever was.
+ *
+ * WHY A THROTTLE EXISTS AT ALL: __io_usbstorage's startup() enumerates the USB
+ * bus and waits for a device to answer, which on a Wii with nothing plugged in
+ * takes seconds rather than microseconds. save.hpp invites a UI to poll
+ * ::save::AccessibleDevices "a few times a second", and an unthrottled poll
+ * would therefore freeze a menu for as long as the player left it open.
+ *
+ * So a FAILED startup is not retried for ::kStartupRetryMs. Hotplug still
+ * works -- the next attempt after the interval finds the device -- it just
+ * costs up to two seconds of latency instead of up to two seconds of every
+ * frame. A SUCCESSFUL startup is remembered in ::started and never repeated
+ * until the medium is seen to leave (::Inserted).
+ */
+u64  startupAt[kDeviceCount]    = { };
+bool startupTried[kDeviceCount] = { };
+constexpr u32 kStartupRetryMs   = 2000;
+
+/**
+ * @brief Devices this backend has tried to mount and could not.
+ *
+ * THE SAME POLICY THE GAMECUBE HALF APPLIES TO A BROKEN CARD, for the same
+ * reason: a volume whose filesystem libfat will not mount is not somewhere this
+ * game can save, and save.hpp deliberately has no code for "the medium is
+ * damaged" because nothing a game can do about it is worth one. An SD card
+ * formatted exFAT, a card with no partition table libfat recognises, a card
+ * whose FAT is corrupt -- all of them report save::no_device, and
+ * ::save::LastNativeError still holds the errno for a developer.
+ *
+ * IT IS CLEARED BY THE MEDIUM LEAVING (::Inserted), which is what makes a
+ * reformat recoverable without restarting the game. The limitation is the
+ * GameCube half's: a card swapped between two polls with no observed gap keeps
+ * the old verdict until the next removal is seen.
+ */
+bool deviceBroken[kDeviceCount] = { };
+
+/** @brief The device holding this game's save, once something has found it. */
+bool haveLocation = false;
+u8   locationDev  = 0;
+
+save::eError lastErr    = save::found;
+int          lastNative = 0;
+
+/** @brief The last finished ::save::FreeDevices answer and what it describes. */
+bool        freeValid  = false;
+u8          freeMask   = 0;
+u8          freeAccess = 0;
+std::size_t freeSize   = 0;
+
+/** @brief @p n rounded up to a whole ::kAllocUnit. */
+constexpr std::size_t RoundUp(const std::size_t n) {
+    return ((n + kAllocUnit - 1) / kAllocUnit) * kAllocUnit;
+}
+
+/**
+ * @brief Translates the failing call's errno into the library's own code.
+ *
+ * THE SAME JOB ::MapError DOES FOR libogc's CARD_ERROR_*, with the same
+ * reasoning: a game acts on "there is nowhere to save", not on which of
+ * newlib's numbers produced that. Anything with no portable meaning lands on
+ * save::failed and ::lastNative keeps what actually happened.
+ *
+ * ENOENT IS save::missing AND NOT save::bad_path, which is only unambiguous
+ * because the path is this file's own: the directory and file names come from
+ * the build and the volume is known to be mounted before any of them is opened,
+ * so the one thing ENOENT can mean is that this game's save is not there yet --
+ * the cue for ::save::CreateSave. A caller's misspelt path never reaches a
+ * syscall at all; ::ParseDevice refuses it first.
+ */
+save::eError MapErrno(const int e) {
+    switch (e) {
+        case 0:            return save::found;
+        case ENOENT:       return save::missing;
+        case EEXIST:       return save::exists;
+        case ENOSPC:
+        case EDQUOT:       return save::full;
+        case EACCES:
+        case EPERM:
+        case EROFS:        return save::denied;
+        case EINVAL:
+        case ENAMETOOLONG: return save::bad_path;
+        // The medium went away mid-operation, which is the ordinary way a save
+        // fails on a console whose storage a player can pull out by hand.
+        //
+        // ENOMEDIUM IS BEHIND A GUARD because newlib declares it only under
+        // __LINUX_ERRNO_EXTENSIONS__ (sys/errno.h), which devkitPPC does not
+        // define -- so naming it unconditionally is a compile error rather than
+        // a dead branch. It is still worth listing: it is the errno for exactly
+        // this situation, and a toolchain update that exposes it should map it
+        // without anyone having to notice.
+        case ENODEV:
+        case ENXIO:
+#ifdef ENOMEDIUM
+        case ENOMEDIUM:
+#endif
+                           return save::no_device;
+        default:           return save::failed;
+    }
+}
+
+/** @brief Records an outcome and returns it, for `return Fail(...)`. */
+save::eError Fail(const save::eError err, const int native) {
+    lastErr    = err;
+    lastNative = native;
+    return err;
+}
+
+/** @brief Records success: save::found, and no platform code to report. */
+save::eError Won() {
+    lastErr    = save::found;
+    lastNative = 0;
+    return save::found;
+}
+
+/** @brief Drops a mount this file made, leaving the application's alone. */
+void Release(const u8 d) {
+    if (!mountedByUs[d]) return;
+    fatUnmount(kVolume[d]);
+    mountedByUs[d] = false;
+}
+
+/**
+ * @brief Brings device @p d's driver up, at most once per ::kStartupRetryMs
+ *        while it keeps failing.
+ */
+bool Started(const u8 d) {
+    if (started[d]) return true;
+
+    const u64 now = gettime();
+    if (startupTried[d] &&
+        ticks_to_millisecs(diff_ticks(startupAt[d], now)) < kStartupRetryMs) {
+        return false;
+    }
+    startupTried[d] = true;
+    startupAt[d]    = now;
+
+    if (!kIface[d]->startup()) return false;
+    started[d] = true;
+    return true;
+}
+
+/**
+ * @brief Is there media in device @p d?
+ *
+ * WHAT MAKES ::save::GetDeviceStatus CHEAP, and the counterpart of the
+ * GameCube half's CARD_ProbeEx: isInserted() asks the driver, not the
+ * filesystem, so no volume is mounted to answer it and nothing about the FAT is
+ * read. A status poll costs this and no more.
+ *
+ * REMOVAL IS NOTICED HERE AND NOWHERE ELSE, which is why it has side effects: a
+ * medium that has gone takes its mount with it (a devoptab pointing at absent
+ * hardware is worse than no devoptab), clears the "will not mount" verdict so
+ * that a reformatted card is usable again, and drops ::started so the driver is
+ * brought back up when something is inserted next -- an SD card swap needs that
+ * re-init, and the throttle in ::Started keeps the retries cheap.
+ */
+bool Inserted(const u8 d) {
+    if (d >= kDeviceCount) return false;
+    if (!Started(d)) return false;
+    if (kIface[d]->isInserted()) return true;
+
+    Release(d);
+    deviceBroken[d] = false;
+    started[d]      = false;
+    freeValid       = false;
+    return false;
+}
+
+/** @brief True when something has a usable volume mounted under ::kVolume. */
+bool Mounted(const u8 d) {
+    struct stat st;
+    return stat(kVolumeRoot[d], &st) == 0;
+}
+
+/**
+ * @brief Makes device @p d's volume usable, mounting it if nothing else has.
+ *
+ * THE APPLICATION MAY HAVE MOUNTED IT FIRST, and this is the whole reason the
+ * check is a stat() of the volume root rather than a flag of our own: a game
+ * that called fatInitDefault() for its own assets already owns "sd:", a second
+ * mount under the same name would fail, and unmounting it when a save finished
+ * would pull the volume out from under the game. So a mount that was already
+ * there is USED AND NOT OWNED -- ::Release only ever drops one this file made.
+ *
+ * THE SLOW CALL IN THIS FILE. A mount reads the partition table and the FAT's
+ * boot sector; it is the Wii's equivalent of CARD_Mount, with the difference
+ * that there is nothing to tick it with. Nothing calls it on a status poll:
+ * ::save::GetDeviceStatus and ::save::AccessibleDevices stop at ::Inserted,
+ * and this runs when a real operation needs the filesystem, or when
+ * ::save::FreeDevices has to ask the filesystem how much room is left.
+ */
+bool Mount(const u8 d) {
+    if (Mounted(d)) return true;
+    if (fatMountSimple(kVolume[d], kIface[d])) {
+        mountedByUs[d] = true;
+        return true;
+    }
+    // Being unmountable is a verdict about the medium, not a transient: libfat
+    // has seen the sectors and declined them.
+    deviceBroken[d] = true;
+    return false;
+}
+
+/**
+ * @brief Which device @p path names, or ::kNoDevice.
+ *
+ * ONLY THE PATHS THIS FILE PUBLISHES, which is the stricter half of the
+ * path-based search described in this half's header comment. A caller gets
+ * these from ::save::GetDeviceStatus or ::save::GetSaveLocation and hands one
+ * back; anything else is a path the next ::save::GetSaveLocation would not
+ * look at, so creating a file there would lose it.
+ */
+u8 ParseDevice(const char* const path) {
+    if (!path) return kNoDevice;
+    for (u8 d = 0; d < kDeviceCount; ++d) {
+        if (std::strcmp(path, kDevicePath[d]) == 0) return d;
+    }
+    return kNoDevice;
+}
+
+/** @brief write() until @p n bytes are gone or something refuses them. */
+bool WriteAll(const int fd, const void* const src, std::size_t n) {
+    const u8* p = static_cast<const u8*>(src);
+    while (n) {
+        const ssize_t w = write(fd, p, n);
+        if (w <= 0) return false;
+        p += w;
+        n -= static_cast<std::size_t>(w);
+    }
+    return true;
+}
+
+/** @brief read() until @p n bytes have arrived or the file runs out. */
+bool ReadAll(const int fd, void* const tar, std::size_t n) {
+    u8* p = static_cast<u8*>(tar);
+    while (n) {
+        const ssize_t r = read(fd, p, n);
+        if (r <= 0) return false;
+        p += r;
+        n -= static_cast<std::size_t>(r);
+    }
+    return true;
+}
+
+/**
+ * @brief Zero-fills from @p from to @p to.
+ *
+ * WHAT MAKES @p size A PREFIX. The whole allocation unit is written every time,
+ * zero past the caller's bytes, so no tail of an earlier and longer save
+ * survives inside it -- the same guarantee the GameCube half gets from staging
+ * a whole sector.
+ */
+bool PadTo(const int fd, std::size_t from, const std::size_t to) {
+    while (from < to) {
+        const std::size_t span = to - from;
+        const std::size_t n    = span < sizeof kZeros ? span : sizeof kZeros;
+        if (!WriteAll(fd, kZeros, n)) return false;
+        from += n;
+    }
+    return true;
+}
+
+/** @brief The length of @p path, or -1 with @p errOut set. */
+off_t LengthOf(const char* const path, int& errOut) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        errOut = errno;
+        return -1;
+    }
+    errOut = 0;
+    return st.st_size;
+}
+
+/**
+ * @brief Moves @p size bytes to or from the save on device @p d.
+ *
+ * ONE FUNCTION FOR BOTH DIRECTIONS because everything except the transfer
+ * itself is shared, and the length check in particular MUST be: a save and a
+ * load disagreeing about whether a file is long enough is how a game writes a
+ * prefix it can never read back.
+ *
+ * THE LENGTH CHECK IS THE GAMECUBE'S, DOWN TO THE CODE IT REPORTS.
+ * ::Resolve up there refuses a prefix longer than card_file::len with
+ * CARD_ERROR_LIMIT, which ::MapError turns into save::full; this refuses a
+ * prefix longer than the FAT file with save::full for the same reason -- so a
+ * game whose save struct has outgrown its existing save file hears the same
+ * answer on both consoles rather than one answer per backend. ::lastNative
+ * holds ENOSPC, which is the nearest errno and is NOT one the filesystem
+ * produced; a developer reading it alongside save::full learns that the file was
+ * too short rather than the card too full.
+ */
+save::eError Transfer(const u8 d, const void* const src, void* const tar, const std::size_t size) {
+    if (!Mount(d)) return Fail(save::no_device, ENODEV);
+
+    const int fd = open(kDevicePath[d], src ? O_WRONLY : O_RDONLY);
+    if (fd < 0) {
+        const int e = errno;
+        return Fail(MapErrno(e), e);
+    }
+
+    const off_t len = lseek(fd, 0, SEEK_END);
+    if (len < 0) {
+        const int e = errno;
+        close(fd);
+        return Fail(MapErrno(e), e);
+    }
+    if (static_cast<std::size_t>(len) < kAllocUnit || size > static_cast<std::size_t>(len)) {
+        close(fd);
+        return Fail(save::full, ENOSPC);
+    }
+    if (lseek(fd, 0, SEEK_SET) != 0) {
+        const int e = errno;
+        close(fd);
+        return Fail(MapErrno(e), e);
+    }
+
+    // fsync BEFORE close AND NOT INSTEAD OF IT: a save is the one moment a
+    // player may switch the console off believing their progress is on the
+    // card, and libfat's cache is free to hold a dirty sector until something
+    // asks. close() flushes the file; fsync() is what also pushes the cache
+    // through to the medium, and its failure is a failed save rather than a
+    // detail -- which is why it is part of the && and not a courtesy call.
+    const bool ok = src ? (WriteAll(fd, src, size) &&
+                           PadTo(fd, size, RoundUp(size)) &&
+                           fsync(fd) == 0)
+                        : ReadAll(fd, tar, size);
+    const int e = ok ? 0 : errno;
+    if (close(fd) != 0 && ok) {
+        const int ce = errno;
+        return Fail(MapErrno(ce), ce);
+    }
+    if (!ok) return Fail(MapErrno(e), e);
+    return Won();
+}
+
+/**
+ * @brief ::save::Save and both ::save::Load overloads, which differ only in
+ *        which way the bytes go and whether the caller named a device.
+ *
+ * WITH NO PATH IT SEARCHES, and the order is the remembered location first,
+ * then device 0, then device 1 -- ::kDefaultDevice's preference, applied to
+ * reads as well as writes. A remembered location that no longer holds the file
+ * (the player swapped cards, or deleted the save from the Homebrew Channel)
+ * is FORGOTTEN AND THE SEARCH CONTINUES: save::missing from the remembered
+ * device is the one outcome worth retrying elsewhere, while a real failure
+ * there is reported rather than papered over by trying a different card.
+ */
+save::eError SaveOrLoad(const void* const src, void* const tar,
+                        const std::size_t size, const char* const path) {
+    // size == 0 IS save::too_large, WHICH READS ODDLY AND IS THE GAMECUBE'S
+    // ANSWER. ::Begin refuses `size == 0 || size > kSectorMax` with that one
+    // code, and a portable caller handling it for one console should not meet a
+    // different code here for the same mistake. The upper half of that test has
+    // no counterpart: see ::kAllocUnit.
+    if (size == 0)   return Fail(save::too_large, EINVAL);
+    if (!src && !tar) return Fail(save::failed, EINVAL);
+
+    if (path) {
+        const u8 d = ParseDevice(path);
+        if (d == kNoDevice) return Fail(save::bad_path, EINVAL);
+        if (!Inserted(d) || deviceBroken[d]) return Fail(save::no_device, ENODEV);
+
+        const save::eError err = Transfer(d, src, tar, size);
+        if (err == save::found) {
+            haveLocation = true;
+            locationDev  = d;
+            if (src) freeValid = false;
+        }
+        return err;
+    }
+
+    if (haveLocation && Inserted(locationDev) && !deviceBroken[locationDev]) {
+        const save::eError err = Transfer(locationDev, src, tar, size);
+        if (err == save::found) {
+            if (src) freeValid = false;
+            return err;
+        }
+        if (err != save::missing) return err;
+        haveLocation = false;
+    }
+
+    save::eError best       = save::no_device;
+    int          bestNative = ENODEV;
+    bool         seen       = false;
+    for (u8 d = 0; d < kDeviceCount; ++d) {
+        if (!Inserted(d) || deviceBroken[d]) continue;
+
+        const save::eError err = Transfer(d, src, tar, size);
+        if (err == save::found) {
+            haveLocation = true;
+            locationDev  = d;
+            if (src) freeValid = false;
+            return err;
+        }
+        // Strictly greater, so a tie leaves the EARLIER device's answer in
+        // place -- SD's verdict is the one a player is told about.
+        if (!seen || Rank(err) > Rank(best)) {
+            best       = err;
+            bestNative = lastNative;
+            seen       = true;
+        }
+    }
+    return Fail(best, bestNative);
+}
+
+/**
+ * @brief ::save::CreateSave: the one operation that makes the file and the
+ *        directory holding it.
+ *
+ * O_EXCL AND NOT A stat() FIRST, because "does it exist" and "create it" have
+ * to be one operation for save::exists to mean anything -- and because the
+ * GameCube's CARD_Create reports CARD_ERROR_EXIST from inside the create for
+ * the same reason.
+ *
+ * A HALF-WRITTEN NEW SAVE IS DELETED. If the medium fills up or is pulled out
+ * between the open and the fsync, what is left is a file this game will find on
+ * its next ::save::GetSaveLocation and load as if it were a save -- worse than
+ * no file at all, since the player is offered a corrupt game rather than a new
+ * one. The unlink is best-effort: it is a second chance to touch a medium that
+ * has just failed, and its own failure changes nothing about what the caller is
+ * told.
+ */
+save::eError Create(const void* const src, const std::size_t size, const char* const path) {
+    if (size == 0) return Fail(save::too_large, EINVAL);
+    if (!src)      return Fail(save::failed, EINVAL);
+
+    u8 d = kDefaultDevice;
+    if (path) {
+        d = ParseDevice(path);
+        if (d == kNoDevice) return Fail(save::bad_path, EINVAL);
+    }
+    if (!Inserted(d) || deviceBroken[d]) return Fail(save::no_device, ENODEV);
+    if (!Mount(d))                       return Fail(save::no_device, ENODEV);
+
+    if (mkdir(kDeviceDir[d], 0777) != 0 && errno != EEXIST) {
+        const int e = errno;
+        return Fail(MapErrno(e), e);
+    }
+
+    const int fd = open(kDevicePath[d], O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (fd < 0) {
+        const int e = errno;
+        return Fail(MapErrno(e), e);
+    }
+
+    const bool ok = WriteAll(fd, src, size) &&
+                    PadTo(fd, size, RoundUp(size)) &&
+                    fsync(fd) == 0;
+    const int e = ok ? 0 : errno;
+    if (close(fd) != 0 && ok) {
+        const int ce = errno;
+        unlink(kDevicePath[d]);
+        return Fail(MapErrno(ce), ce);
+    }
+    if (!ok) {
+        unlink(kDevicePath[d]);
+        return Fail(MapErrno(e), e);
+    }
+
+    haveLocation = true;
+    locationDev  = d;
+    freeValid    = false;
+    return Won();
+}
+
+} // namespace
+
 namespace save {
 
-Response Save(const void*, const std::size_t) {
-    return { .done = true, .err = missing, .path = nullptr };
+/**
+ * @brief The response for an operation that has just finished, which is every
+ *        one of them on this console.
+ *
+ * `done` IS ALWAYS TRUE, and that is this backend's whole async story: see this
+ * half's header comment. The `path` is ::kDevicePath's own storage rather than a
+ * buffer this file fills -- a string literal outlives every call, which is
+ * stricter than save.hpp's promise that it survives until the next
+ * ::GetSaveLocation and costs nothing to honour.
+ */
+Response Save(const void* src, const std::size_t size) {
+    return { .done = true,
+             .err  = SaveOrLoad(src, nullptr, size, nullptr),
+             .path = haveLocation ? kDevicePath[locationDev] : nullptr };
 }
 
-Response Load(void*, const std::size_t) {
-    return { .done = true, .err = missing, .path = nullptr };
+Response Load(void* tar, const std::size_t size) {
+    return { .done = true,
+             .err  = SaveOrLoad(nullptr, tar, size, nullptr),
+             .path = haveLocation ? kDevicePath[locationDev] : nullptr };
 }
 
-Response Load(void*, const std::size_t, const Response*) {
-    return { .done = true, .err = missing, .path = nullptr };
+Response Load(void* tar, const std::size_t size, const Response* response) {
+    return { .done = true,
+             .err  = SaveOrLoad(nullptr, tar, size, PathOf(response)),
+             .path = haveLocation ? kDevicePath[locationDev] : nullptr };
 }
 
-Response CreateSave(const void*, const std::size_t, const Response*) {
-    return { .done = true, .err = missing, .path = nullptr };
+Response CreateSave(const void* src, const std::size_t size, const Response* response) {
+    return { .done = true,
+             .err  = Create(src, size, PathOf(response)),
+             .path = haveLocation ? kDevicePath[locationDev] : nullptr };
 }
 
-// A finished search with nowhere to have looked.
+/**
+ * @brief Finds where this game's save lives.
+ *
+ * A COMPLETED SEARCH THAT FOUND NOTHING IS NOT AN ERROR -- `done` with
+ * save::missing and a null `path`, which is the cue to call ::CreateSave. An
+ * empty slot with no medium in it is different and says save::no_device, so a
+ * game can ask for an SD card rather than offer to start a new save on one that
+ * is not there. Exactly the GameCube half's two answers, from the same
+ * vocabulary.
+ */
 Response GetSaveLocation() {
-    return { .done = true, .err = missing, .path = nullptr };
+    eError best       = no_device;
+    int    bestNative = ENODEV;
+    bool   seen       = false;
+
+    for (u8 d = 0; d < kDeviceCount; ++d) {
+        if (!Inserted(d) || deviceBroken[d]) continue;
+        if (!Mount(d)) {
+            if (!seen || Rank(no_device) > Rank(best)) {
+                best       = no_device;
+                bestNative = ENODEV;
+                seen       = true;
+            }
+            continue;
+        }
+
+        int e = 0;
+        if (LengthOf(kDevicePath[d], e) >= 0) {
+            haveLocation = true;
+            locationDev  = d;
+            Won();
+            return { .done = true, .err = found, .path = kDevicePath[d] };
+        }
+
+        const eError err = MapErrno(e);
+        if (!seen || Rank(err) > Rank(best)) {
+            best       = err;
+            bestNative = e;
+            seen       = true;
+        }
+    }
+
+    // A search that found nothing forgets what it thought it knew: a `path`
+    // handed back now would name a file this very call failed to stat.
+    haveLocation = false;
+    Fail(best, bestNative);
+    return { .done = true, .err = best, .path = nullptr };
 }
 
-// No EXI slot means no card, no directory and no entry to read or write.
+/**
+ * @brief No counterpart on this console, and not a gap to be filled.
+ *
+ * These two move a `card_stat` -- a 64-byte entry in a GameCube memory card's
+ * own directory, carrying the comment block, banner and icon offsets the system
+ * menu draws a save with. A FAT volume has no directory entry of that shape and
+ * the Wii's system menu does not list homebrew saves at all, so there is
+ * nothing here to read and nothing to state.
+ *
+ * save::no_device AND NOT save::failed: the honest content of the answer is
+ * that the DEVICE this concept belongs to is not present, which is the same
+ * thing src/all/save.cpp says on every target with no card. ::lastNative is
+ * ENOSYS so that ::LastNativeError is non-zero -- a developer who called this
+ * on the wrong console sees "not implemented" rather than "nothing went wrong".
+ */
 Response GetMetaData(void*) {
-    return { .done = true, .err = missing, .path = nullptr };
+    return { .done = true, .err = Fail(no_device, ENOSYS), .path = nullptr };
 }
 
 Response SetMetaData(const void*) {
-    return { .done = true, .err = missing, .path = nullptr };
+    return { .done = true, .err = Fail(no_device, ENOSYS), .path = nullptr };
 }
 
 /**
- * @brief No bits: this console has no EXI memory card slot for a card to be in.
+ * @brief Which devices hold media right now, as a bitfield.
  *
- * The one place this half of the file can be PRECISE where the rest of it
- * cannot. Its siblings above answer save::missing because save.hpp gates the
- * more exact codes behind TARGET_GC -- but an empty mask is not a code, and
- * what it says here is not in dispute.
- */
-u8 AccessibleDevices() { return 0; }
-
-/**
- * @brief No slots, so every index is past the last one.
+ * NO MOUNT AND NO FILESYSTEM READ, which is what makes this pollable: it is
+ * ::Inserted twice, one driver question each. The first call on a Wii with
+ * nothing in the USB port pays ::Started's enumeration; after that the throttle
+ * keeps it to once every ::kStartupRetryMs.
  *
- * save::no_device AND NOT save::missing, breaking this half's own convention on
- * purpose: ::no_device is declared unconditionally in save.hpp (only the codes
- * past it are TARGET_GC-only), and it is the whole content of the answer. A
- * device query reporting "there is somewhere, and your save is not on it" would
- * be false twice over.
+ * IT LEAVES ::lastErr ALONE, as save.hpp requires of a status poll: a menu
+ * refreshing itself must not overwrite what a failed save left for the game to
+ * report.
  */
-Response GetDeviceStatus(u8) {
-    return { .done = true, .err = no_device, .path = nullptr };
+u8 AccessibleDevices() {
+    u8 mask = 0;
+    for (u8 d = 0; d < kDeviceCount; ++d) {
+        if (Inserted(d) && !deviceBroken[d]) mask = static_cast<u8>(mask | (1u << d));
+    }
+    return mask;
 }
 
-/** @brief No devices, so none of them has room, whatever the size. */
-u8 FreeDevices(const std::size_t) { return 0; }
+/**
+ * @brief Whether device @p index holds usable media, and where a save on it
+ *        would live.
+ *
+ * save::too_large IS UNREACHABLE HERE, unlike on the GameCube: that answer is
+ * about a card whose sector width the backend cannot transfer, and a FAT volume
+ * presents no such number -- libfat deals in clusters and this file never sees
+ * them. save::busy is unreachable too; the probe is synchronous.
+ *
+ * NOT `done` NEVER HAPPENS, so a UI that polls this on its own cadence and a
+ * caller that loops `while (!done)` both work, the latter running once.
+ */
+Response GetDeviceStatus(const u8 index) {
+    if (index >= kDeviceCount)                     return { .done = true, .err = no_device, .path = nullptr };
+    if (!Inserted(index) || deviceBroken[index])   return { .done = true, .err = no_device, .path = nullptr };
+    return { .done = true, .err = found, .path = kDevicePath[index] };
+}
 
-/** @brief No EXI slot means nothing ever ran, so there is no code to report. */
-i32 LastNativeError() { return 0; }
+/**
+ * @brief Which devices could take a save of @p size bytes.
+ *
+ * NOT A SWEEP, AND THE REASON IS THE SAME ONE THAT MAKES EVERYTHING ELSE HERE
+ * BLOCKING. The GameCube half spreads this over several calls because
+ * CARD_GetFreeBlocks needs a mount and a mount is the slowest thing it does;
+ * statvfs() needs a mount too, and on top of it libfat may have to walk the FAT
+ * to count free clusters -- but there is no ticked form of either call to
+ * spread, so a partial answer would cost exactly as much as a whole one and be
+ * worth less. This measures every accessible device and answers completely.
+ *
+ * SO IT DOES NOT RETURN 0 ON A FIRST CALL, which save.hpp allows for rather
+ * than requires ("zero means nowhere, OR not yet"): a settled answer
+ * immediately is strictly more than a caller is promised.
+ *
+ * THE FIRST CALL AFTER A MOUNT IS THE EXPENSIVE ONE. libfat caches the free
+ * cluster count once it has counted, so repeated polls are cheap; the count
+ * itself, on a large card, is long enough to drop frames. The cached mask here
+ * is the second line of defence -- it is reused until @p size changes, the set
+ * of accessible devices changes, or a completed save, create or removal
+ * invalidates it, each of which is what save.hpp says starts a fresh sweep.
+ *
+ * AN EXISTING SAVE BIG ENOUGH FOR @p size COUNTS AS FREE even on a full card,
+ * because overwriting a file consumes no new space -- save.hpp's rule, and the
+ * ordinary case for a player whose card has one game's save on it and no room
+ * for another.
+ */
+u8 FreeDevices(const std::size_t size) {
+    if (size == 0) return 0;
+
+    const u8 access = AccessibleDevices();
+    if (freeValid && freeSize == size && freeAccess == access) return freeMask;
+
+    const std::size_t want = RoundUp(size);
+    u8 mask = 0;
+
+    for (u8 d = 0; d < kDeviceCount; ++d) {
+        if (!(access & (1u << d))) continue;
+        if (!Mount(d)) continue;
+
+        struct statvfs vfs;
+        if (statvfs(kVolumeRoot[d], &vfs) != 0) continue;
+
+        // f_frsize is the fragment size free blocks are counted in; libfat
+        // reports it, but a zero would make the whole product zero and read as
+        // "full", so f_bsize stands in for it.
+        const u64 unit  = vfs.f_frsize ? vfs.f_frsize : vfs.f_bsize;
+        const u64 avail = static_cast<u64>(vfs.f_bavail) * unit;
+
+        int         e       = 0;
+        const off_t already = LengthOf(kDevicePath[d], e);
+        const u64   held    = already > 0 ? static_cast<u64>(already) : 0;
+        const u64   need    = held >= want ? 0 : want - held;
+
+        if (avail >= need) mask = static_cast<u8>(mask | (1u << d));
+    }
+
+    freeMask   = mask;
+    freeSize   = size;
+    freeAccess = access;
+    freeValid  = true;
+    return mask;
+}
+
+/** @brief The errno the last finished operation left behind, or 0. */
+i32 LastNativeError() { return static_cast<i32>(lastNative); }
 
 } // namespace save
 

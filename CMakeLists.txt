@@ -1878,10 +1878,16 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR T
     endif()
 
     # GAMECUBE ONLY, hence the guard: the Wii in this same branch has no EXI
-    # memory card slot (src/ogc/save.cpp's Wii half refuses every call for that
-    # reason), so none of the knobs below describe anything it can do and the
-    # generated layout would never be included. Generating it anyway would put
-    # a save-layout line in the configure output of a build that cannot save.
+    # memory card slot, so none of the knobs below describe anything it can do
+    # and the generated layout would never be included. Generating it anyway
+    # would put a save-layout line in the configure output of a build whose
+    # saves do not have a directory entry or an icon.
+    #
+    # THE WII HAS ITS OWN PAIR OF KNOBS IN THE else() BELOW. It saves to a FAT
+    # volume (src/ogc/save.cpp's Wii half), so what a project has to name is a
+    # directory and a file name rather than a gamecode and a company -- the one
+    # thing both consoles' knobs have in common is that they are set once and
+    # then cannot move without orphaning every save already written.
     if(NOT TARGET_PLATFORM STREQUAL "wii")
         # ------------------------------------------------------------------
         # Memory-card save identity, and the layout of the save's own metadata.
@@ -1938,6 +1944,47 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR T
                 "-- CARD_FILENAMELEN is 32 including the terminator")
         endif()
 
+    else()
+        # ------------------------------------------------------------------
+        # Where a Wii save lives on the SD card or the USB disk.
+        #
+        # TWO NAMES AND NOT A PATH, because src/ogc/save.cpp assembles
+        # "sd:/<dir>/<file>" and "usb:/<dir>/<file>" from them itself and
+        # static_asserts that neither contains a separator -- a WII_SAVE_DIR
+        # with a slash in it would silently point the save somewhere else,
+        # possibly into another game's directory.
+        #
+        # WII_SAVE_DIR IS THE ONE THAT CANNOT MOVE LATER, for the same kind of
+        # reason OGC_GAME_CODE cannot: the Wii backend's search is PATH-based
+        # (a FAT volume has no equivalent of CARD_FindFirst's gamecode filter),
+        # so a build that renames either knob stops finding every save written
+        # by every earlier build. The data is still on the card and the game
+        # simply reports that there is no save -- which looks like a bug in the
+        # card, so it is worth saying here and not only in the backend.
+        #
+        # A DIRECTORY RATHER THAN THE VOLUME ROOT is not negotiable in the
+        # backend either: an SD card's root belongs to the player and to the
+        # Homebrew Channel.
+        # ------------------------------------------------------------------
+        set(WII_SAVE_DIR      "super_mary_sisters" CACHE STRING "Wii save directory under the SD/USB volume root")
+        set(WII_SAVE_FILENAME "save.dat"           CACHE STRING "Wii save file name inside WII_SAVE_DIR")
+
+        # Checked here as well as by save.cpp's own static_asserts, so that a
+        # bad value set in local.cmake names itself at configure time rather
+        # than as a static_assert in a backend the setter may never have opened.
+        foreach(_wii_knob WII_SAVE_DIR WII_SAVE_FILENAME)
+            string(LENGTH "${${_wii_knob}}" _wii_knob_len)
+            if(_wii_knob_len EQUAL 0 OR _wii_knob_len GREATER 255)
+                message(FATAL_ERROR
+                    "${_wii_knob} must be 1-255 characters, got \"${${_wii_knob}}\" (${_wii_knob_len}) "
+                    "-- it is one FAT long-name component, not a path")
+            endif()
+            if("${${_wii_knob}}" MATCHES "[/\\:]")
+                message(FATAL_ERROR
+                    "${_wii_knob} must be a single name with no '/', '\\' or ':', got \"${${_wii_knob}}\" "
+                    "-- src/ogc/save.cpp adds the separators and the volume prefix itself")
+            endif()
+        endforeach()
     endif()
 
     # The OGC backend presents the shared software PPU (src/emu) through GX: the
@@ -1971,6 +2018,14 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR T
                 "OGC_COMPANY_CODE=\"${OGC_COMPANY_CODE}\""
                 "OGC_FILENAME=\"${OGC_FILENAME}\"")
 
+    else()
+        # PRIVATE for the reason the GameCube's three are: the save's location
+        # is the backend's business, and nothing a game includes reads it. A
+        # game that wants to show a player where its save went asks
+        # ::save::GetDeviceStatus, which answers with the complete path.
+        target_compile_definitions(pnes PRIVATE
+                "WII_SAVE_DIR=\"${WII_SAVE_DIR}\""
+                "WII_SAVE_FILENAME=\"${WII_SAVE_FILENAME}\"")
     endif()
 
     # The on-target statistical PC sampler + on-screen overlay (src/ogc/
@@ -1983,14 +2038,28 @@ elseif(TARGET_PLATFORM STREQUAL "gc" OR TARGET_PLATFORM STREQUAL "gc_ntscj" OR T
     # asnd: libogc's ASND audio library (src/ogc/audio.cpp), not pulled in by
     # OGC_STANDARD_LIBRARIES (-logc -lm) on its own.
     #
-    # NO libfat: the only thing that ever wanted it was the SD-card route for
-    # sound effects, which is disabled (see the sfx block below and
-    # .ignore/ogc-sfx-sd-gecko/NOTES.md). Re-add `fat` to this line when
-    # re-enabling that code -- it is what brings the SD/USB drivers libogc
-    # exposes as __io_wiisd/__io_usbstorage (Wii) and
-    # __io_gcsda/__io_gcsdb/__io_gcsd2 (SD Gecko, SD2SP2), and it costs ~155KB
-    # of .dol that an embedded build has no reason to carry.
+    # NO libfat ON THE GAMECUBE: the only thing that ever wanted it there was
+    # the SD-card route for sound effects, which is disabled (see the sfx block
+    # below and .ignore/ogc-sfx-sd-gecko/NOTES.md). Re-add `fat` to this line
+    # when re-enabling that code -- it is what brings the SD/USB drivers libogc
+    # exposes as __io_gcsda/__io_gcsdb/__io_gcsd2 (SD Gecko, SD2SP2), and it
+    # costs ~155KB of .dol that an embedded build has no reason to carry.
     target_link_libraries(pnes PUBLIC br0::intsh br0::tuple br0::consh asnd)
+
+    # THE WII DOES LINK IT, because that is where its saves are: the Wii half of
+    # src/ogc/save.cpp mounts the front SD slot and USB mass storage through
+    # libfat (fatMountSimple) over the drivers libogc exposes as __io_wiisd and
+    # __io_usbstorage.
+    #
+    # A GAME THAT NEVER SAVES STILL DOES NOT PAY FOR IT. pnes is a static
+    # library, so save.o is pulled into a link only when something references
+    # ::save:: -- and libfat only when save.o is. The ~155KB lands in the .dol
+    # of a game that saves and in no other, which is why this is an
+    # unconditional link rather than an option: the opt-out already exists and
+    # is "do not call the save API".
+    if(TARGET_PLATFORM STREQUAL "wii")
+        target_link_libraries(pnes PUBLIC fat)
+    endif()
 
     # The music is EMBEDDED in the .dol, not loaded from disk: a Homebrew
     # Channel/loader .dol has no guaranteed content path the way a packaged

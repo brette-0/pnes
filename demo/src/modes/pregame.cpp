@@ -28,33 +28,57 @@
 #include "../../ui/impl/buttons.hpp"
 using namespace br0::intsh;
 
-#ifdef TARGET_GC
+/*
+ * TARGET_OGC AND NOT TARGET_GC, AND THE DISTINCTION IS WHAT THIS MODE IS FOR.
+ * This gate used to be the GameCube alone because the memory card was the only
+ * save device the library could reach; the Wii now saves to the front SD slot
+ * or a USB disk through libfat (src/ogc/save.cpp's Wii half), so everything
+ * below applies to it unchanged -- a device that may be absent, two of them to
+ * choose between, a file that may not exist yet, and every save::eError in the
+ * switches below reachable for real.
+ *
+ * WHAT IS STILL GAMECUBE-ONLY IS NESTED INSIDE, not gated out here, and it is
+ * two things: the card's directory-entry metadata (::banner, ::icon,
+ * ::gameName, ::gameDesc and the ::PopulateSaveData that copies them, which
+ * describe a card_stat nothing else has) and ::ApplyLoadedConfig's widescreen
+ * restore (video::ogc::SetWidescreen is a GameCube call, and the Wii's options
+ * scene has no widescreen button to restore from). Both carry their own
+ * #ifdef TARGET_GC.
+ *
+ * STILL NOT `#ifndef TARGET_NES`. A battery cart's save IS the cart: there is
+ * no device to find, nothing to choose and no file to create, and the MMC3
+ * backend answers every call with save::found. A target on the weak backend in
+ * src/all/save.cpp is in the opposite position -- it can only ever answer
+ * save::no_device -- and a mode whose every branch ends "there is nowhere to
+ * save" is not worth booting into either.
+ */
+#ifdef TARGET_OGC
 
 namespace pregame {
 
 /**
- * @brief The level this mode's effects play at: full scale.
+ * @brief The level this mode's effects play at: the player's own SFX setting.
  *
- * NOT ::ui::impl::SfxLevel(), WHICH IS SILENT HERE -- and that is why nothing
- * could be heard. That function reads the options page's SFX slider:
+ * ::ui::impl::SfxLevel(), WHICH THIS USED TO REFUSE TO CALL. It was a
+ * hard-coded 255, because at BOOT this mode runs before
+ * `gen::options::Make()` has resolved the SFX slider and the old SfxLevel()
+ * answered nonsense for an unresolved track -- so every ::SfxPlay from here
+ * asked for a level that was not the player's.
  *
- *     const Rect r = ac::SFXSlider::rect;
- *     return SliderCoefficient(r.size.x, ac::SFXSlider::amount);
+ * THAT WAS WRONG EVERYWHERE THIS MODE IS NOT THE BOOT MODE, and ::SaveScreen
+ * is exactly that place: it is called from the options page's B press, long
+ * after the scene resolved, and this mode's frame pump is what spends the
+ * mailbox title.cpp posted into. So a player who wound SFX to mute, changed
+ * nothing else and backed out heard the deselect effect at FULL VOLUME on the
+ * way to the title screen -- the one sound the setting most obviously promises
+ * to silence.
  *
- * Both halves are zero until `gen::options::Make()` has resolved the scene and
- * the slider has a position, and that call lives in title::main -- which runs
- * AFTER this mode, since this is the one that hands over to it. So every
- * ::SfxPlay from here asked for volume 0 and the effects played inaudibly
- * rather than not at all.
- *
- * FULL SCALE, BY DECISION rather than as a fallback: audio::SfxPlay's volume is
- * a byte the GameCube backend divides by 255 for its 0.0-1.0 mix
- * (pnes/audio.hpp), so 255 is 100%. These are the save flow's only sounds, they
- * happen before a player has been offered a volume control at all, and the
- * on/off gate above is still honoured -- ::ui::impl::SfxEnabled() answers true
- * off NES, which is where this mode exists.
+ * THE BOOT CASE IS NOW ANSWERED WHERE IT BELONGS: SfxLevel() reports full
+ * scale for an unresolved track and ZERO for a muted one, so this mode gets
+ * the old behaviour at boot, honours mute even then, and honours the real
+ * slider the moment there is one. See its definition in title.cpp.
  */
-constexpr u8 kSfxLevel = 255;
+static u8 SfxLevel() { return ui::impl::SfxLevel(); }
 
 /**
  * @brief One frame of this mode: audio, the sound-effect mailbox, present.
@@ -74,9 +98,12 @@ static void WaitBody() {
         // screen, and held back while effects are off it would fire the moment
         // they were switched on.
         ui::impl::pendingSfx = 0;
-        if (ui::impl::SfxEnabled()) {
-            audio::SfxPlay(static_cast<u8>(queued - 1), ui::impl::kSfxChannel,
-                           kSfxLevel);
+        // THE LEVEL IS READ AT THE PLAY, not latched when the effect was
+        // posted, which is what makes a mute set on the options page apply to
+        // the very gesture that left it (::SaveScreen's caller posts the
+        // deselect and this spends it).
+        if (const u8 level = SfxLevel(); ui::impl::SfxEnabled() && level) {
+            audio::SfxPlay(static_cast<u8>(queued - 1), ui::impl::kSfxChannel, level);
         }
     }
     video::WaitForPresent();
@@ -164,13 +191,17 @@ void main() {
 
     switch (response.err) {
        case save::found: {
-#ifdef TARGET_GC
-            const u8 sPath = strlen(response.path);
+            // NOT GATED TO THE GAMECUBE ANY MORE: both consoles answer with a
+            // path, and both borrow it. save.hpp says `path` is valid only
+            // until the next call, so the copy is the point -- "a:name" on the
+            // GameCube, "sd:/dir/save.dat" on the Wii, and the Wii's is the
+            // longer of the two, which is why the length comes from strlen
+            // rather than from a constant.
+            const std::size_t sPath = strlen(response.path);
             if (!savePath) {    // we don't need to free, as it will be free on next load, I think
                 savePath = new char[sPath + 1];   // + the terminator strcpy writes
                 strcpy(savePath, response.path);
             }
-#endif
             LoadSave();  // proceed to attempt to load
             break;
         }
@@ -368,9 +399,26 @@ void main() {
  * own.
  */
 void ApplyLoadedConfig() {
+#ifdef TARGET_GC
     const bool wide = gen::options::videoCanvas::enableWidescreenButton::Enabled();
     log("pregame: restoring widescreen=%d from save", wide);
     if (wide) video::ogc::SetWidescreen(true);
+#else
+    // NOTHING TO APPLY ON THE WII, AND NOT BECAUSE THIS IS UNFINISHED. The list
+    // above is one item long and that item is the GameCube's: the Wii's aspect
+    // is a SYSTEM setting the console is configured with rather than something
+    // a game switches (video::ogc::SetWidescreen is GameCube-only, and
+    // pnes/video.hpp gives every other target the inline no-op), so
+    // demo/ui/options.uis has no widescreen button in the Wii scene at all --
+    // gen/options/wii/options.hpp has no `enableWidescreenButton` to read.
+    //
+    // THE CALL STAYS UNCONDITIONAL at the one site that makes it, because the
+    // reasoning above is about WHICH settings have an engine side, not about
+    // whether a loaded save has settings. The sliders are applied by title mode
+    // on both consoles for the reason this function's comment gives, and a
+    // setting that grows an engine side on the Wii has an obvious home.
+    log("pregame: no display settings to restore on this target");
+#endif
 }
 
 /**
@@ -1246,4 +1294,4 @@ static void LoadConfig() {
 // the mode's.
 char* savePath;
 
-#endif // TARGET_GC
+#endif // TARGET_OGC

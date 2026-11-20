@@ -9,8 +9,21 @@
 // read back as though it didn't.
 constexpr u16 saveVersion = 1;
 
+// TARGET_OGC AND NOT TARGET_GC, WHICH IS WHAT MAKES THE SAVE FLOW THE WII'S
+// TOO. None of these is memory-card-shaped: they are the words a wheel of
+// choices is drawn with and the names of the two device slots every
+// ::save::AccessibleDevices mask has. The Wii's devices are the front SD slot
+// and USB mass storage where the GameCube's are card slots A and B, which
+// changes the TEXT below and nothing about the flow -- so the gate is the
+// console family and the wording is what varies inside it.
+//
+// ::Card1 / ::Card2 KEEP THEIR NAMES on both consoles, deliberately. They are
+// the labels the choice wheel returns, indexed the way save.hpp's device
+// indices are (0 then 1), and renaming them to ::Device1 / ::Device2 would
+// touch every arm of pregame's wheels to say the same thing. What they MEAN
+// per console is in ::card1Text / ::card2Text (demo/src/modes/pregame.hpp).
 enum eOptions : u8 {
-#ifdef TARGET_GC
+#ifdef TARGET_OGC
     Continue,
     Retry,
     No,
@@ -21,15 +34,27 @@ enum eOptions : u8 {
 #endif
 };
 
-#ifdef TARGET_GC
+#ifdef TARGET_OGC
 constexpr auto saveMissingText      = ::charmap_generic.encode("YOU MAY CREATE A SAVE FILE");
+#ifdef TARGET_GC
 constexpr auto saveNoDeviceText    = ::charmap_generic.encode("NO MEMORY CARD INSERTED");
+constexpr auto saveChooseCard       = ::charmap_generic.encode("CHOOSE CARD");
+constexpr auto saveUseCard          = ::charmap_generic.encode("CONFIRM USE CARD");
+#else
+// THE WII'S THREE, AND ONLY THE WORDING DIFFERS. "MEMORY CARD" is a thing this
+// console does not have: its devices are the front SD slot and a USB disk, so
+// a prompt naming a memory card would be asking a player to insert something
+// the Wii has no socket for. Kept inside the same 32-tile budget the GameCube's
+// 4:3 context band sets (see the write-back trio below), which is why it is
+// "NO SD CARD OR USB DRIVE" rather than a sentence.
+constexpr auto saveNoDeviceText    = ::charmap_generic.encode("NO SD CARD OR USB DRIVE");
+constexpr auto saveChooseCard       = ::charmap_generic.encode("CHOOSE DEVICE");
+constexpr auto saveUseCard          = ::charmap_generic.encode("CONFIRM USE DEVICE");
+#endif
 constexpr auto saveBadErrorText     = ::charmap_generic.encode("BAD ERROR CODE");
 constexpr auto saveCorruptText     = ::charmap_generic.encode("SAVE FILE CORRUPTED CONFIRM ERASE SAVE");
 constexpr auto saveFullText        = ::charmap_generic.encode("NOT ENOUGH FREE SPACE");
 constexpr auto saveLargeText       = ::charmap_generic.encode("SAVE FILE IS TOO LARGE FOR GAME");
-constexpr auto saveChooseCard       = ::charmap_generic.encode("CHOOSE CARD");
-constexpr auto saveUseCard          = ::charmap_generic.encode("CONFIRM USE CARD");
 // The write-back flow's own three, which ::pregame::SaveScreen shows in the
 // same context band pregame's messages use. Short enough for one row of the
 // narrowest band this scene has (the 4:3 GameCube's 40 - 8 = 32 tiles), so
@@ -90,7 +115,11 @@ struct SaveFile {
 
 extern SAVEMEM SaveFile saveData;
 
-#ifdef TARGET_GC
+// WIDENED WITH THE FLOW: a path is not a memory-card concept. On the GameCube
+// it is "a:super_mary_sisters" and on the Wii "sd:/super_mary_sisters/save.dat",
+// and ::pregame::main fills it from whatever ::save::GetSaveLocation answered
+// either way.
+#ifdef TARGET_OGC
 extern char* savePath;
 #endif
 
